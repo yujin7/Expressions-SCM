@@ -20,7 +20,6 @@ import {
   Modal,
   Popconfirm,
   Radio,
-  Select,
   Space,
   Table,
   Tabs,
@@ -33,6 +32,7 @@ import dayjs from "dayjs";
 import DocStatusTag from "@/components/DocStatusTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
+import RemoteSelect from "@/components/RemoteSelect";
 import { useListState } from "@/components/useListState";
 
 interface PcRow {
@@ -108,7 +108,6 @@ function PcInner() {
   const saveLock = useRef(false);
   const actionLock = useRef(false);
   const [canCreate, setCanCreate] = useState(false);
-  const [jgOptions, setJgOptions] = useState<{ value: number; label: string }[]>([]);
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
@@ -144,26 +143,6 @@ function PcInner() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  // 发起改价弹窗打开时拉取 JG 列表（委外链列表返回 {rows,total}）
-  useEffect(() => {
-    if (!createOpen) return;
-    let cancelled = false;
-    fetchJson<{ rows: { id: number; docNo: string; productSkuName: string }[]; total: number }>(
-      "/api/outsource/jg?page=1&pageSize=999",
-    )
-      .then((res) => {
-        if (!cancelled) {
-          setJgOptions(res.rows.map((r) => ({ value: r.id, label: `${r.docNo} ${r.productSkuName}` })));
-        }
-      })
-      .catch(() => {
-        /* 下拉加载失败保持空 */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [createOpen]);
 
   const handleCreate = async () => {
     if (saveLock.current || !canCreate) return;
@@ -320,7 +299,9 @@ function PcInner() {
       >
         <Form form={form} layout="vertical" initialValues={{ scope: "unreceived_only" }}>
           <Form.Item name="jgId" label="加工通知单" rules={[{ required: true, message: "必须选择 JG" }]}>
-            <Select showSearch optionFilterProp="label" options={jgOptions} placeholder="选择加工通知单" />
+            <RemoteSelect api="/api/outsource/jg" placeholder="搜索加工单号或产品编码/名称"
+              disabled={saving}
+              getLabel={(r) => `${String(r.docNo)}｜${String(r.supplierName)}｜${String(r.productSkuCode)} ${String(r.productSkuName)}`} />
           </Form.Item>
           <Form.Item
             name="newPrice"

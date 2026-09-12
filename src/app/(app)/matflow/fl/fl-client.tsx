@@ -9,8 +9,8 @@ import DocumentDrawer from "@/components/DocumentDrawer";
 
 import SearchInput from "@/components/SearchInput";
 
-import { useCallback, useEffect, useState } from "react";
-import { App, Alert, Button, Descriptions, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Typography } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { App, Alert, Button, Descriptions, Input, InputNumber, Modal, Popconfirm, Space, Table, Tabs, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -18,6 +18,7 @@ import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import ListToolbar from "@/components/ListToolbar";
 import RemoteSelect from "@/components/RemoteSelect";
+import { useJgMaterialLines } from "@/components/useJgMaterialLines";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
@@ -109,23 +110,6 @@ interface FlDetail {
   approvals: DocApproval[];
 }
 
-interface JgOption {
-  id: number;
-  docNo: string;
-  status: string;
-  supplierName: string;
-  productSkuCode: string;
-  productSkuName: string;
-}
-
-interface WoMaterialLine {
-  materialSkuId: number;
-  skuCode: string;
-  skuName: string;
-  baseUom: string;
-  grossReq: string;
-}
-
 interface CreateLine {
   skuId: number;
   skuCode: string;
@@ -174,13 +158,15 @@ export default function FlClient() {
   // 创建
   const [createOpen, setCreateOpen] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
-  const [jgOptions, setJgOptions] = useState<JgOption[]>([]);
-  const [jgLoading, setJgLoading] = useState(false);
+  const createLock = useRef(false);
   const [jgId, setJgId] = useState<number | null>(null);
   const [fromWarehouseId, setFromWarehouseId] = useState<number | null>(null);
   const [remark, setRemark] = useState("");
   const [createLines, setCreateLines] = useState<CreateLine[]>([]);
-  const [linesLoading, setLinesLoading] = useState(false);
+  const materialRead = useJgMaterialLines((lines) => setCreateLines(lines.map((l) => ({
+    skuId: l.materialSkuId, skuCode: l.skuCode, skuName: l.skuName, baseUom: l.baseUom,
+    grossReq: l.grossReq, qty: l.grossReq,
+  }))));
 
   const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
@@ -215,50 +201,29 @@ export default function FlClient() {
   // ---------- 创建 ----------
 
   const openCreate = () => {
+    if (createLock.current) return;
+    materialRead.cancel();
     setCreateOpen(true);
     setJgId(null);
     setFromWarehouseId(null);
     setRemark("");
     setCreateLines([]);
-    setJgLoading(true);
-    fetchJson<{ rows: JgOption[] }>("/api/outsource/jg?page=1&pageSize=999")
-      .then((res) =>
-        setJgOptions(res.rows.filter((r) => r.status === "approved" || r.status === "in_progress")),
-      )
-      .catch((e) => message.error((e as Error).message))
-      .finally(() => setJgLoading(false));
   };
 
   /** 选 JG 后：JG 详情取 woId → WO 详情取物料行（毛需求）预填发料行 */
   const handleJgChange = async (id: number) => {
+    if (createLock.current) return;
     setJgId(id);
-    setCreateLines([]);
-    setLinesLoading(true);
-    try {
-      const jg = await fetchJson<{ woId: number }>(`/api/outsource/jg/${id}`);
-      const wo = await fetchJson<{ lines: WoMaterialLine[] }>(`/api/outsource/wo/${jg.woId}`);
-      setCreateLines(
-        wo.lines.map((l) => ({
-          skuId: l.materialSkuId,
-          skuCode: l.skuCode,
-          skuName: l.skuName,
-          baseUom: l.baseUom,
-          grossReq: l.grossReq,
-          qty: l.grossReq,
-        })),
-      );
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setLinesLoading(false);
-    }
+    await materialRead.load(id);
   };
 
   const handleCreate = async () => {
+    if (createLock.current || materialRead.loading || materialRead.error) return;
     if (jgId == null) return void message.warning("请选择加工通知单");
     if (fromWarehouseId == null) return void message.warning("请选择发料仓");
     const valid = createLines.filter((l) => DEC_RE.test(l.qty) && decCmp(l.qty, "0") > 0);
     if (valid.length === 0) return void message.warning("至少需要一行数量大于 0 的发料行");
+    createLock.current = true;
     setCreateLoading(true);
     try {
       const created = await postJson<{ id: number }>("/api/matflow/fl", {
@@ -274,6 +239,7 @@ export default function FlClient() {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      createLock.current = false;
       setCreateLoading(false);
     }
   };
@@ -567,23 +533,22 @@ export default function FlClient() {
         okText="创建"
         cancelText="取消"
         confirmLoading={createLoading}
-        onCancel={() => setCreateOpen(false)}
+        onCancel={() => { if (!createLock.current) { materialRead.cancel(); setCreateOpen(false); } }}
+        maskClosable={!createLoading}
+        keyboard={!createLoading}
+        okButtonProps={{ disabled: materialRead.loading || Boolean(materialRead.error) }}
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <div>
             <div style={{ marginBottom: 4 }}>加工通知单（仅 已审批/执行中）</div>
-            <Select
-              showSearch
-              optionFilterProp="label"
-              loading={jgLoading}
+            <RemoteSelect
+              api="/api/outsource/jg?receiptEligible=1"
+              disabled={createLoading}
               style={{ width: "100%" }}
               placeholder="选择加工通知单"
               value={jgId}
-              options={jgOptions.map((j) => ({
-                value: j.id,
-                label: `${j.docNo}｜${j.supplierName}｜${j.productSkuCode} ${j.productSkuName}`,
-              }))}
+              getLabel={(j) => `${String(j.docNo)}｜${String(j.supplierName)}｜${String(j.productSkuCode)} ${String(j.productSkuName)}`}
               onChange={(v: number) => void handleJgChange(v)}
             />
           </div>
@@ -606,14 +571,16 @@ export default function FlClient() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>发料行（按工单毛需求预填，可改；数量为 0 的行不提交）</div>
+            {materialRead.error && <Alert type="error" showIcon message={materialRead.error}
+              action={<Button size="small" disabled={jgId == null || createLoading} onClick={() => { if (jgId != null) void handleJgChange(jgId); }}>重试物料</Button>} />}
             <Table<CreateLine>
               rowKey="skuId"
               size="small"
-              loading={linesLoading}
+              loading={materialRead.loading}
               columns={createLineColumns}
               dataSource={createLines}
               pagination={false}
-              locale={{ emptyText: "请先选择加工通知单" }}
+              locale={{ emptyText: materialRead.error ? "物料读取失败" : jgId == null ? "请先选择加工通知单" : "当前工单没有物料行" }}
             />
           </div>
           <Input.TextArea
