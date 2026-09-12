@@ -18,7 +18,7 @@
 
 | 层 | 可核验状态 | 证据/注意 |
 |---|---|---|
-| 本工作分支 | `agent/scm-inbound-review-recovery-20260913`；工作树`worktrees/material-source-20260913` | 恢复候选基于待合并[PR56](https://github.com/yujin7/Expressions-SCM/pull/56)，56依赖[PR55](https://github.com/yujin7/Expressions-SCM/pull/55)；独立堆叠交审，不自动合并到功能分支，依赖合并后重接main再验。PR55已启用保护检查后自动合并；09-13运行34716523492因GitHub账户付款/额度问题未启动任何步骤，须账户所有者处理，不绕过保护。PR54已合并 |
+| 本工作分支 | `agent/scm-inbound-review-recovery-20260913`；工作树`worktrees/material-source-20260913` | 已推送[PR57](https://github.com/yujin7/Expressions-SCM/pull/57)，基于待合并[PR56](https://github.com/yujin7/Expressions-SCM/pull/56)，56依赖[PR55](https://github.com/yujin7/Expressions-SCM/pull/55)；独立堆叠交审，不自动合并到功能分支，依赖合并后重接main再验。PR55已启用保护检查后自动合并；09-13运行34716523492因GitHub账户付款/额度问题未启动任何步骤，须账户所有者处理，不绕过保护。PR54已合并 |
 | 最新已验应用 | `e6509802b3bfbb0f258caf644dea0967b448ba8c`；READY 9/9，718文件/6719项，HTTP34/34零跳过 | [失败恢复验收](engineering/入库物料核对失败恢复验收-2026-09-13.md)；09-12 21:07:59Z（上海09-13）门回执，起止干净同SHA。后续文档不冒称另一个SHA重跑全门 |
 | 独立测试运行 | 3460精确冻结`e6509802`完成全门；仓管实际登录→故障→手机安全重算→刷新保留→准确事项回链及待计算筛选往返；66迁移，真实PG15/15 | 浏览器、3459/3460进程及隔离PG核对归属后停止，库/证据/冻结包保留，非生产验收 |
 | 正式运行 | 最近留档：3100健康、61/61零漂移；镜像`sha256:9ec914e49423cd4c61b546e70fccaeb6baa081af8df0ef0bf99cb9f7a338bbf8`；此次PC验收未刷新正式运行探针 | 容器`af36cd6581f6…`，启动2026-09-11T02:43:18.62257297Z；与候选不同，**未部署上述修复** |
