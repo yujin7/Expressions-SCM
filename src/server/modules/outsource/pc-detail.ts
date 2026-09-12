@@ -11,7 +11,7 @@ import { type AnyDb, resolveDb } from "./common";
 export function pcTaskActions(user: SessionUser, doc: { status: string; createdBy: number | null }, role: string | null, effectBlock: string | null = null) {
   const qualification = approvalRoleError(user, role);
   const reason = doc.status !== "pending"
-    ? doc.status === "draft" ? "已驳回；加工费请重新发起申请，采购价请返回原PO核对后重新提交。" : "本次改价已结束；历史申请不再审批。"
+    ? doc.status === "draft" ? "已驳回；加工费须先核对结算未冻结且无待审申请，再重新发起。已冻结请联系财务核对差额；采购价请返回原PO核对。" : "本次改价已结束；历史申请不再审批。"
     : user.id === doc.createdBy ? "制单人不可自审或自行驳回；请另一位有资格的审批人处理。"
     : qualification?.message ?? null;
   const reject = !reason;

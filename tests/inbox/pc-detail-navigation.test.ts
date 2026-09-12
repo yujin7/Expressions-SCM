@@ -11,7 +11,8 @@ let roles = ["admin"];
 let signedIn = true;
 vi.mock("@/db", () => ({ getDbAsync: async () => db }));
 vi.mock("@/server/core/dto", async original => ({ ...await original<typeof import("@/server/core/dto")>(),
-  getSessionUser: async () => { if (!signedIn) throw Error("No session"); return { id: 1, name: "查看者", roles, isApprover: true }; },
+  getSessionUser: async () => { throw Error("Read must use current identity, not the old session-only guard"); },
+  getFreshSessionUser: async () => { if (!signedIn) throw Error("No session"); return { id: 1, name: "查看者", roles, isApprover: true }; },
 }));
 const request = (id: string) => GET(new NextRequest(`http://localhost/api/outsource/pc/${id}`), { params: Promise.resolve({ id }) });
 beforeAll(async () => {
@@ -28,7 +29,8 @@ it("detail supplies creator and approval facts without relying on a current list
 });
 it("the richer detail retains money masking", async () => {
   roles = ["warehouse"];
-  const body = await (await request(String(pcId))).json();
+  const response = await request(String(pcId)); expect(response.status).toBe(200);
+  const body = await response.json();
   expect(body).not.toHaveProperty("oldPrice"); expect(body).not.toHaveProperty("newPrice"); expect(body).not.toHaveProperty("deviationPct");
 });
 it("absent and invalid identities have explicit errors", async () => {
