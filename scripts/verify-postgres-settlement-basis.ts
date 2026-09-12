@@ -9,6 +9,7 @@ import { approveJs, createJs, getJsBasis, refreshJsBasis, submitJs } from "@/ser
 import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
+import { createBatchJg } from "@/server/modules/outsource/auto-chain";
 import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
 import type { DB } from "@/db";
@@ -200,7 +201,44 @@ async function main() {
     assert.equal((await db.select().from(s.reviewItems).where(eq(s.reviewItems.refKey, String(recoveryJg.id)))).length, 1);
     assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "sh"), eq(s.auditLogs.entityId, recoverySh.id), eq(s.auditLogs.action, "material_review_checked")))).length, 2);
     console.log("PASS concurrent recovery attempts produce one review, two attempt acknowledgements and no duplicate stock");
-    console.log(JSON.stringify({ passed: true, cases: 15, fixture: key, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    const batchSource = async () => {
+      const no = `BATCH-${key}-${++seq}`;
+      const [wo] = await db.insert(s.woDocs).values({ docNo: `WO-${no}`, status: "approved", productSkuId: product.id, supplierId: sup.id, bomId: bom.id, qty: "100", feeRatePlan: "2", createdBy: pmc.id }).returning();
+      await db.insert(s.woLines).values({ woId: wo.id, materialSkuId: material.id, qtyPer: "1", grossReq: "100", suggestedQty: "100" });
+      const [po] = await db.insert(s.poDocs).values({ docNo: `PO-${no}`, woId: wo.id, supplierId: sup.id, status: "in_progress", createdBy: pmc.id }).returning();
+      await db.insert(s.poLines).values({ poId: po.id, skuId: material.id, lineType: "raw", purchaseUom: "个", uomFactor: "1", qty: "100", receivedQty: "50", price: "2" });
+      return { wo, po };
+    };
+    const sameBatch = await batchSource();
+    const batchRace = await race(tx => createBatchJg(pmc, sameBatch.wo.id, tx), () => createBatchJg(pmc, sameBatch.wo.id, other));
+    assert(!batchRace.second.ok); assert.equal(batchRace.second.error.status, 409);
+    assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, sameBatch.wo.id))).length, 1);
+    console.log("PASS concurrent batch generation waits on WO and refuses a second draft without unique-violation 500");
+    const closingWo = await batchSource();
+    const closedBatch = await race(tx => tx.update(s.woDocs).set({ status: "closed" }).where(eq(s.woDocs.id, closingWo.wo.id)),
+      () => createBatchJg(pmc, closingWo.wo.id, other));
+    assert(!closedBatch.second.ok); assert.equal(closedBatch.second.error.status, 409);
+    console.log("PASS batch generation waits for WO closure and refuses the closed source");
+    const returningPo = await batchSource();
+    const changedReceipt = await race(async tx => {
+      await tx.select().from(s.poDocs).where(eq(s.poDocs.id, returningPo.po.id)).for("update");
+      await tx.update(s.poLines).set({ receivedQty: "20" }).where(eq(s.poLines.poId, returningPo.po.id));
+    }, () => createBatchJg(pmc, returningPo.wo.id, other));
+    assert(changedReceipt.second.ok); assert.equal(changedReceipt.second.value.qty, "20.0000");
+    console.log("PASS batch generation waits for PO aggregate writer and calculates the committed receipt waterline");
+    const pausingSupplier = await batchSource();
+    const pausedBatch = await race(tx => tx.update(s.suppliers).set({ status: "paused" }).where(eq(s.suppliers.id, sup.id)),
+      () => createBatchJg(pmc, pausingSupplier.wo.id, other));
+    assert(!pausedBatch.second.ok); assert.equal(pausedBatch.second.error.status, 409);
+    await db.update(s.suppliers).set({ status: "qualified" }).where(eq(s.suppliers.id, sup.id));
+    console.log("PASS batch generation waits for supplier suspension and refuses a new draft");
+    const revokingActor = await batchSource(), revoked = await actor(["pmc"]);
+    const revokedBatch = await race(tx => tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, revoked.id)),
+      () => createBatchJg(revoked, revokingActor.wo.id, other));
+    assert(!revokedBatch.second.ok); assert.equal(revokedBatch.second.error.status, 403);
+    console.log("PASS batch generation waits for actor revocation and cannot use stale PMC claims");
+    const browserBatch = await batchSource();
+    console.log(JSON.stringify({ passed: true, cases: 20, fixture: key, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));

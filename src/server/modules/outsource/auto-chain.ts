@@ -8,6 +8,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 import { dAdd, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { getMaterialReferenceLines } from "@/server/core/material-reference";
@@ -64,13 +65,11 @@ export interface WoSuggestion {
   blockedReason: string | null;
 }
 
-export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchSuggestion[]; wos: WoSuggestion[] }> {
-  const db = await resolveDb(dbArg);
-
+async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion[]> {
   /* JG 批次建议：approved/in_progress 且有 PO 的 WO */
   const woRows: {
     id: number; docNo: string; qty: string; productSkuId: number; status: string;
-    productCode: string; productName: string; attrs: unknown;
+    productCode: string; productName: string; attrs: unknown; productActive: boolean; supplierStatus: string | null;
   }[] = await db
     .select({
       id: schema.woDocs.id,
@@ -81,18 +80,22 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
       productCode: schema.skus.code,
       productName: schema.skus.name,
       attrs: schema.skus.attrs,
+      productActive: schema.skus.active,
+      supplierStatus: schema.suppliers.status,
     })
     .from(schema.woDocs)
     .innerJoin(schema.skus, eq(schema.woDocs.productSkuId, schema.skus.id))
-    .where(inArray(schema.woDocs.status, ["approved", "in_progress"]));
+    .leftJoin(schema.suppliers, eq(schema.woDocs.supplierId, schema.suppliers.id))
+    .where(and(inArray(schema.woDocs.status, ["approved", "in_progress"]), woId == null ? undefined : eq(schema.woDocs.id, woId)));
 
   const batches: BatchSuggestion[] = [];
   for (const wo of woRows) {
     const lines: { materialSkuId: number; grossReq: string; materialCode: string }[] = await db
-      .select({ materialSkuId: schema.woLines.materialSkuId, grossReq: schema.woLines.grossReq, materialCode: schema.skus.code })
+      .select({ materialSkuId: schema.woLines.materialSkuId, grossReq: sql<string>`sum(${schema.woLines.grossReq})`, materialCode: schema.skus.code })
       .from(schema.woLines)
       .innerJoin(schema.skus, eq(schema.woLines.materialSkuId, schema.skus.id))
-      .where(eq(schema.woLines.woId, wo.id));
+      .where(eq(schema.woLines.woId, wo.id))
+      .groupBy(schema.woLines.materialSkuId, schema.skus.code);
     if (lines.length === 0) continue;
     // 到料 = 本 WO 下 PO 行已收量（基础单位）
     const recv: { skuId: number; received: string }[] = await db
@@ -176,7 +179,7 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
       .select({ qty: schema.jgDocs.qty, status: schema.jgDocs.status })
       .from(schema.jgDocs)
       .where(eq(schema.jgDocs.woId, wo.id));
-    const alreadyBatched = jgs.reduce((a, j) => a + Number(j.qty), 0);
+    const alreadyBatched = jgs.reduce((a, j) => dAdd(a, j.qty), "0");
     const hasDraft = jgs.some((j) => j.status === "draft" || j.status === "pending");
     // 订货倍数
     const [conv] = await db
@@ -186,14 +189,18 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
       .limit(1);
     const suggest = suggestBatchQty({
       producible,
-      alreadyBatched: String(alreadyBatched),
+      alreadyBatched,
       woQty: wo.qty,
       orderMultiple: conv?.orderMultiple ?? null,
     });
     const needsReview = Array.isArray((wo.attrs as { needsReview?: unknown[] } | null)?.needsReview)
       && ((wo.attrs as { needsReview: unknown[] }).needsReview.length > 0);
     let blockedReason: string | null = null;
-    if (suggest <= 0) blockedReason = producible <= alreadyBatched ? "到料尚不足新批（或已全部下批）" : "不足一个订货倍数";
+    const supplierBlock = supplierNewOrderBlock(wo.supplierStatus);
+    if (!wo.productActive) blockedReason = "成品已停用，不能生成新批次";
+    else if (wo.supplierStatus == null) blockedReason = "加工厂不存在，请核对工单来源";
+    else if (supplierBlock.blocked) blockedReason = supplierBlock.reason;
+    else if (suggest <= 0) blockedReason = producible <= Number(alreadyBatched) ? "到料尚不足新批（或已全部下批）" : "不足一个订货倍数";
     else if (!batchAllowed(jgs.length)) blockedReason = `批次已达上限 ${MAX_AUTO_BATCHES}，转人工`;
     else if (needsReview) blockedReason = "成品档案待复核（needsReview）——不自动，请人工核对后生成";
     else if (hasDraft) blockedReason = "已有待审批批次草稿——先处理再生成";
@@ -220,13 +227,19 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
           : "无同时命中本工单成品与物料的旧流程包材旁证",
         referenceEvidenceCount: matchedReference.length,
         referenceReservedQty,
-        alreadyBatched: String(alreadyBatched),
+        alreadyBatched,
         existingBatches: jgs.length,
         suggestQty: suggest,
         blockedReason,
       });
     }
   }
+  return batches;
+}
+
+export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchSuggestion[]; wos: WoSuggestion[] }> {
+  const db = await resolveDb(dbArg);
+  const batches = await previewBatches(db);
 
   /* 自动 WO 建议：approved BH 且尚无 WO */
   const bhs: { id: number; docNo: string }[] = await db
@@ -292,46 +305,58 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
 /* ── 生成（人工点按或钩子调用；一律草稿） ── */
 
 export async function createBatchJg(user: SessionUser, woId: number, dbArg?: AnyDb) {
-  requireAnyRole(user, "pmc");
+  if (!Number.isSafeInteger(woId) || woId <= 0 || woId > 2147483647) throw new ApiError(400, "工单编号无效");
   const db = await resolveDb(dbArg);
-  const { batches } = await previewAutoChain(db);
-  const s = batches.find((b) => b.woId === woId);
-  if (!s) throw new ApiError(404, "该工单无批次建议");
-  if (s.blockedReason) throw new ApiError(409, s.blockedReason);
-  const [wo] = await db.select().from(schema.woDocs).where(eq(schema.woDocs.id, woId));
-  if (!wo) throw new ApiError(404, "工单不存在");
-  const [product] = await db
-    .select({ baseUom: schema.skus.baseUom })
-    .from(schema.skus)
-    .where(eq(schema.skus.id, wo.productSkuId));
-  if (!product) throw new ApiError(400, `成品 SKU 不存在: #${wo.productSkuId}`);
-  const candidateQty = dQty(String(s.suggestQty));
-  const capacity = await getSupplierCapacitySignal({
-    supplierId: wo.supplierId,
-    baseUom: product.baseUom,
-    dueDate: wo.dueDate,
-    candidateQty,
-  }, db);
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    // Serialize proposals for this WO before reading a new waterline. The unique
+    // (woId,batchSeq) constraint remains the final boundary for legacy writers.
+    const [wo] = await tx.select().from(schema.woDocs).where(eq(schema.woDocs.id, woId)).for("update");
+    if (!wo) throw new ApiError(404, "工单不存在");
+    if (!["approved", "in_progress"].includes(wo.status)) throw new ApiError(409, "工单当前不允许生成批次，请刷新核对状态");
+    // Receipt/return services lock PO before changing its received quantities.
+    // Hold those rows through the calculation; lock in deterministic order.
+    await tx.select({ id: schema.poDocs.id }).from(schema.poDocs)
+      .where(eq(schema.poDocs.woId, woId)).orderBy(schema.poDocs.id).for("share");
+    const existing: { batchSeq: number }[] = await tx.select({ batchSeq: schema.jgDocs.batchSeq }).from(schema.jgDocs)
+      .where(eq(schema.jgDocs.woId, woId)).orderBy(schema.jgDocs.id).for("share");
+    const [product] = await tx
+      .select({ baseUom: schema.skus.baseUom })
+      .from(schema.skus)
+      .where(eq(schema.skus.id, wo.productSkuId)).for("share");
+    if (!product) throw new ApiError(400, `成品 SKU 不存在: #${wo.productSkuId}`);
+    await tx.select({ id: schema.suppliers.id }).from(schema.suppliers)
+      .where(eq(schema.suppliers.id, wo.supplierId)).for("share");
+    const [s] = await previewBatches(tx, woId);
+    if (!s) throw new ApiError(409, "该工单当前无可生成批次建议，请刷新核对到料与物料依据");
+    if (s.blockedReason) throw new ApiError(409, s.blockedReason);
+    const candidateQty = dQty(String(s.suggestQty));
+    const capacity = await getSupplierCapacitySignal({
+      supplierId: wo.supplierId,
+      baseUom: product.baseUom,
+      dueDate: wo.dueDate,
+      candidateQty,
+    }, tx);
     const docNo = await nextDocNo(tx, "JG");
     const [jg] = await tx
       .insert(schema.jgDocs)
       .values({
         docNo,
         woId,
-        batchSeq: s.existingBatches + 1,
+        batchSeq: Math.max(0, ...existing.map((j) => j.batchSeq)) + 1,
         supplierId: wo.supplierId,
         productSkuId: wo.productSkuId,
         qty: candidateQty,
         dueDate: wo.dueDate,
         feeRateCurrent: wo.feeRatePlan,
         orderType: wo.orderType,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await tx.insert(schema.jgFeeSegments).values({ jgId: jg.id, rate: jg.feeRateCurrent, effectiveFrom: new Date() });
     await writeAudit(tx, {
-      userId: user.id, entity: "auto_chain", entityId: jg.id, action: "batch_jg",
+      userId: actor.id, entity: "auto_chain", entityId: jg.id, action: "batch_jg",
       after: {
         woId,
         docNo,
