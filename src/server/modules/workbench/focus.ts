@@ -233,14 +233,14 @@ async function pmcSection(db: AnyDb): Promise<FocusSection> {
   };
 }
 
-/* ── 财务：期初/盘点/结算待审批 / 对账未解释差异 / 结余未确认结算 ── */
+/* ── 财务：期初/盘点/结算待审批 / 对账未解释差异 / 用量负差待核对 ── */
 async function financeSection(db: AnyDb): Promise<FocusSection> {
   const [openingPending, countPending, jsPending, reconOpen, [surplusRow]] = await Promise.all([
     countWhere(db, schema.stockDocs, and(eq(schema.stockDocs.subtype, "opening"), eq(schema.stockDocs.status, "pending"))),
     countWhere(db, schema.pdDocs, eq(schema.pdDocs.status, "pending")),
     countWhere(db, schema.jsDocs, eq(schema.jsDocs.status, "pending")),
     countWhere(db, schema.reconDiffs, eq(schema.reconDiffs.status, "open")),
-    // 结余未确认：待审 JS 中存在负实际损耗行（= 委外仓真实结余未退，审批将被 SURPLUS_UNACKED 闸门拦截）
+    // 负差待核对：净发料小于标准用量，不等于实物余料。保留历史指标key，不改变计数口径。
     db
       .select({ c: sql<number>`count(distinct ${schema.jsDocs.id})::int` })
       .from(schema.jsDocs)
@@ -255,7 +255,7 @@ async function financeSection(db: AnyDb): Promise<FocusSection> {
       { key: "countPending", label: "盘点待审批", value: countPending, href: "/inventory/count", suffix: "单" },
       { key: "jsPending", label: "结算待审批", value: jsPending, href: "/settlement/js?status=pending", suffix: "单" },
       { key: "reconOpen", label: "对账未解释差异", value: reconOpen, href: "/jobs/recon", suffix: "条" },
-      { key: "jsSurplusUnacked", label: "结余未确认结算", value: surplusRow?.c ?? 0, href: "/settlement/js", suffix: "单" },
+      { key: "jsSurplusUnacked", label: "用量负差待核对", value: surplusRow?.c ?? 0, href: "/settlement/js?status=pending", suffix: "单" },
     ],
   };
 }

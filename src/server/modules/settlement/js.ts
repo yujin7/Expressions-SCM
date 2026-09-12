@@ -37,8 +37,8 @@ async function assertSettlementWriteAccess(tx: AnyDb, actor: SessionUser) {
  * 委外结算单 JS（R5 逐物料，《01》§5）——本系统的"出钱口"。
  * 数学唯一权威 = rules/settlement.ts settle()，本模块只负责取数与落库；
  * 审批（js→finance，seed 已含）通过即同事务过账 js_loss_writeoff：
- * 委外仓 − 实际损耗（带内不计价核销）；核销后该 JG 委外仓余额必须=0，
- * 残留（负实际损耗=结余）强制先走 TL 退料或财务短溢说明（acknowledgeSurplus）。
+ * 委外仓 − 正实际损耗（带内不计价核销）；负值表示净发料低于标准用量，不能推断实物结余。
+ * 负差须核对发退/产出/单位/BOM或财务留说明确认；acknowledgeSurplus 为保留的历史接口名。
  */
 
 type JsRow = typeof jsDocs.$inferSelect;
@@ -122,7 +122,7 @@ export type JsPreview = {
   manualAdj: string; // 敏感
   settleAmount: string; // 敏感
   lines: JsPreviewLine[];
-  /** 负实际损耗（结余）物料——审批时强制先退料(TL)或财务短溢确认 */
+  /** 历史接口名：负实际损耗的绝对值，不是实物余料或可退库存。审批须核对或财务说明确认。 */
   surplusMaterials: { skuId: number; skuCode: string; surplus: string }[];
   warnings: string[];
   /** 扣款价口径标识（见 getDeductPrice；D23 候选偏差） */
@@ -336,8 +336,8 @@ export async function previewJs(jgId: number, manualAdj = "0", dbArg?: AnyDb): P
     deductAmount: l.deductAmount,
   }));
 
-  // 结余（负实际损耗）：残差=发料−退料−净标准用量−实际损耗≡0（构造恒等），
-  // 故余料全部体现为负实际损耗——审批前必须 TL 退回或财务短溢确认（《01》§4 核销后余额=0）
+  // 净发料小于标准用量：可能是节约、漏记/多退、产出/单位/BOM不符，不能据此断言实物余料。
+  // 再退料会令这个负差更大。字段名为旧API兼容保留，值仍是负实际损耗的绝对值。
   const surplusMaterials = lines
     .filter((l) => dCmp(l.actualLoss, "0") < 0)
     .map((l) => ({ skuId: l.materialSkuId, skuCode: l.skuCode, surplus: dNeg(l.actualLoss) }));
@@ -651,8 +651,8 @@ export async function approveJs(
         .where(eq(jsLines.jsId, id))
         .orderBy(asc(jsLines.id));
 
-      // 结余闸门（《01》§4：核销后该 JG 委外仓余额必须=0）：
-      // 负实际损耗=真实结余仍压在委外仓——通过前必须 TL 退回，或财务显式短溢确认。
+      // 负差确认闸门：净发料不足标准用量，不等于厂内实物余料；不能以退料消除此差额。
+      // 保留既有财务显式确认/说明门，不改变损耗计算、批准资格或库存事实。
       // 仅在真实待审（pending）时拦截：幂等重试/非法状态交给 approveDoc 按 R10 语义处理
       if (v.action === "approve" && doc.status === "pending") {
         const surplus = lines.filter((l) => dCmp(l.actualLoss, "0") < 0);
@@ -663,9 +663,9 @@ export async function approveJs(
             .where(inArray(skus.id, surplus.map((l) => l.materialSkuId)));
           const codeById = new Map(skuRows.map((s) => [s.id, s.code]));
           const detail = surplus
-            .map((l) => `物料${codeById.get(l.materialSkuId) ?? `#${l.materialSkuId}`}结余${dNeg(l.actualLoss)}未退`)
+            .map((l) => `物料${codeById.get(l.materialSkuId) ?? `#${l.materialSkuId}`}净发料低于标准用量${dNeg(l.actualLoss)}`)
             .join("；");
-          { const e = new ApiError(409, `${detail}，请先退料(TL)或短溢说明后确认（acknowledgeSurplus）`); e.code = "SURPLUS_UNACKED"; throw e; }
+          { const e = new ApiError(409, `${detail}；请核对发料、退料、产出、单位与BOM，不能据此判定可退余料；核对后填写差异说明确认（acknowledgeSurplus）`); e.code = "SURPLUS_UNACKED"; throw e; }
         }
       }
 
@@ -702,7 +702,7 @@ export async function approveJs(
           sourceLineId: l.id,
           skuId: l.materialSkuId,
           warehouseId: wh.id,
-          qtyDelta: dNeg(l.actualLoss), // 委外仓 − 实际损耗；结余（负损耗）物料不过账，留仓为真实结余
+          qtyDelta: dNeg(l.actualLoss), // 仅核销正损耗；负差不自动补库存，也不证明实物结余
         }));
       if (writeoffLines.length > 0) {
         await post(tx, {

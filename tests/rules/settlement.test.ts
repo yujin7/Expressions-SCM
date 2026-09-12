@@ -25,6 +25,15 @@ function base(over: Partial<SettleInput> = {}): SettleInput {
 }
 
 describe("R5 委外结算 settle()", () => {
+  it("发料99/标准100的负差不是可退余料，再退1只会把差额从-1扩大到-2", () => {
+    const input = base({ goodQty: "100", feeSegments: [{ qty: "100", rate: "2" }],
+      materials: [{ materialSkuId: 1, qtyPer: "1", issuedQty: "99", returnedQty: "0", allowedLossRatePct: "5", avgPrice: "1" }] });
+    const before = settle(input);
+    const after = settle({ ...input, materials: [{ ...input.materials[0], returnedQty: "1" }] });
+    expect(before.lines[0]).toMatchObject({ stdQty: "100.0000", actualLoss: "-1.0000", excessLoss: "0.0000", deductAmount: "0.00" });
+    expect(after.lines[0]).toMatchObject({ actualLoss: "-2.0000", deductAmount: "0.00" });
+    expect(before.settleAmount).toBe(after.settleAmount);
+  });
   it("审计反例：发料11000/退料0/合格10000/损耗率5% → 超损=500（旧公式算出0即为错）", () => {
     const r = settle(base());
     const line = r.lines[0]!;
