@@ -17,7 +17,7 @@ beforeAll(async () => {
   await f.db.insert(s.approvalConfigs).values([{ docType: "pc", approverRole: "purchasing" }, { docType: "js", approverRole: "finance" }]);
 });
 afterAll(async () => f?.client.close());
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 async function setup() {
   const pmc = await actor(["pmc"]), purchasing = await actor(["purchasing"]), checker = await actor(["purchasing"]), finance = await actor(["finance"]);
   const key = `FS-${seq}`;
@@ -53,6 +53,20 @@ it("approved retrospective scope flows into preview and newly created JS without
   expect(await previewJs(a.jg.id, "0", f.db)).toMatchObject({ feePayable: "35.00", retrospectivePc: { id: pc.id }, feeSegments: [{ qty: "10.0000", feeRate: "3.50" }] });
   expect((await f.db.select().from(s.jgFeeSegments).where(eq(s.jgFeeSegments.id, before[0].id)))[0]).toEqual(before[0]);
   expect(await createJs(a.pmc, { jgId: a.jg.id }, f.db)).toMatchObject({ feePayable: "35.00", settleAmount: "35.00" });
+});
+it.each([true, false])("same-millisecond fee approvals preserve service ordering (retrospective first: %s)", async retroFirst => {
+  const a = await setup(), effect = new Date("2026-09-13T02:00:00.123Z");
+  // Freeze Date only; real database I/O and timeout timers keep running.
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(effect);
+  await change(a, retroFirst ? "retroactive" : "unreceived_only", "3.50");
+  await change(a, retroFirst ? "unreceived_only" : "retroactive", "4.00");
+  const feeRows = await f.db.select().from(s.jgFeeSegments).where(eq(s.jgFeeSegments.jgId, a.jg.id));
+  expect(feeRows.filter(row => row.effectiveFrom.getTime() === effect.getTime())).toHaveLength(2);
+  // Old receipts use the retrospective baseline, but receipts at/after both approvals use the last segment.
+  expect((await previewJs(a.jg.id, "0", f.db)).feePayable).toBe(retroFirst ? "35.00" : "40.00");
+  await f.db.update(s.shDocs).set({ createdAt: effect }).where(and(eq(s.shDocs.sourceType, "jg"), eq(s.shDocs.sourceId, a.jg.id)));
+  expect((await previewJs(a.jg.id, "0", f.db)).feePayable).toBe("40.00");
+  expect(await createJs(a.pmc, { jgId: a.jg.id }, f.db)).toMatchObject({ feePayable: "40.00", settleAmount: "40.00" });
 });
 it("pending/rejected retrospective PC never affects pricing; missing approval evidence is not guessed", async () => {
   const a = await setup();

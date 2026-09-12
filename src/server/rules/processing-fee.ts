@@ -7,7 +7,9 @@ export function processingFeeAt(
 ): string {
   let rate = retroactive?.rate ?? null;
   for (const segment of segments) {
-    if (retroactive && segment.effectiveFrom <= retroactive.approvedAt) continue;
+    // Caller orders by effectiveFrom, then segment ID. Equal-time successors remain eligible;
+    // the retrospective segment itself restores its baseline before any later same-time change.
+    if (retroactive && segment.effectiveFrom < retroactive.approvedAt) continue;
     if (segment.effectiveFrom <= receiptAt) rate = segment.rate;
   }
   return rate ?? segments[0]?.rate ?? currentRate;
