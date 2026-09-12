@@ -116,8 +116,9 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     expect(fl.toWarehouseId).toBe(whWxId); // 自动 = 该加工厂委外仓
 
     // 非仓管拒建
+    const [ops] = await db.insert(users).values({ name: "非仓管", roles: ["ops"] }).returning();
     await expect(
-      createFl({ ...whCreator, roles: ["ops"] }, { jgId: jg1, fromWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1" }] }, db),
+      createFl({ id: ops.id, name: ops.name, roles: ops.roles, isApprover: false }, { jgId: jg1, fromWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1" }] }, db),
     ).rejects.toMatchObject({ status: 403 });
 
     // 无委外仓的加工厂 → 404

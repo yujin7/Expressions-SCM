@@ -36,17 +36,20 @@ type FlLineRow = typeof flLines.$inferSelect;
 // ---------- 创建 ----------
 
 export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<FlRow> {
-  requireAnyRole(user, "warehouse");
   const v = createFlSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  const jg = await getJgForMatflow(db, v.jgId);
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentWriteActor(tx, user);
+  requireAnyRole(actor, "warehouse");
+  await lockMatflowJg(tx, v.jgId);
+  const jg = await getJgForMatflow(tx, v.jgId);
   // 收料仓自动定位：该加工厂的委外仓（不由前端传入，防错仓）
-  const toWh = await getOutsourceWarehouseOf(db, jg.supplierId);
-  await requireRealtimeWarehouse(db, v.fromWarehouseId, "发料源仓");
+  const toWh = await getOutsourceWarehouseOf(tx, jg.supplierId);
+  await requireRealtimeWarehouse(tx, v.fromWarehouseId, "发料源仓");
 
   const skuIds = [...new Set(v.lines.map((l) => l.skuId))];
-  const skuRows: { id: number; active: boolean }[] = await db
+  const skuRows: { id: number; active: boolean }[] = await tx
     .select({ id: skus.id, active: skus.active })
     .from(skus)
     .where(inArray(skus.id, skuIds));
@@ -55,7 +58,6 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
     if (!activeSku.has(sid)) throw new ApiError(400, `SKU 不存在或已停用: #${sid}`);
   }
 
-  return db.transaction(async (tx: AnyDb) => {
     const allocatedLines = await expandOutboundLinesForBatchPosting(tx, v.fromWarehouseId, v.lines);
     const docNo = await nextDocNo(tx, "FL");
     const [doc]: FlRow[] = await tx
@@ -66,7 +68,7 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
         jgId: jg.id,
         fromWarehouseId: v.fromWarehouseId,
         toWarehouseId: toWh.id,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await tx.insert(flLines).values(
@@ -78,7 +80,7 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
       })),
     );
     await writeAudit(tx, {
-      userId: user.id, entity: "fl", entityId: doc.id, action: "create",
+      userId: actor.id, entity: "fl", entityId: doc.id, action: "create",
       after: { docNo: doc.docNo, jgId: jg.id, toWarehouseId: toWh.id, lineCount: allocatedLines.length },
     });
     return doc;
@@ -89,20 +91,28 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
 
 export async function submitFl(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<FlRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: FlRow[] = await db.select().from(flDocs).where(eq(flDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("warehouse") && !user.roles.includes("admin")) {
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentWriteActor(tx, user);
+  const [source]: FlRow[] = await tx.select().from(flDocs).where(eq(flDocs.id, id));
+  if (!source) throw new ApiError(404, "单据不存在");
+  // Match approval/closure lock order: JG authority before its material document.
+  await lockMatflowJg(tx, source.jgId);
+  const [doc]: FlRow[] = await tx.select().from(flDocs).where(eq(flDocs.id, id)).for("update");
+  if (!doc || doc.jgId !== source.jgId) throw new ApiError(409, "发料来源已变化，请重新读取核对");
+  if (doc.createdBy !== actor.id && !actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
     throw new ApiError(403, "仅制单人/仓管/管理员可提交");
   }
   if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-  const updated: FlRow[] = await db
+  await getJgForMatflow(tx, doc.jgId);
+  const updated: FlRow[] = await tx
     .update(flDocs)
     .set({ status: "pending", version: sql`${flDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(flDocs.id, id), eq(flDocs.version, version)))
+    .where(and(eq(flDocs.id, id), eq(flDocs.version, version), eq(flDocs.status, "draft")))
     .returning();
   if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "fl", entityId: id, action: "submit" });
+  await writeAudit(tx, { userId: actor.id, entity: "fl", entityId: id, action: "submit" });
   return updated[0];
+  });
 }
 
 // ---------- 需求/累计口径（超发校验与详情对照共用） ----------

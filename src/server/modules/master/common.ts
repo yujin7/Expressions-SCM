@@ -100,7 +100,7 @@ export function parseListQuery(url: string): ListQuery {
 
 export function parseId(raw: string): number {
   const id = Number(raw);
-  if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, "无效的 ID");
+  if (!Number.isSafeInteger(id) || id <= 0) throw new ApiError(400, "无效的 ID");
   return id;
 }
 

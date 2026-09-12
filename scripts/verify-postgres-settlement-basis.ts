@@ -102,7 +102,35 @@ async function main() {
       () => approveFl(checker, issueB.id, { action: "approve", version: issueB.version }, other));
     assert(!overIssue.second.ok); assert.equal(overIssue.second.error.status, 403);
     console.log("PASS concurrent FL cannot both bypass cumulative over-issue approval");
-    console.log(JSON.stringify({ passed: true, cases: 4, fixture: key, browserDraft: js.id, browserJg: jg.id, database: new URL(connectionString).pathname.slice(1) }));
+    const draftSource = await setup();
+    await db.update(s.jgDocs).set({ status: "in_progress" }).where(eq(s.jgDocs.id, draftSource.id));
+    const draftInput = { jgId: draftSource.id, fromWarehouseId: own.id, lines: [{ skuId: material.id, qty: "1.2345" }] };
+    const beforeDocs = await db.select().from(s.flDocs).where(eq(s.flDocs.jgId, draftSource.id));
+    const createAfterClosure = await race(tx => tx.update(s.jgDocs).set({ status: "closed" }).where(eq(s.jgDocs.id, draftSource.id)),
+      () => createFl(maker, draftInput, other));
+    assert(!createAfterClosure.second.ok); assert.equal(createAfterClosure.second.error.status, 409);
+    assert.deepEqual(await db.select().from(s.flDocs).where(eq(s.flDocs.jgId, draftSource.id)), beforeDocs);
+    console.log("PASS FL creation waits for concurrent JG state change and refuses a closed source");
+    const submitSource = await setup();
+    await db.update(s.jgDocs).set({ status: "in_progress" }).where(eq(s.jgDocs.id, submitSource.id));
+    const waitingFl = await createFl(maker, { ...draftInput, jgId: submitSource.id }, db);
+    const submitAfterClosure = await race(tx => tx.update(s.jgDocs).set({ status: "completed" }).where(eq(s.jgDocs.id, submitSource.id)),
+      () => submitFl(maker, waitingFl.id, waitingFl.version, other));
+    assert(!submitAfterClosure.second.ok); assert.equal(submitAfterClosure.second.error.status, 409);
+    assert.equal((await db.select().from(s.flDocs).where(eq(s.flDocs.id, waitingFl.id)))[0].status, "draft");
+    console.log("PASS FL submission waits for concurrent JG state change and preserves the draft");
+    const retrySource = await setup();
+    await db.update(s.jgDocs).set({ status: "in_progress" }).where(eq(s.jgDocs.id, retrySource.id));
+    const retryFl = await createFl(maker, { ...draftInput, jgId: retrySource.id }, db);
+    const doubleSubmit = await race(tx => submitFl(maker, retryFl.id, retryFl.version, tx),
+      () => submitFl(maker, retryFl.id, retryFl.version, other));
+    assert(!doubleSubmit.second.ok); assert.equal(doubleSubmit.second.error.status, 409);
+    const submitted = (await db.select().from(s.flDocs).where(eq(s.flDocs.id, retryFl.id)))[0];
+    assert.equal(submitted.status, "pending"); assert.equal(submitted.version, retryFl.version + 1);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "fl"), eq(s.auditLogs.entityId, retryFl.id), eq(s.auditLogs.action, "submit")))).length, 1);
+    console.log("PASS duplicate FL submission waits and cannot duplicate status, version or audit");
+    console.log(JSON.stringify({ passed: true, cases: 7, fixture: key, browserDraft: js.id, browserJg: jg.id,
+      browserFl: retryFl.id, issueJg: retrySource.id, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
