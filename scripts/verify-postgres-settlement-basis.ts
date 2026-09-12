@@ -8,6 +8,10 @@ import * as s from "@/db/schema";
 import { approveJs, createJs, getJsBasis, refreshJsBasis, submitJs } from "@/server/modules/settlement/js";
 import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
+import { confirmInbound } from "@/server/modules/matflow/sh";
+import { suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
+import { decideReviewItem } from "@/server/modules/review/checklist";
+import type { DB } from "@/db";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function main() {
@@ -149,7 +153,34 @@ async function main() {
       assert.equal((await db.select().from(s.approvals).where(and(eq(s.approvals.docType, "tl"), eq(s.approvals.docId, target.id)))).length, 0);
       console.log(`PASS TL ${operation} waits for actual JS approval/writeoff and refuses pooled stock reuse`);
     }
-    console.log(JSON.stringify({ passed: true, cases: 10, fixture: key, browserDraft: js.id, browserJg: jg.id,
+    const reviewJg = await setup();
+    const duplicateReview = await race(tx => suggestLeftoverAfterInbound(maker, reviewJg.id, tx),
+      () => suggestLeftoverAfterInbound(checker, reviewJg.id, other));
+    assert(duplicateReview.second.ok);
+    const reviewRows = await db.select().from(s.reviewItems).where(and(eq(s.reviewItems.category, "material_leftover"), eq(s.reviewItems.refKey, String(reviewJg.id))));
+    assert.equal(reviewRows.length, 1);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "review_item"), eq(s.auditLogs.entityId, reviewRows[0].id)))).length, 1);
+    console.log("PASS concurrent inbound review hooks wait on JG and create one item/audit");
+    const [reviewFl] = await db.select().from(s.flDocs).where(eq(s.flDocs.jgId, reviewJg.id));
+    await db.update(s.flLines).set({ qty: "130" }).where(eq(s.flLines.flId, reviewFl.id));
+    const decisionRace = await race(tx => decideReviewItem(pmc, reviewRows[0].id, { status: "done", note: "合成关闭：旧依据已核对" }, tx as unknown as DB),
+      () => suggestLeftoverAfterInbound(checker, reviewJg.id, other));
+    assert(decisionRace.second.ok);
+    const afterDecision = await db.select().from(s.reviewItems).where(and(eq(s.reviewItems.category, "material_leftover"), eq(s.reviewItems.refKey, String(reviewJg.id))));
+    assert.equal(afterDecision.length, 2);
+    assert.equal(afterDecision.find(row => row.id === reviewRows[0].id)?.status, "done");
+    assert.match(afterDecision.find(row => row.status === "open")?.detail ?? "", /差额 30.0000/);
+    console.log("PASS changed estimate waits for human decision and does not overwrite or reopen the decided item");
+    const inboundJg = await setup();
+    const [triggerSh] = await db.select().from(s.shDocs).where(and(eq(s.shDocs.sourceType, "jg"), eq(s.shDocs.sourceId, inboundJg.id)));
+    await db.update(s.shDocs).set({ status: "approved" }).where(eq(s.shDocs.id, triggerSh.id));
+    assert.equal((await confirmInbound(maker, triggerSh.id, db)).status, "completed");
+    const [triggeredReview] = await db.select().from(s.reviewItems).where(and(eq(s.reviewItems.category, "material_leftover"), eq(s.reviewItems.refKey, String(inboundJg.id))));
+    assert(triggeredReview); assert.match(triggeredReview.detail ?? "", /差额 20.0000/);
+    assert((await db.select().from(s.stockLedger).where(and(eq(s.stockLedger.sourceDocType, "sh_outsource_in"), eq(s.stockLedger.sourceDocId, triggerSh.id)))).length > 0);
+    console.log("PASS actual SH inbound posts inventory and its committed receipt triggers the material review");
+    console.log(JSON.stringify({ passed: true, cases: 13, fixture: key, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+      inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
