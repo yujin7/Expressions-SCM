@@ -97,6 +97,8 @@ export const createWoSchema = z.object({
 export type CreateWoInput = z.infer<typeof createWoSchema>;
 
 /** WO 审批通过后一键生成 0..n 张 PO + 恰 1 张 JG */
+const generationQty = qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数，且必须可精确存储");
+const generationPrice = priceNonNegative.refine(s => /^\d{1,12}(\.\d{1,2})?$/.test(s), "单价最多12位整数、2位小数，且必须可精确存储");
 export const generateDocsSchema = z.object({
   poGroups: z
     .array(
@@ -106,12 +108,12 @@ export const generateDocsSchema = z.object({
           .array(
             z.object({
               materialSkuId: z.number().int().positive(),
-              qty: qtyPositive,
+              qty: generationQty,
               purchaseUom: z.string().trim().min(1).max(20).optional(),
-              uomFactor: qtyPositive.optional(),
-              price: priceNonNegative,
+              uomFactor: generationQty.optional(),
+              price: generationPrice,
               taxIncluded: z.boolean().optional(),
-              taxRatePct: pctNonNegative.optional(),
+              taxRatePct: pctNonNegative.refine(s => /^\d{1,3}(\.\d{1,2})?$/.test(s), "税率最多3位整数、2位小数").optional(),
             }),
           )
           .min(1, "PO 至少需要一行"),
@@ -120,7 +122,7 @@ export const generateDocsSchema = z.object({
     .default([]),
   jg: z
     .object({
-      qty: qtyPositive.optional(),
+      qty: generationQty.optional(),
       dueDate: dateStr.nullable().optional(),
     })
     .optional(),

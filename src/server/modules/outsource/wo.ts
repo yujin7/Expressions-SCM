@@ -6,6 +6,7 @@ import {
 import { dAdd, dCmp, dDiv, dMoney, dMul, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 import { bhReadScope } from "@/server/core/bh-read-scope";
 import {
   BomCycleError,
@@ -346,72 +347,77 @@ export async function generateDocs(
   input: unknown,
   dbArg?: AnyDb,
 ): Promise<{ pos: PoRow[]; jg: JgRow }> {
-  requireAnyRole(user, "pmc");
+  if (!Number.isSafeInteger(woId) || woId <= 0 || woId > 2147483647) throw new ApiError(400, "工单编号无效");
   const v = generateDocsSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  const [wo]: WoRow[] = await db.select().from(woDocs).where(eq(woDocs.id, woId));
-  if (!wo) throw new ApiError(404, "工单不存在");
-  if (wo.status !== "approved") throw new ApiError(409, `仅已审批工单可生成 PO/JG，当前状态: ${wo.status}`);
-
-  // 幂等：一 WO 恰一 JG（无 DB 唯一约束——schema 本波不可改，先查后插为 PoC 口径，
-  // 并发双写窗口在集成阶段补 UNIQUE(wo_id) 收口）
-  const [existingJg] = await db
-    .select({ id: jgDocs.id, docNo: jgDocs.docNo })
-    .from(jgDocs)
-    .where(eq(jgDocs.woId, woId));
-  if (existingJg) throw new ApiError(409, `该工单已生成加工通知单 ${existingJg.docNo}，不可重复生成`);
-
-  // 供应商：存在且可接新单（黑名单 / 整改暂停皆拒，规则见 rules/supplier-status）
-  const supplierIds = [...new Set(v.poGroups.map((g) => g.supplierId))];
-  if (supplierIds.length > 0) {
-    const supRows = await db.select().from(suppliers).where(inArray(suppliers.id, supplierIds));
-    const bySup = new Map(supRows.map((s) => [s.id, s]));
-    for (const sid of supplierIds) {
-      const s = bySup.get(sid);
-      if (!s) throw new ApiError(400, `供应商不存在: #${sid}`);
-      const block = supplierNewOrderBlock(s.status);
-      if (block.blocked) throw new ApiError(400, `供应商${block.label}，禁止新单: ${s.name}（${block.reason}）`);
-    }
-  }
-
-  // 物料：PO 行仅限原料/包材（加工费不进 PO，《00》A4）；行类型由 skuType 推导
-  const materialIds = [...new Set(v.poGroups.flatMap((g) => g.lines.map((l) => l.materialSkuId)))];
-  const lineTypeBySku = new Map<number, "raw" | "packaging">();
-  if (materialIds.length > 0) {
-    const matRows = await db.select().from(skus).where(inArray(skus.id, materialIds));
-    const byId = new Map(matRows.map((s) => [s.id, s]));
-    for (const mid of materialIds) {
-      const s = byId.get(mid);
-      if (!s || !s.active) throw new ApiError(400, `物料 SKU 不存在或已停用: #${mid}`);
-      if (s.skuType !== "raw" && s.skuType !== "packaging") {
-        throw new ApiError(400, `PO 行仅限原料/包材，物料 ${s.code} 类型为 ${s.skuType}`);
-      }
-      lineTypeBySku.set(mid, s.skuType);
-    }
-  }
-
-  const [product] = await db
-    .select({ baseUom: skus.baseUom })
-    .from(skus)
-    .where(eq(skus.id, wo.productSkuId));
-  if (!product) throw new ApiError(400, `成品 SKU 不存在: #${wo.productSkuId}`);
-  const jgQty = dQty(v.jg?.qty ?? wo.qty);
-  const jgDueDate = v.jg?.dueDate ?? wo.dueDate;
-  const capacity = await getSupplierCapacitySignal({
-    supplierId: wo.supplierId,
-    baseUom: product.baseUom,
-    dueDate: jgDueDate,
-    candidateQty: jgQty,
-  }, db);
-
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    // All JG generators serialize on the same WO before reading status/quantity.
+    const [wo]: WoRow[] = await tx.select().from(woDocs).where(eq(woDocs.id, woId)).for("update");
+    if (!wo) throw new ApiError(404, "工单不存在");
+    if (wo.status !== "approved") throw new ApiError(409, `仅已审批工单可生成 PO/JG，当前状态: ${wo.status}`);
+
+    // This initial-generation route cannot restart after any JG exists. Later
+    // batches belong to the separate kitting flow; UNIQUE(woId,batchSeq) stays.
+    const [existingJg] = await tx
+      .select({ id: jgDocs.id, docNo: jgDocs.docNo })
+      .from(jgDocs)
+      .where(eq(jgDocs.woId, woId)).orderBy(jgDocs.id).for("share");
+    if (existingJg) throw new ApiError(409, `该工单已生成加工通知单 ${existingJg.docNo}，不可重复生成`);
+
+    // 供应商：存在且可接新单（黑名单 / 整改暂停皆拒，规则见 rules/supplier-status）
+    const supplierIds = [...new Set([wo.supplierId, ...v.poGroups.map((g) => g.supplierId)])].sort((a, b) => a - b);
+    if (supplierIds.length > 0) {
+      const supRows = await tx.select().from(suppliers).where(inArray(suppliers.id, supplierIds)).orderBy(suppliers.id).for("share");
+      const bySup = new Map(supRows.map((s) => [s.id, s]));
+      for (const sid of supplierIds) {
+        const s = bySup.get(sid);
+        if (!s) throw new ApiError(400, `供应商不存在: #${sid}`);
+        const block = supplierNewOrderBlock(s.status);
+        if (block.blocked) throw new ApiError(400, `供应商${block.label}，禁止新单: ${s.name}（${block.reason}）`);
+      }
+    }
+
+    // 物料：PO 行仅限原料/包材（加工费不进 PO，《00》A4）；行类型由 skuType 推导
+    const materialIds = [...new Set(v.poGroups.flatMap((g) => g.lines.map((l) => l.materialSkuId)))];
+    const lineTypeBySku = new Map<number, "raw" | "packaging">();
+    if (materialIds.length > 0) {
+      const matRows = await tx.select().from(skus).where(inArray(skus.id, materialIds)).orderBy(skus.id).for("share");
+      const byId = new Map(matRows.map((s) => [s.id, s]));
+      for (const mid of materialIds) {
+        const s = byId.get(mid);
+        if (!s || !s.active) throw new ApiError(400, `物料 SKU 不存在或已停用: #${mid}`);
+        if (s.skuType !== "raw" && s.skuType !== "packaging") {
+          throw new ApiError(400, `PO 行仅限原料/包材，物料 ${s.code} 类型为 ${s.skuType}`);
+        }
+        lineTypeBySku.set(mid, s.skuType);
+      }
+    }
+
+    const [product] = await tx
+      .select({ baseUom: skus.baseUom, active: skus.active, skuType: skus.skuType })
+      .from(skus)
+      .where(eq(skus.id, wo.productSkuId)).for("share");
+    if (!product?.active || product.skuType !== "finished") throw new ApiError(400, `成品 SKU 不存在、已停用或类型已变更: #${wo.productSkuId}`);
+    const jgQty = dQty(v.jg?.qty ?? wo.qty);
+    if (dCmp(jgQty, "0") <= 0) throw new ApiError(409, "加工数量必须大于零；请先核对工单数量");
+    if (dCmp(jgQty, wo.qty) > 0) throw new ApiError(409, "加工数量不能超过已审批工单量；请核对工单与生成数量");
+    const jgDueDate = v.jg?.dueDate ?? wo.dueDate;
+    const capacity = await getSupplierCapacitySignal({
+      supplierId: wo.supplierId,
+      baseUom: product.baseUom,
+      dueDate: jgDueDate,
+      candidateQty: jgQty,
+    }, tx);
+
     const pos: PoRow[] = [];
     for (const g of v.poGroups) {
       const docNo = await nextDocNo(tx, "PO");
       const [po]: PoRow[] = await tx
         .insert(poDocs)
-        .values({ docNo, woId, supplierId: g.supplierId, createdBy: user.id })
+        .values({ docNo, woId, supplierId: g.supplierId, createdBy: actor.id })
         .returning();
       await tx.insert(poLines).values(
         g.lines.map((l) => ({
@@ -427,7 +433,7 @@ export async function generateDocs(
         })),
       );
       await writeAudit(tx, {
-        userId: user.id, entity: "po", entityId: po.id, action: "create",
+        userId: actor.id, entity: "po", entityId: po.id, action: "create",
         after: { docNo: po.docNo, woId, supplierId: g.supplierId, lineCount: g.lines.length },
       });
       pos.push(po);
@@ -446,12 +452,12 @@ export async function generateDocs(
         dueDate: jgDueDate,
         feeRateCurrent: wo.feeRatePlan,
         orderType: wo.orderType,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await tx.insert(jgFeeSegments).values({ jgId: jg.id, rate: jg.feeRateCurrent, effectiveFrom: new Date() });
     await writeAudit(tx, {
-      userId: user.id, entity: "jg", entityId: jg.id, action: "create",
+      userId: actor.id, entity: "jg", entityId: jg.id, action: "create",
       after: {
         docNo: jg.docNo,
         woId,

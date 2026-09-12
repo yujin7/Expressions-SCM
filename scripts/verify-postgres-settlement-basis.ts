@@ -10,6 +10,7 @@ import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
 import { checkBatchAfterPoReceipt, createBatchJg } from "@/server/modules/outsource/auto-chain";
+import { generateDocs } from "@/server/modules/outsource/wo";
 import { getReceiptBatchReview } from "@/server/modules/matflow/receipt-batch-status";
 import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
@@ -211,6 +212,34 @@ async function main() {
       return { wo, po };
     };
     const sameBatch = await batchSource();
+    const initialInput = { poGroups: [{ supplierId: sup.id, lines: [{ materialSkuId: material.id, qty: "10", price: "2" }] }] };
+    const initial = await batchSource();
+    const sameInitial = await race(tx => generateDocs(pmc, initial.wo.id, initialInput, tx), () => generateDocs(pmc, initial.wo.id, initialInput, other));
+    assert(!sameInitial.second.ok); assert.equal(sameInitial.second.error.status, 409);
+    assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, initial.wo.id))).length, 1);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.woId, initial.wo.id))).length, 2); // one source fixture + one generated PO
+    console.log("PASS initial generation serializes duplicates: one PO set and JG, conflict not 500");
+    const initialFirst = await batchSource();
+    const automaticAfterInitial = await race(tx => generateDocs(pmc, initialFirst.wo.id, {}, tx), () => createBatchJg(pmc, initialFirst.wo.id, other));
+    assert(!automaticAfterInitial.second.ok); assert.equal(automaticAfterInitial.second.error.status, 409);
+    assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, initialFirst.wo.id))).length, 1);
+    console.log("PASS automatic batch waits for initial JG and cannot over-generate");
+    const automaticFirst = await batchSource();
+    const initialAfterAutomatic = await race(tx => createBatchJg(pmc, automaticFirst.wo.id, tx), () => generateDocs(pmc, automaticFirst.wo.id, initialInput, other));
+    assert(!initialAfterAutomatic.second.ok); assert.equal(initialAfterAutomatic.second.error.status, 409);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.woId, automaticFirst.wo.id))).length, 1);
+    console.log("PASS initial generator waits for automatic JG and refuses extra PO creation");
+    const initialPaused = await batchSource();
+    const initialAfterPause = await race(tx => tx.update(s.suppliers).set({ status: "paused" }).where(eq(s.suppliers.id, sup.id)), () => generateDocs(pmc, initialPaused.wo.id, {}, other));
+    assert(!initialAfterPause.second.ok); assert.equal(initialAfterPause.second.error.status, 400);
+    assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, initialPaused.wo.id))).length, 0);
+    await db.update(s.suppliers).set({ status: "qualified" }).where(eq(s.suppliers.id, sup.id));
+    console.log("PASS initial generator waits for factory suspension even with no PO group");
+    const initialClosed = await batchSource();
+    const initialAfterClose = await race(tx => tx.update(s.woDocs).set({ status: "closed" }).where(eq(s.woDocs.id, initialClosed.wo.id)), () => generateDocs(pmc, initialClosed.wo.id, initialInput, other));
+    assert(!initialAfterClose.second.ok); assert.equal(initialAfterClose.second.error.status, 409);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.woId, initialClosed.wo.id))).length, 1);
+    console.log("PASS initial generator waits for WO closure without creating orphan PO drafts");
     const batchRace = await race(tx => createBatchJg(pmc, sameBatch.wo.id, tx), () => createBatchJg(pmc, sameBatch.wo.id, other));
     assert(!batchRace.second.ok); assert.equal(batchRace.second.error.status, 409);
     assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, sameBatch.wo.id))).length, 1);
@@ -280,7 +309,7 @@ async function main() {
       else await db.delete(s.sysParams).where(eq(s.sysParams.id, autoFlag.id));
     }
     const browserBatch = await batchSource();
-    console.log(JSON.stringify({ passed: true, cases: 23, fixture: key, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    console.log(JSON.stringify({ passed: true, cases: 28, fixture: key, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));
