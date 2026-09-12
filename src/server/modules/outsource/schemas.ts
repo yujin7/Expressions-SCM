@@ -84,12 +84,13 @@ export const confirmDocSchema = z.object({
 
 // ---------- WO 委外工单 ----------
 
+const generationQty = qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数，且必须可精确存储");
 export const createWoSchema = z.object({
   bhId: z.number().int().positive().nullable().optional(),
   productSkuId: z.number().int().positive({ message: "必须选择成品 SKU" }),
-  qty: qtyPositive,
+  qty: generationQty,
   supplierId: z.number().int().positive({ message: "必须选择加工厂" }),
-  feeRatePlan: pricePositive,
+  feeRatePlan: pricePositive.refine(s => /^\d{1,12}(\.\d{1,2})?$/.test(s), "加工费最多12位整数、2位小数，且必须可精确存储"),
   dueDate: dateStr.nullable().optional(),
   orderType: orderType.optional(),
   remark: z.string().trim().max(500).optional(),
@@ -97,7 +98,6 @@ export const createWoSchema = z.object({
 export type CreateWoInput = z.infer<typeof createWoSchema>;
 
 /** WO 审批通过后一键生成 0..n 张 PO + 恰 1 张 JG */
-const generationQty = qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数，且必须可精确存储");
 const generationPrice = priceNonNegative.refine(s => /^\d{1,12}(\.\d{1,2})?$/.test(s), "单价最多12位整数、2位小数，且必须可精确存储");
 export const generateDocsSchema = z.object({
   poGroups: z

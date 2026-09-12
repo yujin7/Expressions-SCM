@@ -10,7 +10,7 @@ import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
 import { checkBatchAfterPoReceipt, createBatchJg } from "@/server/modules/outsource/auto-chain";
-import { generateDocs } from "@/server/modules/outsource/wo";
+import { approveWo, createWo, generateDocs, submitWo } from "@/server/modules/outsource/wo";
 import { getReceiptBatchReview } from "@/server/modules/matflow/receipt-batch-status";
 import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
@@ -308,8 +308,49 @@ async function main() {
       if (originalFlag) await db.update(s.sysParams).set({ value: originalFlag.value }).where(eq(s.sysParams.id, autoFlag.id));
       else await db.delete(s.sysParams).where(eq(s.sysParams.id, autoFlag.id));
     }
+    await db.update(s.boms).set({ status: "active" }).where(eq(s.boms.id, bom.id));
+    await db.insert(s.bomLines).values({ bomId: bom.id, materialSkuId: material.id, qtyPer: "1" });
+    await db.insert(s.approvalConfigs).values({ docType: "wo", approverRole: "pmc" }).onConflictDoNothing();
+    const upstreamInput = { productSkuId: product.id, supplierId: sup.id, qty: "3.0001", feeRatePlan: "1.25" };
+    const upPaused = await race(tx => tx.update(s.suppliers).set({ status: "paused" }).where(eq(s.suppliers.id, sup.id)), () => createWo(pmc, upstreamInput, other));
+    assert(!upPaused.second.ok); assert.equal(upPaused.second.error.status, 400);
+    await db.update(s.suppliers).set({ status: "qualified" }).where(eq(s.suppliers.id, sup.id));
+    console.log("PASS WO creation waits for factory suspension and rejects without a draft");
+    const upProduct = await race(tx => tx.update(s.skus).set({ active: false }).where(eq(s.skus.id, product.id)), () => createWo(pmc, upstreamInput, other));
+    assert(!upProduct.second.ok); assert.equal(upProduct.second.error.status, 400);
+    await db.update(s.skus).set({ active: true }).where(eq(s.skus.id, product.id));
+    console.log("PASS WO creation waits for product disabling and rechecks current eligibility");
+    const upBom = await race(tx => tx.update(s.boms).set({ status: "retired" }).where(eq(s.boms.id, bom.id)), () => createWo(pmc, upstreamInput, other));
+    assert(!upBom.second.ok); assert.equal(upBom.second.error.status, 404);
+    await db.update(s.boms).set({ status: "active" }).where(eq(s.boms.id, bom.id));
+    console.log("PASS WO creation waits for BOM retirement instead of binding stale active status");
+    const upstreamActor = await actor(["pmc"]);
+    const upRole = await race(tx => tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, upstreamActor.id)), () => createWo(upstreamActor, upstreamInput, other));
+    assert(!upRole.second.ok); assert.equal(upRole.second.error.status, 403);
+    console.log("PASS WO creation waits for PMC revocation and does not trust stale caller role");
+    const upWo = await createWo(pmc, upstreamInput, db);
+    const upSubmit = await race(tx => submitWo(pmc, upWo.id, upWo.version, tx), () => submitWo(pmc, upWo.id, upWo.version, other));
+    assert(!upSubmit.second.ok); assert.equal(upSubmit.second.error.status, 409);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "wo"), eq(s.auditLogs.entityId, upWo.id), eq(s.auditLogs.action, "submit")))).length, 1);
+    assert.equal((await db.select().from(s.woDocs).where(eq(s.woDocs.id, upWo.id)))[0].version, upWo.version + 1);
+    console.log("PASS simultaneous WO submits serialize to one version increment and one audit");
+    const disabledOwner = await actor(["pmc"]), disabledWo = await createWo(disabledOwner, upstreamInput, db);
+    const upDisabled = await race(tx => tx.update(s.users).set({ active: false }).where(eq(s.users.id, disabledOwner.id)), () => submitWo(disabledOwner, disabledWo.id, disabledWo.version, other));
+    assert(!upDisabled.second.ok); assert.equal(upDisabled.second.error.status, 403);
+    assert.equal((await db.select().from(s.woDocs).where(eq(s.woDocs.id, disabledWo.id)))[0].status, "draft");
+    console.log("PASS WO submission waits for account disabling and leaves the draft unchanged");
+    const upChecker = await actor(["pmc"]);
+    const upRevokedApproval = await race(tx => tx.update(s.users).set({ isApprover: false }).where(eq(s.users.id, upChecker.id)), () => approveWo(upChecker, upWo.id, { action: "approve", version: upSubmit.first.version }, other));
+    assert(!upRevokedApproval.second.ok); assert.equal(upRevokedApproval.second.error.status, 403);
+    await db.update(s.users).set({ isApprover: true }).where(eq(s.users.id, upChecker.id));
+    console.log("PASS WO approval waits for approver revocation and leaves pending status");
+    const upApprove = await race(tx => approveWo(upChecker, upWo.id, { action: "approve", version: upSubmit.first.version }, tx), () => approveWo(upChecker, upWo.id, { action: "approve", version: upSubmit.first.version }, other));
+    assert(upApprove.second.ok); assert.equal(upApprove.second.value.idempotent, true);
+    assert.equal((await db.select().from(s.woLines).where(eq(s.woLines.woId, upWo.id))).length, 1);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "wo"), eq(s.auditLogs.entityId, upWo.id), eq(s.auditLogs.action, "snapshot")))).length, 1);
+    console.log("PASS simultaneous WO approval returns the committed replay with exactly one snapshot");
     const browserBatch = await batchSource();
-    console.log(JSON.stringify({ passed: true, cases: 28, fixture: key, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    console.log(JSON.stringify({ passed: true, cases: 36, fixture: key, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));
