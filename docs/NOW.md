@@ -18,7 +18,7 @@
 
 | 层 | 可核验状态 | 证据/注意 |
 |---|---|---|
-| 本工作分支 | `agent/scm-inbound-material-review-20260913`；工作树`worktrees/material-source-20260913` | 基于待合并[PR55](https://github.com/yujin7/Expressions-SCM/pull/55)，本轮另开依赖PR，不自动合并进功能分支。PR55已启用保护检查后自动合并；09-13运行34716523492因GitHub账户付款/额度问题未启动任何步骤，须账户所有者处理，不绕过保护。PR54已合并 |
+| 本工作分支 | `agent/scm-inbound-material-review-20260913`；工作树`worktrees/material-source-20260913` | 已推送[PR56](https://github.com/yujin7/Expressions-SCM/pull/56)，base为待合并[PR55](https://github.com/yujin7/Expressions-SCM/pull/55)分支；未启用自动合并，待55合并后重接main再验。PR55已启用保护检查后自动合并；09-13运行34716523492因GitHub账户付款/额度问题未启动任何步骤，须账户所有者处理，不绕过保护。PR54已合并 |
 | 最新已验应用 | `51202903273ef87ac1adf83c070eb25676c5f9fc`；READY 9/9，717文件/6708项，HTTP34/34零跳过 | [入库物料验收](engineering/入库物料估算与复核入口验收-2026-09-13.md)；09-12 20:38:20Z（上海09-13）门回执，起止干净同SHA。后续文档不冒称另一个SHA重跑全门 |
 | 独立测试运行 | 3458精确冻结`51202903`完成全门；仓管登录→类别筛选→依据弹窗→准确JG详情，手机可读；66迁移，真实PG13/13含实际入库触发与人工关闭竞争 | 浏览器、3458进程及隔离PG核对归属后停止，库/证据/冻结包保留，非生产验收 |
 | 正式运行 | 最近留档：3100健康、61/61零漂移；镜像`sha256:9ec914e49423cd4c61b546e70fccaeb6baa081af8df0ef0bf99cb9f7a338bbf8`；此次PC验收未刷新正式运行探针 | 容器`af36cd6581f6…`，启动2026-09-11T02:43:18.62257297Z；与候选不同，**未部署上述修复** |
