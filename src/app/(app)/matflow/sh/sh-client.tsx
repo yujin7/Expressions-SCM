@@ -221,6 +221,7 @@ export default function ShClient() {
   const { message } = App.useApp();
   const me = useMe();
   const canWrite = hasAnyRole(me, "warehouse");
+  const canReadQcOutcome = hasAnyRole(me, "quality", "warehouse", "purchasing", "ops");
   const canApprove =
     me != null && (me.roles.includes("admin") || (me.isApprover && me.roles.includes("warehouse")));
 
@@ -1109,7 +1110,9 @@ export default function ShClient() {
                   {detail.qc.conclusion ? `｜结论：${detail.qc.conclusion}` : ""}
                 </Typography.Text>
                 {/* W2 审计 3：不合格量必须有去向（质量案件 / 退货草稿），否则它只是报表里的一个比率 */}
-                <QcOutcomePanel shId={detail.id} canWrite={canWrite} onDone={() => void loadDetail()} />
+                {canReadQcOutcome ? <QcOutcomePanel shId={detail.id} canWrite={canWrite} onDone={() => void loadDetail()} />
+                  : detail.qc.lines.some(line => decCmp(line.failQty, "0") > 0 || decCmp(line.concessionQty, "0") > 0)
+                    ? <Alert type="info" showIcon message="本次检验有不合格或让步接收量" description="具体处置记录由质量合规、仓管、采购或运营角色查看；当前角色可继续核对入库及建批结果。" /> : null}
               </div>
             ) : detail.status === "approved" && canWrite ? (
               <div style={{ marginBottom: 24 }}>

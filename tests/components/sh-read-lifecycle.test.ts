@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import ShClient from "@/app/(app)/matflow/sh/sh-client";
 
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
-  q: "", from: "", to: "", detailId: null as number | null, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
+  q: "", from: "", to: "", roles: ["warehouse"], detailId: null as number | null, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
 vi.mock("antd", () => ({ App: { useApp: () => ({ message: h.message }) }, Alert: "alert", Badge: "badge", Tag: "tag", Button: "button", Modal: "modal", Space: "space", Table: "table", Tabs: "tabs", Popconfirm: "confirm", Select: "select", InputNumber: "number", DatePicker: "date", Radio: { Group: "radio" },
   Input: Object.assign("input", { TextArea: "textarea" }), Descriptions: Object.assign("descriptions", { Item: "item" }), Typography: { Title: "title", Paragraph: "paragraph", Link: "a", Text: "text" } }));
 vi.mock("@ant-design/icons", () => ({ PlusOutlined: "plus", ReloadOutlined: "reload", DeleteOutlined: "delete" }));
@@ -16,7 +16,8 @@ vi.mock("@/components/ChainStrip", () => ({ default: "chain" }));
 vi.mock("@/components/DocStatusTag", () => ({ default: "status" }));
 vi.mock("@/components/ApprovalTimeline", () => ({ default: "timeline" }));
 vi.mock("@/components/ScannerEntry", () => ({ default: "scanner" }));
-vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 1, roles: ["warehouse"], isApprover: true }), hasAnyRole: () => true }));
+vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 1, roles: h.roles, isApprover: true }), hasAnyRole: (_me: unknown, ...roles: string[]) => h.roles.includes("admin") || roles.some(role => h.roles.includes(role)) }));
+vi.mock("@/app/(app)/matflow/sh/qc-outcome-panel", () => ({ default: "qc-outcome" }));
 vi.mock("@/components/useDocumentTarget", () => ({ useDocumentTarget: () => ({ id: h.detailId, setId: vi.fn(), present: h.detailId !== null }) }));
 vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: h.q, status: "", from: h.from, to: h.to }, page: 1, pageSize: 20, tableSize: "small", paginationProps: (v: unknown) => v,
   setFilter: (patch: { from?: string; to?: string }) => { if (patch.from !== undefined) h.from = patch.from; if (patch.to !== undefined) h.to = patch.to; } }) }));
@@ -44,8 +45,18 @@ const lines = () => nodes(create()).find(n => n.type === "table")?.props;
 function open(kind = "po") { const button = nodes(props("toolbar").primaryActions as ReactNode).find(n => n.props.children === "新建收货单")!; (button.props.onClick as () => void)(); render();
   (nodes(create()).find(n => n.type === "radio")!.props.onChange as (e: unknown) => void)({ target: { value: kind } }); render(); }
 function select(id: number) { const p = nodes(create()).find(n => n.props.placeholder === "选择来源单据")!.props; (p.onChange as (v: number) => void)(id); render(); }
-beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.from = ""; h.to = ""; h.detailId = null; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
+beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.from = ""; h.to = ""; h.roles = ["warehouse"]; h.detailId = null; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it.each(["pmc", "finance", "warehouse", "quality", "purchasing", "ops", "admin"])("%s only mounts quality-disposition reads when authorized, keeping failed quantities visible", async role => {
+  h.roles = [role]; h.detailId = 181;
+  fetchMock.mockImplementation(async url => String(url).endsWith("/181") ? Response.json({ id: 181, docNo: "SH-181", status: "completed", sourceType: "po", sourceId: 9, version: 3, lines: [], inbound: true, approvals: [],
+    qc: { id: 7, createdAt: "2026-09-13T00:00:00Z", lines: [{ id: 1, shLineId: 1, passQty: "0", failQty: "1", concessionQty: "0" }] }, batchReview: null }) : Response.json({ rows: [], total: 0 }));
+  render(); await flush();
+  const allowed = !["pmc", "finance"].includes(role);
+  expect(nodes(render()).some(n => n.type === "qc-outcome")).toBe(allowed);
+  if (!allowed) expect(JSON.stringify(render())).toContain("本次检验有不合格或让步接收量");
+});
 
 it("list withdraws obsolete rows before effects and ignores a late result", async () => {
   const old = Promise.withResolvers<Response>(); fetchMock.mockResolvedValueOnce(list(1)).mockReturnValueOnce(old.promise).mockResolvedValueOnce(list(3));
