@@ -63,7 +63,33 @@ const payload = { rows: [], data: [], total: 2, items: [], cycles: [{ id: 1 }], 
   assignableRoles: [], importedAt: "2026-09-11", marker: "current" };
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 
-it("keeps the audited read migration covered, not an empty source scan", () => { expect(consumers.length).toBeGreaterThanOrEqual(60); });
+// Auto-chain now delegates cancellation + timeout to the shared document read lane.
+// Its actual component lifecycle is exercised in auto-chain-experience.test.ts (not this VM callback harness).
+const migratedAutoChain = readFileSync("src/app/(app)/outsource/auto-chain/auto-chain-client.tsx", "utf8");
+function usesAutoChainReadLane(source: string): boolean {
+  const ast = ts.createSourceFile("consumer.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === "useDocumentRead"
+      && node.arguments[0] && ts.isStringLiteral(node.arguments[0])
+      && node.arguments[0].text === "/api/outsource/auto-chain/preview") found = true;
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  return found;
+}
+it("keeps the audited read migration covered, not an empty source scan", () => {
+  expect(usesAutoChainReadLane(migratedAutoChain)).toBe(true);
+  expect(consumers.length + Number(usesAutoChainReadLane(migratedAutoChain))).toBeGreaterThanOrEqual(60);
+});
+it("does not credit a comment, disabled hook or raw fetch as a migrated read lane", () => {
+  for (const source of [
+    '// useDocumentRead<Data>("/api/outsource/auto-chain/preview")',
+    'useDocumentRead<Data>(null)',
+    'fetchJson<Data>("/api/outsource/auto-chain/preview")',
+    'useDocumentRead<Data>("/api/outsource/auto-chain/other")',
+  ]) expect(usesAutoChainReadLane(source)).toBe(false);
+});
 it.each(consumers)("$label ignores stale success/error/finally and cancels on unmount", async consumer => {
   for (const failure of [false, true]) {
     const f = fixture(consumer);
