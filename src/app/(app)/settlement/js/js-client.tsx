@@ -906,12 +906,16 @@ export default function JsClient() {
               ? "核对逐物料、收货数量和金额后，由PMC填写说明更新草稿；手工调整保持原值，不直接过账。核对后来源再次变化会拒绝更新。"
               : basis.status === "pending" ? "待审批单须先由合格审批人驳回，再由PMC核对并更新草稿。不要按旧依据批准。"
                 : "历史结算已冻结，仅供对照；退料只更新实物库存，金额差异请交财务处理，不自动重算已结算金额。"} />
-          <Table size="small" pagination={false} rowKey="key" scroll={{ x: 520 }}
-            columns={[{ title: "指标", dataIndex: "label" }, { title: "已保存", dataIndex: "saved", align: "right" }, { title: "当前依据", dataIndex: "current", align: "right" }]}
+          <Table size="small" pagination={false} rowKey="key" tableLayout="fixed" aria-label="结算依据汇总对照"
+            columns={[{ title: "指标", dataIndex: "label", width: "40%" },
+              { title: "已保存", dataIndex: "saved", width: "30%", align: "right", render: (value: string) => <span style={{ overflowWrap: "anywhere" }}>{value}</span> },
+              { title: "当前依据", dataIndex: "current", width: "30%", align: "right", render: (value: string) => <span style={{ overflowWrap: "anywhere" }}>{value}</span> }]}
             dataSource={([
               ["goodQty", "合格数"], ["concessionQty", "让步数"], ["spareQty", "备品数"], ["feePayable", "应付加工费"], ["concessionPrice", "让步单价"],
               ["deductionTotal", "扣款合计"], ["manualAdj", "手工调整（保留）"], ["settleAmount", "结算金额"],
-            ] as const).map(([key, label]) => ({ key, label, saved: basis.saved[key], current: basis.current[key] ?? "—" }))} />
+            ] as const).map(([key, label]) => ({ key, label,
+              saved: key.endsWith("Qty") ? formatQty(basis.saved[key]) : basis.saved[key],
+              current: key.endsWith("Qty") ? formatQty(basis.current[key]) : basis.current[key] ?? "—" }))} />
           <Typography.Title level={5}>已保存的逐物料依据</Typography.Title>
           <JsLinesTable lines={basis.saved.lines} showPreviewCols={false} />
           <Typography.Title level={5}>当前逐物料依据（尚未写入）</Typography.Title>
