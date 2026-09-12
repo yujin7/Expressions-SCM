@@ -6,6 +6,7 @@ import {
 import { dAdd, dCmp, dDiv, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import { log } from "@/server/core/logger";
 import { registerBatchesFromReceipt, requireBatchForExpirySkus } from "@/server/modules/inventory/batch-trace";
 import {
   expandOutboundLinesForBatchPosting,
@@ -343,7 +344,7 @@ export async function confirmInbound(
   user: SessionUser,
   shId: number,
   dbArg?: AnyDb,
-): Promise<{ status: string }> {
+): Promise<{ status: string; materialReview?: "checked" | "pending" }> {
   requireAnyRole(user, "warehouse");
   const db = await resolveDb(dbArg);
   try {
@@ -411,8 +412,15 @@ export async function confirmInbound(
       if (r?.sourceType === "jg" && r.sourceId != null) {
         try {
           const { suggestLeftoverAfterInbound } = await import("@/server/modules/outsource/leftover");
-          await suggestLeftoverAfterInbound(user, r.sourceId, dbArg);
-        } catch { /* 提示失败不阻断入库 */ }
+          await suggestLeftoverAfterInbound(user, r.sourceId, dbArg, shId);
+          return { status: r.status, materialReview: "checked" as const };
+        } catch {
+          // Stock is already committed. Report the separate unfinished step, not a false
+          // inbound failure that encourages another posting attempt. GET derives pending
+          // from the completed receipt and absence of a successful audit acknowledgement.
+          log({ level: "warn", msg: "入库已完成，物料核对计算待恢复", shId, jgId: r.sourceId });
+          return { status: r.status, materialReview: "pending" as const };
+        }
       }
       return { status: r.status };
     });

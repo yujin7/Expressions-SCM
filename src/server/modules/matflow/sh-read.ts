@@ -1,5 +1,6 @@
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
+  auditLogs,
   jgDocs,
   poDocs,
   qcLines,
@@ -96,23 +97,42 @@ export async function getSh(id: number, dbArg?: AnyDb) {
       }
     : null;
 
+  const [reviewRun] = doc.status === "completed" && doc.sourceType === "jg"
+    ? await db.select({ checkedAt: auditLogs.createdAt, result: auditLogs.after }).from(auditLogs)
+      .where(and(eq(auditLogs.entity, "sh"), eq(auditLogs.entityId, id), eq(auditLogs.action, "material_review_checked"),
+        sql`${auditLogs.after}->>'jgId' = ${String(doc.sourceId)}`))
+      .orderBy(desc(auditLogs.id)).limit(1)
+    : [];
+  const result = reviewRun?.result as { reviewItemId?: number; basisStatus?: string } | undefined;
+  const materialReview = doc.status === "completed" && doc.sourceType === "jg" ? {
+    checkedAt: reviewRun?.checkedAt ?? null,
+    reviewItemId: Number.isSafeInteger(result?.reviewItemId) && result!.reviewItemId! > 0 ? result!.reviewItemId : null,
+    basisStatus: ["unknown", "needs_review", "no_difference"].includes(result?.basisStatus ?? "") ? result!.basisStatus : null,
+  } : null;
+
   return {
     ...doc,
     sourceDocNo,
     lines,
     qc,
     inbound: doc.status === "completed",
+    materialReview,
     approvals: await loadApprovalHistory(db, "sh", id),
   };
 }
 
 export async function listShs(
   q: string,
-  opts: { status?: string; sourceType?: string; sourceId?: number; from?: string; to?: string; page: number; pageSize: number },
+  opts: { status?: string; sourceType?: string; sourceId?: number; materialReviewPending?: boolean; from?: string; to?: string; page: number; pageSize: number },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
   const conds = [];
+  const reviewPending = sql<boolean>`${shDocs.status}='completed' and ${shDocs.sourceType}='jg' and not exists (
+    select 1 from ${auditLogs} where ${auditLogs.entity}='sh' and ${auditLogs.entityId}=${shDocs.id}
+      and ${auditLogs.action}='material_review_checked' and ${auditLogs.after}->>'jgId'=${shDocs.sourceId}::text
+  )`;
+  if (opts.materialReviewPending) conds.push(reviewPending);
   if (q) conds.push(or(sql`${shDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("sh_lines", "sh_id", shDocs.id, q)));
   if (opts.status) conds.push(eq(shDocs.status, opts.status as DocStatus));
   // 制单时间窗（上海业务日，含首尾）：全链漏斗「到货」级按同一口径回链到本列表
@@ -145,6 +165,7 @@ export async function listShs(
         lineCount: sql<number>`coalesce(${lineAgg.lineCount}, 0)`,
         hasQc: sql<boolean>`${qcAgg.qcId} is not null`,
         inbound: sql<boolean>`${shDocs.status} = 'completed'`,
+        materialReviewPending: reviewPending,
         createdByName: users.name,
         createdAt: shDocs.createdAt,
       })

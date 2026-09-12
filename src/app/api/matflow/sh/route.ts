@@ -3,6 +3,7 @@ import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/mod
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { createSh } from "@/server/modules/matflow/sh";
 import { listShs } from "@/server/modules/matflow/sh-read";
+import { optionalIntegerQuery } from "@/server/core/query-number";
 
 export async function GET(req: NextRequest) {
   try {
@@ -14,6 +15,7 @@ export async function GET(req: NextRequest) {
         status: searchParams.get("status") ?? undefined,
         sourceType: searchParams.get("sourceType") ?? undefined,
         sourceId,
+        materialReviewPending: optionalIntegerQuery(searchParams, "materialReviewPending", { label: "物料核对待计算筛选", min: 1, max: 1 }) === 1,
         // 制单时间窗（全链漏斗回链）
         from: searchParams.get("from") ?? undefined,
         to: searchParams.get("to") ?? undefined,
