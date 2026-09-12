@@ -160,7 +160,7 @@ export const ROUTE_REGISTRY = {
   report_npd: { path: "/npd?tab=templates", label: "NPD 节点模板", group: "npd", scopedMode: "public", keywords: "npd jiedian node template 节点模板" },
 
   /* ── 财务结算 ── */
-  settlement_js: { path: "/settlement/js", label: "结算单", roles: ["finance", "purchasing"], group: "finance", scopedMode: "denied" },
+  settlement_js: { path: "/settlement/js", label: "结算单", roles: ["finance", "purchasing", "pmc"], group: "finance", scopedMode: "denied" },
   report_margin: { path: "/report/margin", label: "毛利视角", group: "finance", scopedMode: "denied" },
   // 2026-09-04：API（service 内 requireAnyRole）与客户端 hasAnyRole 都放行 采购/PMC/财务，注册表只写 finance 会让采购/PMC 在菜单里找不到这页
   report_settlement_summary: { path: "/report/settlement-summary", label: "结算汇总表", roles: ["purchasing", "pmc", "finance"], group: "finance", scopedMode: "denied" },

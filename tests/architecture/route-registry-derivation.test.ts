@@ -472,11 +472,6 @@ const LEGACY_MENU: LegacyNode[] = [
 ];
 
 const LEGACY_MENU_ROLES: Record<string, string[]> = {
-  "/outsource/price-list": [
-    "purchasing",
-    "pmc",
-    "finance"
-  ],
   "/report/process-mining": [
     "pmc",
     "finance"
@@ -520,6 +515,11 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
   "/outsource/auto-chain": [
     "pmc"
   ],
+  "/outsource/price-list": [
+    "purchasing",
+    "pmc",
+    "finance"
+  ],
   "/report/price-compare": [
     "purchasing",
     "pmc",
@@ -542,7 +542,8 @@ const LEGACY_MENU_ROLES: Record<string, string[]> = {
   ],
   "/settlement/js": [
     "finance",
-    "purchasing"
+    "purchasing",
+    "pmc"
   ],
   "/report/settlement-summary": [
     "purchasing",

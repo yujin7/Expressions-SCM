@@ -10,7 +10,7 @@ import { getDbAsync } from "@/db";
 import type { AnyDb } from "@/server/docflow/doc-no";
 import { INBOX_DOC_TYPE_LABELS, INBOX_PAGE_HREFS } from "./service";
 import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
-import { canReadInboxDestination } from "./read-access";
+import { loadDestinationReader } from "./read-access";
 
 /**
  * 全局搜索（只读聚合）：SKU（编码/名称/拼音）、单据号（前缀匹配）、
@@ -133,7 +133,7 @@ export async function searchAll(qRaw: string, dbArg?: AnyDb, user?: BhReadUser):
   const contains = `%${escapeLike(q)}%`;
   const prefix = `${escapeLike(q)}%`;
   // Internal tests/background callers may omit actor; HTTP always supplies the session.
-  const mayNavigate = (path: string) => !user || canReadInboxDestination(path, user);
+  const mayNavigate = user ? await loadDestinationReader(db, user) : () => true;
 
   const [directSkuRows, directSupplierRows, directNpdRows, ...docRows] = await Promise.all([
     db

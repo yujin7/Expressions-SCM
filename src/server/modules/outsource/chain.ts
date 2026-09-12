@@ -6,7 +6,7 @@ import { DOC_STATUS_LABELS } from "@/components/labels";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, resolveDb } from "./common";
 import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
-import { canReadInboxDestination } from "@/server/modules/inbox/read-access";
+import { loadDestinationReader } from "@/server/modules/inbox/read-access";
 import { INBOX_PAGE_HREFS } from "@/server/modules/inbox/service";
 
 /**
@@ -133,9 +133,10 @@ export async function getChain(
   dbArg?: AnyDb,
   user?: BhReadUser,
 ): Promise<{ nodes: ChainNode[] }> {
-  const mayRead = (docType: ChainDocType) => !user || canReadInboxDestination(INBOX_PAGE_HREFS[docType], user);
-  if (!mayRead(input.docType)) throw new ApiError(404, "单据不存在");
   const db = await resolveDb(dbArg);
+  const reader = user ? await loadDestinationReader(db, user) : () => true;
+  const mayRead = (docType: ChainDocType) => reader(INBOX_PAGE_HREFS[docType]);
+  if (!mayRead(input.docType)) throw new ApiError(404, "单据不存在");
   const { woIds, soloPoIds, soloBhId } = await resolveCenter(db, input, user);
   const nodes: ChainNode[] = [];
 

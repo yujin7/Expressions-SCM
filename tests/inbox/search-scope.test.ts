@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { approvalConfigs, bhDocs, bhLines, boms, channels, jgDocs, jsDocs, pcDocs, skus, spus, suppliers, userDataScopes, users, woDocs } from "@/db/schema";
 import { searchAll } from "@/server/modules/inbox/search";
@@ -14,6 +15,10 @@ import { GET as chainRoute } from "@/app/api/outsource/chain/route";
 import { GET as duplicateRoute } from "@/app/api/outsource/duplicate-check/route";
 import { getApprovalBrief } from "@/server/modules/inbox/approval-brief";
 import { getChain } from "@/server/modules/outsource/chain";
+import { GET as jsDetailRoute } from "@/app/api/settlement/js/[id]/route";
+import { GET as jsListRoute } from "@/app/api/settlement/js/route";
+import { GET as jsPreviewRoute } from "@/app/api/settlement/js/preview/route";
+import { canReadSettlement } from "@/server/modules/settlement/read-access";
 
 let routeDb: TestDb;
 let routeActor: SessionUser;
@@ -30,6 +35,8 @@ describe("BH navigation uses the same visibility as its list", () => {
   let ownId: number;
   let skuId: number;
   let woId: number;
+  let jsId: number;
+  let jgId: number;
   beforeAll(async () => {
     ({ db } = await createTestDb()); routeDb = db;
     const [own, peer, foreign] = await db.insert(users).values([
@@ -64,7 +71,9 @@ describe("BH navigation uses the same visibility as its list", () => {
     const [wo] = await db.insert(woDocs).values({ docNo: "WO-SCOPE", bhId: hiddenId, createdBy: foreign.id, productSkuId: sku.id, qty: "1", supplierId: supplier.id, feeRatePlan: "1", bomId: bom.id }).returning();
     woId = wo.id;
     const [jg] = await db.insert(jgDocs).values({ docNo: "JG-SCOPE", createdBy: foreign.id, woId: wo.id, productSkuId: sku.id, qty: "1", supplierId: supplier.id, feeRateCurrent: "1" }).returning();
-    await db.insert(jsDocs).values({ docNo: "JS-SCOPE-PRIVATE", createdBy: foreign.id, status: "pending", jgId: jg.id, goodQty: "1", feePayable: "1", settleAmount: "1" });
+    jgId = jg.id;
+    const [js] = await db.insert(jsDocs).values({ docNo: "JS-SCOPE-PRIVATE", createdBy: foreign.id, status: "pending", jgId: jg.id, goodQty: "1", feePayable: "1", settleAmount: "1" }).returning();
+    jsId = js.id;
   });
   it("search returns own/shared-channel rows before applying its result cap", async () => {
     const result = await searchAll("BH-SCOPE", db, viewer);
@@ -158,5 +167,77 @@ describe("BH navigation uses the same visibility as its list", () => {
     await expect(getChain({ docType: "bh", id: hiddenId }, db, { ...viewer, channelScope: [] })).rejects.toMatchObject({ status: 404 });
     const response = await briefRoute(new NextRequest("http://localhost/api/inbox/approval-brief?docType=bh&docId=nope"));
     expect(response.status).toBe(400);
+  });
+
+  async function jsReads() {
+    const detail = await jsDetailRoute(new NextRequest(`http://localhost/api/settlement/js/${jsId}`), { params: Promise.resolve({ id: String(jsId) }) });
+    const list = await jsListRoute(new NextRequest("http://localhost/api/settlement/js?q=JS-SCOPE"));
+    const chain = await chainRoute(new NextRequest(`http://localhost/api/outsource/chain?docType=js&id=${jsId}`));
+    const search = await searchRoute(new NextRequest("http://localhost/api/search?q=JS-SCOPE"));
+    const inbox = await getInbox(routeActor, db);
+    return { detail, list, chain, search: await search.json(), inbox };
+  }
+
+  it.each(["pmc", "purchasing", "finance"])("%s has consistent settlement detail/list/search/chain access", async role => {
+    routeActor = { ...viewer, roles: [role], channelScope: null, isApprover: true };
+    try {
+      const r = await jsReads();
+      expect([r.detail.status, r.list.status, r.chain.status]).toEqual([200, 200, 200]);
+      expect((await r.detail.json()).docNo).toBe("JS-SCOPE-PRIVATE");
+      expect((await r.list.json()).total).toBe(1);
+      expect((await r.chain.json()).nodes.some((n: { current: boolean; id: number }) => n.current && n.id === jsId)).toBe(true);
+      expect(r.search.groups[0].items[0].label).toBe("JS-SCOPE-PRIVATE");
+    } finally { routeActor = viewer; }
+  });
+
+  it.each(["ops", "warehouse", "quality"])("%s read access follows current checker configuration without granting money", async role => {
+    routeActor = { ...viewer, roles: [role], channelScope: null, isApprover: true };
+    try {
+      const denied = await jsReads();
+      expect([denied.detail.status, denied.list.status, denied.chain.status]).toEqual([403, 403, 404]);
+      expect(denied.search.groups).toEqual([]);
+      expect(denied.inbox.pending.some(i => i.docNo === "JS-SCOPE-PRIVATE")).toBe(false);
+      await db.update(approvalConfigs).set({ approverRole: role }).where(eq(approvalConfigs.docType, "js"));
+      const allowed = await jsReads();
+      expect([allowed.detail.status, allowed.list.status, allowed.chain.status]).toEqual([200, 200, 200]);
+      const detail = await allowed.detail.json();
+      expect(detail.actions).toMatchObject({ approve: false, reject: true });
+      expect(detail).not.toHaveProperty("settleAmount");
+      expect((await allowed.list.json()).rows[0]).not.toHaveProperty("feePayable");
+      expect(allowed.inbox.pending.some(i => i.docNo === "JS-SCOPE-PRIVATE")).toBe(true);
+      expect(allowed.search.groups[0].items[0].label).toBe("JS-SCOPE-PRIVATE");
+      expect((await allowed.chain.json()).nodes.some((n: { current: boolean }) => n.current)).toBe(true);
+      expect((await jsPreviewRoute(new NextRequest(`http://localhost/api/settlement/js/preview?jgId=${jgId}`))).status).toBe(403);
+      routeActor = { ...routeActor, isApprover: false };
+      expect((await jsReads()).detail.status).toBe(403);
+      routeActor = { ...routeActor, isApprover: true, channelScope: [] };
+      const scoped = await jsReads();
+      expect([scoped.detail.status, scoped.list.status, scoped.chain.status]).toEqual([403, 403, 404]);
+      expect(scoped.search.groups).toEqual([]);
+      expect(scoped.inbox.pending.some(i => i.docNo === "JS-SCOPE-PRIVATE")).toBe(false);
+    } finally {
+      await db.update(approvalConfigs).set({ approverRole: "finance" }).where(eq(approvalConfigs.docType, "js"));
+      routeActor = viewer;
+    }
+  });
+
+  it("explicit scope denies even financial readers; admin remains the existing exception", async () => {
+    expect(canReadSettlement({ roles: ["finance"], channelScope: [] }, "finance")).toBe(false);
+    expect(canReadSettlement({ roles: ["admin"], channelScope: [] }, null)).toBe(true);
+    expect(canReadSettlement({ roles: ["warehouse"], isApprover: true }, null)).toBe(false);
+    routeActor = { ...viewer, roles: ["finance"] };
+    try {
+      const r = await jsReads();
+      expect([r.detail.status, r.list.status, r.chain.status]).toEqual([403, 403, 404]);
+      expect((await jsPreviewRoute(new NextRequest(`http://localhost/api/settlement/js/preview?jgId=${jgId}`))).status).toBe(403);
+    } finally { routeActor = viewer; }
+  });
+  it.each(["bad", "0", "-1", "", "1.5"])("invalid JG filter %s must not silently return an unfiltered settlement list", async value => {
+    routeActor = { ...viewer, roles: ["finance"], channelScope: null };
+    try {
+      const r = await jsListRoute(new NextRequest(`http://localhost/api/settlement/js?jgId=${encodeURIComponent(value)}`));
+      expect(r.status).toBe(400);
+      expect(JSON.stringify(await r.json())).not.toContain("JS-SCOPE-PRIVATE");
+    } finally { routeActor = viewer; }
   });
 });

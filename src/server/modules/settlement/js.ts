@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-   approvalConfigs, approvals, pcDocs, flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
+   approvals, pcDocs, flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
   shDocs, shLines, qcLines, skus, suppliers, sysParams,
   tlDocs, tlLines, users, warehouses, woDocs, woLines,
 } from "@/db/schema";
@@ -21,6 +21,16 @@ import { currentPriceListRow } from "@/server/modules/outsource/price-list";
 import { post } from "@/server/posting";
 import { settle, type SettleResult } from "@/server/rules/settlement";
 import { approveJsSchema, closeJgSchema, createJsSchema, submitJsSchema } from "./schemas";
+import { loadSettlementReadPolicy } from "./read-access";
+import { loadUserScopes } from "@/server/core/data-scope";
+
+/** CurrentWriteActor holds the user lock; never trust a caller-supplied unrestricted scope. */
+async function assertSettlementWriteAccess(tx: AnyDb, actor: SessionUser) {
+  const scopes = await loadUserScopes(tx, actor.id);
+  if (!(await loadSettlementReadPolicy(tx, { ...actor, ...scopes })).allowed) {
+    throw new ApiError(403, "当前角色或渠道范围不可处理结算单，请联系管理员核对权限");
+  }
+}
 
 /**
  * 委外结算单 JS（R5 逐物料，《01》§5）——本系统的"出钱口"。
@@ -392,6 +402,7 @@ export async function createJs(user: SessionUser, input: unknown, dbArg?: AnyDb)
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
   const actor = await currentWriteActor(tx, user);
+  await assertSettlementWriteAccess(tx, actor);
   requireAnyRole(actor, "pmc"); // 《01》§6：JS 制单=PMC
   const [jg]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, v.jgId)).for("update");
   if (!jg) throw new ApiError(404, `加工通知单不存在: #${v.jgId}`);
@@ -497,6 +508,7 @@ export async function refreshJsFee(user: SessionUser, id: number, input: unknown
   const { version } = submitJsSchema.parse(input), db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
     const actor = await currentWriteActor(tx, user); requireAnyRole(actor, "pmc");
+    await assertSettlementWriteAccess(tx, actor);
     const doc = await lockedJs(tx, id);
     if (doc.status !== "draft" || doc.version !== version) throw new ApiError(409, "仅当前版本草稿可更新加工费，请刷新核对");
     const preview = await currentFeePreview(tx, doc);
@@ -515,6 +527,7 @@ export async function submitJs(user: SessionUser, id: number, input: unknown, db
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
   const actor = await currentWriteActor(tx, user), doc = await lockedJs(tx, id);
+  await assertSettlementWriteAccess(tx, actor);
   if (doc.createdBy !== actor.id && !actor.roles.includes("pmc") && !actor.roles.includes("admin")) {
     throw new ApiError(403, "仅制单人/PMC/管理员可提交");
   }
@@ -545,8 +558,15 @@ export async function approveJs(
   try {
     return await db.transaction(async (tx: AnyDb) => {
       const actor = await currentWriteActor(tx, user), doc = await lockedJs(tx, id);
+      await assertSettlementWriteAccess(tx, actor);
+      const r = await approveDoc(tx, {
+        docType: "js", table: jsDocs, docId: id, approver: actor,
+        action: v.action, comment: v.comment, expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
       // Configuration alone cannot grant review of amounts hidden by the DTO policy.
       // Rejection remains available to an otherwise qualified checker for recovery.
+      // A new-action refusal rolls back approveDoc too; completed-cycle retries have no financial effects.
       if (v.action === "approve" && !canSeePrices(actor.roles)) {
         throw new ApiError(403, "当前角色不可查看结算金额，不能审批通过；请联系管理员配置具备金额查看权限的审批人，或驳回交PMC核对");
       }
@@ -574,16 +594,6 @@ export async function approveJs(
         }
       }
 
-      const r = await approveDoc(tx, {
-        docType: "js",
-        table: jsDocs,
-        docId: id,
-        approver: actor,
-        action: v.action,
-        comment: v.comment,
-        expectedVersion: v.version,
-      });
-      if (r.idempotent) return r;
       if (v.action === "approve") await assertCurrentFee(tx, doc);
 
       await writeAudit(tx, {
@@ -664,6 +674,8 @@ export function jsTaskActions(user: SessionUser, doc: { status: string; createdB
 
 export async function getJs(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
+  const policy = user ? await loadSettlementReadPolicy(db, user) : null;
+  if (policy && !policy.allowed) throw new ApiError(403, "无权限查看结算单，请核对角色、审批配置及渠道范围");
   const [doc] = await db
     .select({
       id: jsDocs.id,
@@ -721,18 +733,20 @@ export async function getJs(id: number, dbArg?: AnyDb, user?: SessionUser) {
     .orderBy(asc(jsLines.id));
 
   const approvalRows = await loadApprovalHistory(db, "js", id);
-  const [cfg] = user ? await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs).where(eq(approvalConfigs.docType, "js")) : [];
-
   return { ...doc, lines, approvals: approvalRows, deductPriceSource: "price_list_proxy" as const,
-    actions: user ? jsTaskActions(user, doc, cfg?.role ?? null) : undefined };
+    actions: user ? jsTaskActions(user, doc, policy?.approverRole ?? null) : undefined };
 }
 
 export async function listJss(
   q: string,
   opts: { status?: string; jgId?: number; page: number; pageSize: number },
   dbArg?: AnyDb,
+  user?: SessionUser,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
+  if (user && !(await loadSettlementReadPolicy(db, user)).allowed) {
+    throw new ApiError(403, "无权限查看结算单，请核对角色、审批配置及渠道范围");
+  }
   const conds = [];
   if (q) conds.push(sql`${jsDocs.docNo} ILIKE ${"%" + q + "%"}`);
   if (opts.status) conds.push(eq(jsDocs.status, opts.status as DocStatus));

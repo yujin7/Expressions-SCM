@@ -11,6 +11,7 @@ import { STOCK_SUBTYPE_LABELS } from "@/components/labels";
 import { resolveDb } from "@/server/core/svc";
 import { bhReadScope } from "@/server/core/bh-read-scope";
 import { canReadInboxDestination } from "./read-access";
+import { canReadSettlement } from "@/server/modules/settlement/read-access";
 
 /**
  * 我的待办（inbox）：聚合所有等待「我」审批的单据 + 我提交的待审单据。
@@ -302,6 +303,7 @@ export async function getInbox(user: SessionUser, dbArg?: AnyDb): Promise<InboxR
     if (isAdmin || (user.isApprover && user.roles.includes(c.approverRole))) myDomains.add(c.docType);
   }
 
+  const settlementAllowed = canReadSettlement(user, cfgs.find((c: { docType: string }) => c.docType === "js")?.approverRole ?? null);
   const all = (
     await Promise.all([
       collectBh(db, user),
@@ -317,7 +319,7 @@ export async function getInbox(user: SessionUser, dbArg?: AnyDb): Promise<InboxR
       collectStockDocs(db),
       collectPd(db),
     ])
-  ).flat().filter((item) => canReadInboxDestination(INBOX_PAGE_HREFS[item.docType], user));
+  ).flat().filter((item) => canReadInboxDestination(INBOX_PAGE_HREFS[item.docType], user, settlementAllowed));
 
   // 按制单时间显示账龄；createdAt并非提交事件时间，不冒充审批等待时长。
   all.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id - b.id);
