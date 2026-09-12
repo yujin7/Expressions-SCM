@@ -230,6 +230,11 @@ export async function approvePc(
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
+      // A completed cycle may be replayed by a still-qualified checker without reapplying price effects.
+      // New approvals still require visible money; throwing rolls back approveDoc's nested transaction.
+      if (v.action === "approve" && !canSeePrices(actor.roles)) {
+        throw new ApiError(403, "当前角色不可查看改价金额，不能批准；请由具备金额可见权限且符合审批配置的审批人核对，或驳回申请。");
+      }
       await writeAudit(tx, {
         userId: actor.id, entity: "pc", entityId: id, action: v.action,
         after: { comment: v.comment ?? null, target: pc.target },

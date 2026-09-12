@@ -1,6 +1,6 @@
 import { eq, getTableColumns } from "drizzle-orm";
 import { approvalConfigs, jgDocs, pcDocs, users } from "@/db/schema";
-import type { SessionUser } from "@/server/core/dto";
+import { canSeePrices, type SessionUser } from "@/server/core/dto";
 import { dCmp } from "@/server/core/decimal";
 import { assertJgFeeMutable } from "@/server/core/jg-fee-boundary";
 import { approvalRoleError, loadApprovalHistory } from "@/server/docflow/approval";
@@ -15,8 +15,9 @@ export function pcTaskActions(user: SessionUser, doc: { status: string; createdB
     : user.id === doc.createdBy ? "制单人不可自审或自行驳回；请另一位有资格的审批人处理。"
     : qualification?.message ?? null;
   const reject = !reason;
-  return { approve: reject && !effectBlock, reject,
-    reason: reason ?? effectBlock ?? "请核对改价对象和生效范围；提交时将再次检查当前权限、版本及结算冻结状态。" };
+  const moneyBlock = canSeePrices(user.roles) ? null : "当前角色不可查看改价金额，不能批准；可驳回申请，或请管理员核对审批配置与金额可见权限。";
+  return { approve: reject && !effectBlock && !moneyBlock, reject,
+    reason: reason ?? moneyBlock ?? effectBlock ?? "请核对改价对象和生效范围；提交时将再次检查当前权限、版本及结算冻结状态。" };
 }
 
 export async function getPc(id: number, user: SessionUser, dbArg?: AnyDb) {
