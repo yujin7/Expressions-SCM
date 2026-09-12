@@ -11,9 +11,11 @@ export async function GET(req: NextRequest) {
     const woId = Number(searchParams.get("woId")) || undefined;
     const eligible = searchParams.getAll("receiptEligible");
     if (eligible.length > 1 || (eligible.length === 1 && eligible[0] !== "1")) throw new ApiError(400, "receiptEligible 仅支持单个 1");
+    const returns = searchParams.getAll("returnEligible");
+    if (returns.length > 1 || (returns.length === 1 && returns[0] !== "1") || (returns.length && eligible.length)) throw new ApiError(400, "returnEligible 仅支持单个 1，且不能与收料筛选并用");
     return NextResponse.json(
       await listJgs(q, { status: searchParams.get("status") ?? undefined, woId, page, pageSize,
-        receiptEligible: eligible[0] === "1", selectedValues: parseSelectedValues(searchParams) }),
+        receiptEligible: eligible[0] === "1", returnEligible: returns[0] === "1", selectedValues: parseSelectedValues(searchParams) }),
     );
   } catch (e) {
     return errorResponse(e);

@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  approvalConfigs, auditLogs, bomLines, boms, flDocs, flLines, jgDocs, jgFeeSegments,
+  approvalConfigs, approvals, auditLogs, bomLines, boms, flDocs, flLines, jgDocs, jgFeeSegments,
   jsDocs, jsLines, priceLists, qcLines, qcRecords, shDocs, shLines, skus, spus,
   stockBalances, stockLedger, suppliers, sysParams, tlDocs, tlLines, users,
   warehouses, woDocs, woLines,
@@ -9,8 +9,10 @@ import {
 import type { SessionUser } from "@/server/core/dto";
 import { settle } from "@/server/rules/settlement";
 import {
-  approveJs, closeJgReceiving, createJs, getJs, listJss, previewJs, submitJs,
+  approveJs, closeJgReceiving, createJs, getJs, getJsBasis, listJss, previewJs, refreshJsBasis, submitJs,
 } from "@/server/modules/settlement/js";
+import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
+import * as auditModule from "@/server/core/audit";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 /**
@@ -25,6 +27,8 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
   let financeApprover: SessionUser;
   let financePmc: SessionUser; // 双角色：SoD 自审拦截用
   let admin: SessionUser;
+  let warehouseMaker: SessionUser;
+  let warehouseChecker: SessionUser;
 
   let cp = 0; // 成品
   let yl = 0; // 原料 lossCategory=raw(2%)  价 120.00
@@ -175,8 +179,10 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
     financeApprover = await mkUser("财务审批", ["finance"], true);
     financePmc = await mkUser("财务兼PMC", ["pmc", "finance"], true);
     admin = await mkUser("管理员", ["admin"], true);
+    warehouseMaker = await mkUser("退料制单", ["warehouse"], false);
+    warehouseChecker = await mkUser("退料审核", ["warehouse"], true);
 
-    await db.insert(approvalConfigs).values([{ docType: "js", approverRole: "finance" }]);
+    await db.insert(approvalConfigs).values([{ docType: "js", approverRole: "finance" }, { docType: "tl", approverRole: "warehouse" }]);
     await db.insert(sysParams).values([
       { scope: "category:packaging", key: "loss_rate_pct", value: "5" },
       { scope: "category:raw", key: "loss_rate_pct", value: "2" },
@@ -512,6 +518,76 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
     expect(row.jgDocNo).toBeTruthy();
     expect(row.woDocNo).toBeTruthy();
     expect(row.supplierName).toBeTruthy();
+  });
+
+  it("同物料多条WO快照只累计一次发退料，先合并单位用量再计算扣款", async () => {
+    const sc = await mkScenario({ feeRateCurrent: "2", materials: [{ skuId: yl, qtyPer: "1" }, { skuId: yl, qtyPer: "2" }],
+      fl: [{ skuId: yl, qty: "310" }], shs: [{ createdAt: T_SH1, lines: [{ lineType: "normal", actualQty: "100", passQty: "100" }] }] });
+    const preview = await previewJs(sc.jgId, "0", db);
+    expect(preview.lines).toHaveLength(1);
+    expect(preview.lines[0]).toMatchObject({ qtyPer: "3.0000", issuedQty: "310.0000", stdQty: "300.0000",
+      actualLoss: "10.0000", excessLoss: "4.0000", deductAmount: "480.00" });
+  });
+
+  it("收货关闭后真实退料 → 拒绝旧结算 → 驳回/核对/草稿更新 → 财务批准核销，无静默改账", async () => {
+    const sc = await mkScenario({ feeRateCurrent: "2", materials: [{ skuId: bc, qtyPer: "1" }],
+      fl: [{ skuId: bc, qty: "120" }], outsourceBalances: [{ skuId: bc, qty: "20" }],
+      shs: [{ createdAt: T_SH1, lines: [{ lineType: "normal", actualQty: "100", passQty: "100" }] }] });
+    const js = await createJs(pmcCreator, { jgId: sc.jgId, manualAdj: "-5", manualAdjNote: "既有费用调整" }, db);
+    const reviewBefore = await getJsBasis(pmcCreator, js.id, db);
+    expect(reviewBefore.changed).toBe(false);
+    const pending = await submitJs(pmcCreator, js.id, { version: js.version }, db);
+    const tl = await createTl(warehouseMaker, { jgId: sc.jgId, toWarehouseId: whRaw,
+      lines: [{ skuId: bc, qty: "10", reason: "surplus_return" }] }, db);
+    const tlPending = await submitTl(warehouseMaker, tl.id, tl.version, db);
+    await approveTl(warehouseChecker, tl.id, { action: "approve", version: tlPending.version }, db);
+    const saved = await getJs(js.id, db);
+    expect(saved.deductionTotal).toBe("6.75");
+    const approvalsBefore = await db.select().from(approvals);
+    await expect(approveJs(financeApprover, js.id, { action: "approve", version: pending.version }, db)).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(approvals)).toEqual(approvalsBefore);
+    const review = await getJsBasis(financeApprover, js.id, db);
+    expect(review.changed).toBe(true);
+    expect(review.current.deductionTotal).toBe("2.25");
+    await expect(refreshJsBasis(pmcCreator, js.id, { version: pending.version, basisToken: review.basisToken, note: "未驳回" }, db)).rejects.toMatchObject({ status: 409 });
+    await approveJs(financeApprover, js.id, { action: "reject", version: pending.version, comment: "先核对退料依据" }, db);
+    const fresh = await getJsBasis(pmcCreator, js.id, db);
+    const updated = await refreshJsBasis(pmcCreator, js.id, { version: fresh.version, basisToken: fresh.basisToken, note: "已核对退料10" }, db);
+    expect(updated).toMatchObject({ status: "draft", manualAdj: "-5.00", deductionTotal: "2.25", settleAmount: "192.75" });
+    const afterSubmit = await submitJs(pmcCreator, js.id, { version: updated.version }, db);
+    await approveJs(financeApprover, js.id, { action: "approve", version: afterSubmit.version }, db);
+    const written = await db.select().from(stockLedger).where(and(eq(stockLedger.sourceDocType, "js_loss_writeoff"), eq(stockLedger.sourceDocId, js.id)));
+    expect(written).toHaveLength(1); expect(written[0].qtyDelta).toBe("-10.0000");
+    const closed = await getJsBasis(pmcCreator, js.id, db);
+    await expect(refreshJsBasis(pmcCreator, js.id, { version: closed.version, basisToken: closed.basisToken, note: "不可改历史" }, db)).rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(stockBalances).where(and(eq(stockBalances.warehouseId, sc.whWxId), eq(stockBalances.skuId, bc))))[0].qty).toBe("0.0000");
+  });
+
+  it("核对后再次变化、跨单token、权限/审计失败都不能替换草稿依据", async () => {
+    const sc = await mkScenario({ feeRateCurrent: "2", materials: [{ skuId: yl, qtyPer: "1" }], fl: [{ skuId: yl, qty: "20" }] });
+    const js = await createJs(pmcCreator, { jgId: sc.jgId }, db);
+    const before = await getJsBasis(pmcCreator, js.id, db);
+    await db.update(woLines).set({ qtyPer: "2" }).where(eq(woLines.woId, sc.woId));
+    // With no received quantity, qtyPer alone has no monetary/quantity effect; actual issue does.
+    const [fl] = await db.select().from(flDocs).where(eq(flDocs.jgId, sc.jgId));
+    await db.update(flLines).set({ qty: "25" }).where(eq(flLines.flId, fl.id));
+    const input = { version: js.version, basisToken: before.basisToken, note: "核对" };
+    await expect(refreshJsBasis(pmcCreator, js.id, input, db)).rejects.toMatchObject({ status: 409 });
+    await expect(getJsBasis(warehouseChecker, js.id, db)).rejects.toMatchObject({ status: 403 });
+    const current = await getJsBasis(pmcCreator, js.id, db);
+    await expect(refreshJsBasis(financeApprover, js.id, { ...input, basisToken: current.basisToken }, db)).rejects.toMatchObject({ status: 403 });
+    const snapshot = { docs: await db.select().from(jsDocs), lines: await db.select().from(jsLines), audit: await db.select().from(auditLogs) };
+    const failAudit = vi.spyOn(auditModule, "writeAudit").mockRejectedValueOnce(new Error("basis audit unavailable"));
+    try { await expect(refreshJsBasis(pmcCreator, js.id, { ...input, basisToken: current.basisToken }, db)).rejects.toThrow("basis audit unavailable"); }
+    finally { failAudit.mockRestore(); }
+    expect({ docs: await db.select().from(jsDocs), lines: await db.select().from(jsLines), audit: await db.select().from(auditLogs) }).toEqual(snapshot);
+    const otherScenario = await mkScenario({ feeRateCurrent: "2", materials: [{ skuId: yl, qtyPer: "1" }] });
+    const other = await createJs(pmcCreator, { jgId: otherScenario.jgId }, db);
+    await expect(refreshJsBasis(pmcCreator, other.id, { ...input, basisToken: current.basisToken }, db)).rejects.toMatchObject({ status: 409 });
+    const updated = await refreshJsBasis(pmcCreator, js.id, { ...input, basisToken: current.basisToken }, db);
+    await expect(refreshJsBasis(pmcCreator, js.id, { ...input, basisToken: current.basisToken }, db)).rejects.toMatchObject({ status: 409 });
+    expect(updated.version).toBe(js.version + 1);
+    expect((await getJsBasis(pmcCreator, js.id, db)).changed).toBe(false);
   });
 
   it("6) 扣款价代理：无 price_lists 行 → deductPrice=0 + 预览警告 + 口径标识", async () => {

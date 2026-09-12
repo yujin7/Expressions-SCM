@@ -6,6 +6,7 @@ import {
 import { dAdd, dCmp, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import type { DocStatus } from "@/server/docflow/state";
@@ -17,7 +18,7 @@ import {
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import {
   ACTIVE_DOC_STATUSES, completeApprovedDoc, getJgForMatflow, getOutsourceWarehouseOf,
-  requireRealtimeWarehouse,
+  requireRealtimeWarehouse, lockMatflowJg,
 } from "./common-notes";
 import { createFlSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
@@ -143,24 +144,27 @@ export async function approveFl(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
       const [doc]: FlRow[] = await tx.select().from(flDocs).where(eq(flDocs.id, id));
       if (!doc) throw new ApiError(404, "单据不存在");
+      await lockMatflowJg(tx, doc.jgId);
 
       const r = await approveDoc(tx, {
         docType: "fl",
         table: flDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r; // 重试短路：不重复过账（post 自身幂等，双保险）
       await writeAudit(tx, {
-        userId: user.id, entity: "fl", entityId: id, action: v.action,
+        userId: actor.id, entity: "fl", entityId: id, action: v.action,
         after: { comment: v.comment ?? null },
       });
       if (v.action === "reject") return r;
+      await getJgForMatflow(tx, doc.jgId);
 
       const lines: FlLineRow[] = await tx.select().from(flLines).where(eq(flLines.flId, id)).orderBy(flLines.id);
       if (lines.length === 0) throw new ApiError(409, "发料单无行，不可审批过账");
@@ -177,7 +181,7 @@ export async function approveFl(
         const total = dAdd(cum.get(skuId) ?? "0", qty);
         return dCmp(total, gross.get(skuId) ?? "0") > 0;
       });
-      if (overIssue && !user.roles.includes("admin")) {
+      if (overIssue && !actor.roles.includes("admin")) {
         throw new ApiError(403, "超发需管理员审批");
       }
 
@@ -194,7 +198,7 @@ export async function approveFl(
 
       const finalStatus = await completeApprovedDoc(tx, flDocs, id);
       await writeAudit(tx, {
-        userId: user.id, entity: "fl", entityId: id, action: "post_and_complete",
+        userId: actor.id, entity: "fl", entityId: id, action: "post_and_complete",
         after: { via: "approve", overIssue },
       });
       return { status: finalStatus, idempotent: false };

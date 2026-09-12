@@ -118,6 +118,12 @@ interface JsPreview {
   deductPriceSource: "price_list_proxy";
 }
 
+interface JsBasisReview {
+  id: number; docNo: string; version: number; status: string; basisToken: string; changed: boolean;
+  saved: { goodQty: string; concessionQty: string; spareQty: string; feePayable: string; concessionPrice: string; deductionTotal: string; manualAdj: string; settleAmount: string; lines: JsLine[] };
+  current: JsPreview;
+}
+
 interface JgPickRow {
   id: number;
   docNo: string;
@@ -275,6 +281,11 @@ export default function JsClient() {
   const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
   const actionLock = useRef(false);
+  const [basisOpen, setBasisOpen] = useState(false);
+  const [basisNote, setBasisNote] = useState("");
+  const basisRead = useDocumentRead<JsBasisReview>(basisOpen && detailId != null ? `/api/settlement/js/${detailId}/basis` : null);
+  const basis = basisRead.data;
+  useEffect(() => { setBasisOpen(false); setBasisNote(""); }, [detailId]);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
   // 结余（负实际损耗）409 → 短溢确认弹窗
@@ -553,7 +564,10 @@ export default function JsClient() {
 
   // ---- 详情操作按钮 ----
   const drawerActions = detail ? (
-    <Space>
+    <Space wrap>
+      {hasAnyRole(me, "purchasing", "pmc", "finance") ? (
+        <Button disabled={actionLoading} onClick={() => { setBasisNote(""); setBasisOpen(true); }}>核对结算依据</Button>
+      ) : null}
       {detail.actions?.refreshFee ? (
         <Popconfirm title="按当前已批准改价更新此草稿的加工费？"
           description="仅更新加工费与结算合计；收货数量必须一致，物料扣款和手工调整保持不变。"
@@ -866,6 +880,48 @@ export default function JsClient() {
           </div>
         ) : null}
       </DocumentDrawer>
+
+      <Modal title={basis ? `核对结算依据 · ${basis.docNo}` : "核对结算依据"}
+        open={basisOpen} width={1100} destroyOnHidden
+        onCancel={() => { if (!actionLock.current) setBasisOpen(false); }}
+        maskClosable={!actionLoading} keyboard={!actionLoading}
+        footer={<Space wrap>
+          <Button disabled={actionLoading} onClick={basisRead.retry}>重新读取</Button>
+          <Button disabled={actionLoading} onClick={() => setBasisOpen(false)}>关闭</Button>
+          {basis?.status === "draft" && hasAnyRole(me, "pmc") ? <Button type="primary" loading={actionLoading}
+            disabled={!basis.changed || !basisNote.trim() || basisRead.phase !== "success"}
+            onClick={() => {
+              if (!basis || basis.id !== detailId) return;
+              void post("basis", { version: basis.version, basisToken: basis.basisToken, note: basisNote.trim() }, "草稿依据已更新，请核对后重新提交审批")
+                .then(ok => { if (ok) { setBasisOpen(false); setBasisNote(""); } })
+                .catch(e => { message.error((e as Error).message); basisRead.retry(); });
+            }}>按已核对依据更新草稿</Button> : null}
+        </Space>}>
+        {basisRead.phase === "loading" ? <div role="status"><Spin /> 正在读取当前依据…</div> : null}
+        {basisRead.error ? <Alert type="error" showIcon message="结算依据读取失败" description={basisRead.error} /> : null}
+        {basis ? <>
+          <Alert style={{ marginBottom: 12 }} type={basis.changed ? "warning" : "info"} showIcon
+            message={basis.changed ? "当前依据与已保存结算不同" : "当前计算与已保存结算一致"}
+            description={basis.status === "draft"
+              ? "核对逐物料、收货数量和金额后，由PMC填写说明更新草稿；手工调整保持原值，不直接过账。核对后来源再次变化会拒绝更新。"
+              : basis.status === "pending" ? "待审批单须先由合格审批人驳回，再由PMC核对并更新草稿。不要按旧依据批准。"
+                : "历史结算已冻结，仅供对照；退料只更新实物库存，金额差异请交财务处理，不自动重算已结算金额。"} />
+          <Table size="small" pagination={false} rowKey="key" scroll={{ x: 520 }}
+            columns={[{ title: "指标", dataIndex: "label" }, { title: "已保存", dataIndex: "saved", align: "right" }, { title: "当前依据", dataIndex: "current", align: "right" }]}
+            dataSource={([
+              ["goodQty", "合格数"], ["concessionQty", "让步数"], ["spareQty", "备品数"], ["feePayable", "应付加工费"], ["concessionPrice", "让步单价"],
+              ["deductionTotal", "扣款合计"], ["manualAdj", "手工调整（保留）"], ["settleAmount", "结算金额"],
+            ] as const).map(([key, label]) => ({ key, label, saved: basis.saved[key], current: basis.current[key] ?? "—" }))} />
+          <Typography.Title level={5}>已保存的逐物料依据</Typography.Title>
+          <JsLinesTable lines={basis.saved.lines} showPreviewCols={false} />
+          <Typography.Title level={5}>当前逐物料依据（尚未写入）</Typography.Title>
+          <JsLinesTable lines={basis.current.lines} showPreviewCols />
+          {basis.current.warnings.map((warning, i) => <Alert key={i} type="warning" showIcon style={{ marginTop: 8 }} message={warning} />)}
+          {basis.status === "draft" && hasAnyRole(me, "pmc") ? <Input.TextArea aria-label="依据更新说明" rows={2} maxLength={500}
+            style={{ marginTop: 12 }} placeholder="依据更新说明（必填，例如已核对退料单及损耗扣款变化）"
+            disabled={actionLoading} value={basisNote} onChange={e => setBasisNote(e.target.value)} /> : null}
+        </> : null}
+      </Modal>
 
       {/* ---- 驳回 Modal ---- */}
       <Modal

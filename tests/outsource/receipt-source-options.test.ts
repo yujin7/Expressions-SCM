@@ -31,6 +31,13 @@ it("PC's unrestricted JG search and exact label lookup reach beyond the old firs
   expect(await listJgs("", { page: 1, pageSize: 50, selectedValues: [jgId] }, db)).toMatchObject({ total: 1, rows: [{ id: jgId }] });
   expect((await listJgs("", { page: 21, pageSize: 50 }, db)).rows).toContainEqual(expect.objectContaining({ id: jgId }));
 });
+it("return sources include completed JG but exclude drafts before paging and exact selection", async () => {
+  const result = await listJgs("", { page: 1, pageSize: 50, returnEligible: true }, db);
+  expect(result.total).toBe(2);
+  expect(result.rows).toEqual(expect.arrayContaining([expect.objectContaining({ id: jgId }), expect.objectContaining({ id: closedJg })]));
+  expect(await listJgs("", { page: 9, pageSize: 1, returnEligible: true, selectedValues: [closedJg] }, db))
+    .toMatchObject({ total: 1, rows: [{ id: closedJg }] });
+});
 it("JG list, detail and capacity share the SKU base unit without fabricating progress", async () => {
   const result = await listJgs("", { page: 1, pageSize: 50, selectedValues: [closedJg] }, db);
   expect(result.rows).toMatchObject([{ id: closedJg, status: "completed", inProduction: false, baseUom: "盒", qty: "10.0000" }]);

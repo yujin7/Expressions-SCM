@@ -266,7 +266,7 @@ export async function getJg(id: number, dbArg?: AnyDb, user?: SessionUser) {
 
 export async function listJgs(
   q: string,
-  opts: { status?: string; woId?: number; page: number; pageSize: number; receiptEligible?: boolean; selectedValues?: SelectedOptionValue[] },
+  opts: { status?: string; woId?: number; page: number; pageSize: number; receiptEligible?: boolean; returnEligible?: boolean; selectedValues?: SelectedOptionValue[] },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
@@ -275,6 +275,7 @@ export async function listJgs(
   if (opts.status) conds.push(eq(jgDocs.status, opts.status as DocStatus));
   if (opts.woId) conds.push(eq(jgDocs.woId, opts.woId));
   if (opts.receiptEligible) conds.push(inArray(jgDocs.status, ["approved", "in_progress"]));
+  if (opts.returnEligible) conds.push(inArray(jgDocs.status, ["approved", "in_progress", "completed", "closed"]));
   const selected = selectedOptionsPredicate(opts.selectedValues, { id: jgDocs.id, text: [jgDocs.docNo] });
   if (selected) conds.push(selected);
   const where = conds.length ? and(...conds) : undefined;
