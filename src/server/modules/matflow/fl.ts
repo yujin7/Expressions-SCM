@@ -1,9 +1,9 @@
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
-   batches, flDocs, flLines, jgDocs, skus, users, warehouses, woLines,
+   approvalConfigs, batches, flDocs, flLines, jgDocs, skus, users, warehouses, woLines,
 } from "@/db/schema";
-import { dAdd, dCmp, dNeg, dQty } from "@/server/core/decimal";
+import { dAdd, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { currentWriteActor } from "@/server/core/current-write-actor";
@@ -18,11 +18,12 @@ import {
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import {
   ACTIVE_DOC_STATUSES, completeApprovedDoc, getJgForMatflow, getOutsourceWarehouseOf,
-  requireRealtimeWarehouse, lockMatflowJg,
+  requireRealtimeWarehouse, lockMatflowJg, matflowSourceBlock,
 } from "./common-notes";
 import { createFlSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
+import { materialExcess, materialTaskActions } from "./task-actions";
 
 /**
  * 发料单 FL（《01》§3/§4）：自有仓 → 委外仓，按 wo_line 预填；
@@ -185,12 +186,8 @@ export async function approveFl(
       // 校验失败整个事务回滚（审批记录一并撤销），管理员重批为新一次审批动作。
       const gross = await grossReqBySku(tx, jg.woId);
       const cum = await issuedCumBySku(tx, doc.jgId, id);
-      const thisBySku = new Map<number, string>();
-      for (const l of lines) thisBySku.set(l.skuId, dAdd(thisBySku.get(l.skuId) ?? "0", l.qty));
-      const overIssue = [...thisBySku.entries()].some(([skuId, qty]) => {
-        const total = dAdd(cum.get(skuId) ?? "0", qty);
-        return dCmp(total, gross.get(skuId) ?? "0") > 0;
-      });
+      const relevantCum = new Map(lines.map(l => [l.skuId, cum.get(l.skuId) ?? "0"]));
+      const overIssue = materialExcess(lines, relevantCum, gross);
       if (overIssue && !actor.roles.includes("admin")) {
         throw new ApiError(403, "超发需管理员审批");
       }
@@ -223,7 +220,7 @@ export async function approveFl(
 
 // ---------- 查询 ----------
 
-export async function getFl(id: number, dbArg?: AnyDb) {
+export async function getFl(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const fromWh = alias(warehouses, "wh_from");
   const toWh = alias(warehouses, "wh_to");
@@ -285,7 +282,16 @@ export async function getFl(id: number, dbArg?: AnyDb) {
 
   const approvalRows = await loadApprovalHistory(db, "fl", id);
 
-  return { ...doc, lines, requirements, approvals: approvalRows };
+  let actions;
+  if (user) {
+    const [cfg] = await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs).where(eq(approvalConfigs.docType, "fl"));
+    const sourceBlock = await matflowSourceBlock(db, doc.jgId, "issue");
+    const relevantCum = new Map(lines.map(l => [l.skuId, cum.get(l.skuId) ?? "0"]));
+    const quantityBlock = !lines.length ? "发料单无明细，请核对单据。"
+      : materialExcess(lines, relevantCum, gross) && !user.roles.includes("admin") ? "本单会超出工单毛需求，超发需管理员审批。" : null;
+    actions = materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock);
+  }
+  return { ...doc, lines, requirements, approvals: approvalRows, actions };
 }
 
 export async function listFls(

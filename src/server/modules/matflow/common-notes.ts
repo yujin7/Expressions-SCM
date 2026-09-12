@@ -56,6 +56,15 @@ export async function lockMatflowJg(db: AnyDb, jgId: number): Promise<void> {
   if (!jg) throw new ApiError(404, `加工通知单不存在: #${jgId}`);
 }
 
+/** Only expected source refusals become hints; infrastructure failures must remain failed reads. */
+export async function matflowSourceBlock(db: AnyDb, jgId: number, operation: "issue" | "return") {
+  try { await getJgForMatflow(db, jgId, operation); return null; }
+  catch (error) {
+    if (error instanceof ApiError && (error.status === 404 || error.status === 409)) return error.message;
+    throw error;
+  }
+}
+
 type WarehouseRow = typeof warehouses.$inferSelect;
 
 /** 该加工厂的委外仓（kind=outsource + supplierId 匹配）；缺失 404（须先建仓） */

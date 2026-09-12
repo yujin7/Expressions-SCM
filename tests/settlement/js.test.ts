@@ -11,7 +11,7 @@ import { settle } from "@/server/rules/settlement";
 import {
   approveJs, closeJgReceiving, createJs, getJs, getJsBasis, listJss, previewJs, refreshJsBasis, submitJs,
 } from "@/server/modules/settlement/js";
-import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
+import { approveTl, createTl, getTl, submitTl } from "@/server/modules/matflow/tl";
 import { listJgs } from "@/server/modules/outsource/jg";
 import * as auditModule from "@/server/core/audit";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -603,6 +603,8 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
     const js = await createJs(pmcCreator, { jgId: sc.jgId }, db);
     const pendingJs = await submitJs(pmcCreator, js.id, { version: js.version }, db);
     await approveJs(financeApprover, js.id, { action: "approve", version: pendingJs.version }, db);
+    expect((await getTl(tl.id, db, warehouseChecker)).actions).toMatchObject({ approve: false, reject: true, reason: expect.stringContaining("结算单") });
+    expect((await getTl(draft.id, db, warehouseMaker)).actions).toMatchObject({ submit: false, approve: false, reject: false });
     expect((await db.select().from(stockBalances).where(and(eq(stockBalances.warehouseId, sc.whWxId), eq(stockBalances.skuId, bc))))[0].qty).toBe("1000.0000");
     const snapshot = async () => ({ docs: await db.select().from(tlDocs), lines: await db.select().from(tlLines),
       ledger: await db.select().from(stockLedger), balances: await db.select().from(stockBalances),

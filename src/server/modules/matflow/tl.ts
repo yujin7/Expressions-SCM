@@ -1,9 +1,9 @@
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
-   batches, flDocs, flLines, jgDocs, skus, tlDocs, tlLines, users, warehouses,
+   approvalConfigs, batches, flDocs, flLines, jgDocs, skus, tlDocs, tlLines, users, warehouses,
 } from "@/db/schema";
-import { dAdd, dCmp, dNeg, dQty } from "@/server/core/decimal";
+import { dAdd, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { currentWriteActor } from "@/server/core/current-write-actor";
@@ -18,11 +18,12 @@ import {
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import {
   ACTIVE_DOC_STATUSES, completeApprovedDoc, getJgForMatflow, getOutsourceWarehouseOf,
-  requireRealtimeWarehouse, lockMatflowJg,
+  requireRealtimeWarehouse, lockMatflowJg, matflowSourceBlock,
 } from "./common-notes";
 import { createTlSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
+import { materialExcess, materialTaskActions } from "./task-actions";
 
 /**
  * 委外退料单 TL（R5「退回量」唯一数据源）：委外仓 → 自有仓。
@@ -152,12 +153,8 @@ export async function approveTl(
       // MVP 守卫：逐物料 累计TL（他单已生效+本单） ≤ 累计FL（已生效）
       const issued = await sumByskuOf(tx, "fl", doc.jgId);
       const returned = await sumByskuOf(tx, "tl", doc.jgId, id);
-      for (const l of lines) returned.set(l.skuId, dAdd(returned.get(l.skuId) ?? "0", l.qty));
-      for (const [skuId, qty] of returned) {
-        if (dCmp(qty, issued.get(skuId) ?? "0") > 0) {
-          throw new ApiError(409, `退料超过累计发料: sku#${skuId}（累计退 ${qty} > 累计发 ${issued.get(skuId) ?? "0"}）`);
-        }
-      }
+      const excess = materialExcess(lines, returned, issued);
+      if (excess) throw new ApiError(409, `退料超过累计发料: sku#${excess.skuId}（累计退 ${excess.qty} > 累计发 ${excess.limit}）`);
 
       // 过账 tl_return：委外仓 −（sourceLineId=行id）/ 自有仓 +（sourceLineId=−行id）
       await post(tx, {
@@ -208,7 +205,7 @@ async function sumByskuOf(
 
 // ---------- 查询 ----------
 
-export async function getTl(id: number, dbArg?: AnyDb) {
+export async function getTl(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const fromWh = alias(warehouses, "wh_from");
   const toWh = alias(warehouses, "wh_to");
@@ -258,7 +255,17 @@ export async function getTl(id: number, dbArg?: AnyDb) {
 
   const approvalRows = await loadApprovalHistory(db, "tl", id);
 
-  return { ...doc, lines, approvals: approvalRows };
+  let actions;
+  if (user) {
+    const [cfg] = await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs).where(eq(approvalConfigs.docType, "tl"));
+    const sourceBlock = await matflowSourceBlock(db, doc.jgId, "return");
+    const [issued, returned] = await Promise.all([sumByskuOf(db, "fl", doc.jgId), sumByskuOf(db, "tl", doc.jgId, id)]);
+    const excess = materialExcess(lines, returned, issued);
+    const quantityBlock = !lines.length ? "退料单无明细，请核对单据。"
+      : excess ? `退料超过累计发料：sku#${excess.skuId}（累计退 ${excess.qty} > 累计发 ${excess.limit}），请核对所属工单。` : null;
+    actions = materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock);
+  }
+  return { ...doc, lines, approvals: approvalRows, actions };
 }
 
 export async function listTls(
