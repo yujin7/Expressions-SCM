@@ -202,6 +202,9 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     expect(r).toMatchObject({ status: "completed", idempotent: false });
     expect(await getBalance(db, yl, whRawId)).toBe("40.0000");
     expect(await getBalance(db, yl, whWxId)).toBe("60.0000");
+    const finalAudit = (await db.select().from(auditLogs).where(eq(auditLogs.entityId, fl2)))
+      .find(row => row.entity === "fl" && row.action === "post_and_complete");
+    expect(finalAudit?.after).toMatchObject({ via: "approve", overIssue: true });
   });
 
   it("4) FL 详情：需求对照（毛需求 vs 累计已发）；列表", async () => {

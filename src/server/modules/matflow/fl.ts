@@ -187,7 +187,7 @@ export async function approveFl(
       const gross = await grossReqBySku(tx, jg.woId);
       const cum = await issuedCumBySku(tx, doc.jgId, id);
       const relevantCum = new Map(lines.map(l => [l.skuId, cum.get(l.skuId) ?? "0"]));
-      const overIssue = materialExcess(lines, relevantCum, gross);
+      const overIssue = Boolean(materialExcess(lines, relevantCum, gross));
       if (overIssue && !actor.roles.includes("admin")) {
         throw new ApiError(403, "超发需管理员审批");
       }
