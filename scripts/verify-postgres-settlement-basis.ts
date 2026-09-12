@@ -8,6 +8,7 @@ import * as s from "@/db/schema";
 import { approveJs, createJs, getJsBasis, refreshJsBasis, submitJs } from "@/server/modules/settlement/js";
 import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
+import { confirmInbound } from "@/server/modules/matflow/sh";
 import { suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
 import type { DB } from "@/db";
@@ -170,7 +171,16 @@ async function main() {
     assert.equal(afterDecision.find(row => row.id === reviewRows[0].id)?.status, "done");
     assert.match(afterDecision.find(row => row.status === "open")?.detail ?? "", /差额 30.0000/);
     console.log("PASS changed estimate waits for human decision and does not overwrite or reopen the decided item");
-    console.log(JSON.stringify({ passed: true, cases: 12, fixture: key, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    const inboundJg = await setup();
+    const [triggerSh] = await db.select().from(s.shDocs).where(and(eq(s.shDocs.sourceType, "jg"), eq(s.shDocs.sourceId, inboundJg.id)));
+    await db.update(s.shDocs).set({ status: "approved" }).where(eq(s.shDocs.id, triggerSh.id));
+    assert.equal((await confirmInbound(maker, triggerSh.id, db)).status, "completed");
+    const [triggeredReview] = await db.select().from(s.reviewItems).where(and(eq(s.reviewItems.category, "material_leftover"), eq(s.reviewItems.refKey, String(inboundJg.id))));
+    assert(triggeredReview); assert.match(triggeredReview.detail ?? "", /差额 20.0000/);
+    assert((await db.select().from(s.stockLedger).where(and(eq(s.stockLedger.sourceDocType, "sh_outsource_in"), eq(s.stockLedger.sourceDocId, triggerSh.id)))).length > 0);
+    console.log("PASS actual SH inbound posts inventory and its committed receipt triggers the material review");
+    console.log(JSON.stringify({ passed: true, cases: 13, fixture: key, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+      inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
