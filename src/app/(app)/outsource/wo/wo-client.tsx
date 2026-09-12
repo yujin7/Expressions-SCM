@@ -10,7 +10,10 @@ import DocumentDrawer from "@/components/DocumentDrawer";
 
 import SearchInput from "@/components/SearchInput";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { hasAnyRole, useMe } from "@/components/useMe";
+import { initialWoPurchaseGroups, isWoGenerationReceipt } from "@/lib/wo-generation";
 import { App, Alert, Button, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
@@ -106,9 +109,9 @@ interface CreateFormValues {
 interface GenerateFormValues {
   poGroups?: {
     supplierId: number;
-    lines?: { materialSkuId: number; qty: number; price: number }[];
+    lines?: { materialSkuId: number; qty: string | number; price: string | number }[];
   }[];
-  jgQty?: number;
+  jgQty?: string | number;
   jgDueDate?: Dayjs;
 }
 
@@ -245,6 +248,7 @@ function WoActions({
 
 function WoInner() {
   const { message, modal } = App.useApp();
+  const canGenerate = hasAnyRole(useMe(), "pmc");
   const [form] = Form.useForm<CreateFormValues>();
   const [genForm] = Form.useForm<GenerateFormValues>();
   const [rows, setRows] = useState<WoRow[]>([]);
@@ -265,6 +269,10 @@ function WoInner() {
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
+  const targetId = useRef(detailId);
+  targetId.current = detailId;
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { setGenOpen(false); }, [detailId]);
   const detailRead = useDocumentRead<WoDetail>(detailId == null ? null : `/api/outsource/wo/${detailId}`);
   const detail = detailRead.data;
@@ -278,6 +286,8 @@ function WoInner() {
 
   const [genOpen, setGenOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const generatingRef = useRef(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
@@ -359,31 +369,31 @@ function WoInner() {
   };
 
   const openGenerate = () => {
-    if (!detail) return;
+    if (!detail || !canGenerate || generatingRef.current || !generatedKnown || existingJgNo) return;
+    setGenerationError(null);
     genForm.resetFields();
     genForm.setFieldsValue({
-      poGroups: [
-        {
-          supplierId: detail.supplierId,
-          lines: detail.lines.map((l) => ({
-            materialSkuId: l.materialSkuId,
-            qty: Number(Number(l.suggestedQty) > 0 ? l.suggestedQty : l.grossReq),
-            price: 0,
-          })),
-        },
-      ],
-      jgQty: Number(detail.qty),
+      poGroups: initialWoPurchaseGroups(detail.supplierId, detail.lines),
+      jgQty: detail.qty,
       jgDueDate: detail.dueDate ? dayjs(detail.dueDate) : undefined,
     });
     setGenOpen(true);
   };
 
   const handleGenerate = async () => {
-    if (!detail) return;
+    if (!detail || !canGenerate || generatingRef.current || generationError) return;
+    const source = { id: detail.id, docNo: detail.docNo };
+    generatingRef.current = true;
+    setGenerating(true);
+    let submitted = false;
     try {
       const values = await genForm.validateFields();
+      if (!mounted.current || targetId.current !== source.id) return;
+      if ((values.poGroups ?? []).some(g => !g?.supplierId || !g.lines?.length)) {
+        message.error("每个 PO 分组必须选择供应商并至少添加一行；不采购时请删除该分组。");
+        return;
+      }
       const groups = (values.poGroups ?? [])
-        .filter((g) => g && g.supplierId != null && (g.lines ?? []).length > 0)
         .map((g) => ({
           supplierId: g.supplierId,
           lines: (g.lines ?? []).map((l) => ({
@@ -392,9 +402,9 @@ function WoInner() {
             price: String(l.price ?? 0),
           })),
         }));
-      setGenerating(true);
-      const res = await postJson<{ pos: { docNo: string }[]; jg: { docNo: string } }>(
-        `/api/outsource/wo/${detail.id}/generate`,
+      submitted = true;
+      const res = await postJson<unknown>(
+        `/api/outsource/wo/${source.id}/generate`,
         {
           poGroups: groups,
           jg: {
@@ -403,22 +413,28 @@ function WoInner() {
           },
         },
       );
+      if (!isWoGenerationReceipt(res)) throw new Error("生成回执不完整，请核对来源工单下的已有单据");
+      if (!mounted.current) return;
       setGenOpen(false);
       modal.success({
-        title: "单据生成成功",
+        title: `${source.docNo}：草稿已生成，尚未提交审批`,
         content: (
           <div>
-            {res.pos.length > 0 ? <div>采购订单：{res.pos.map((p) => p.docNo).join("、")}</div> : null}
-            <div>加工通知单：{res.jg.docNo}</div>
+            {res.pos.map(p => <div key={p.id}>采购订单：<Link href={`/outsource/po?docId=${p.id}`}>{p.docNo}</Link></div>)}
+            <div>加工通知单：<Link href={`/outsource/jg?docId=${res.jg.id}`}>{res.jg.docNo}</Link></div>
           </div>
         ),
       });
-      void loadDetail();
+      if (targetId.current === source.id) loadDetail();
       void load();
     } catch (e) {
-      if (e instanceof Error && e.message) message.error(e.message);
+      if (!mounted.current) return;
+      if (submitted && targetId.current === source.id) {
+        setGenerationError(`${source.docNo}：${e instanceof Error ? e.message : "未取得生成结果"}。勿重复提交，请先刷新核对已有单据。`);
+      } else if (e instanceof Error && e.message) message.error(e.message);
     } finally {
-      setGenerating(false);
+      generatingRef.current = false;
+      if (mounted.current) setGenerating(false);
     }
   };
 
@@ -607,14 +623,14 @@ function WoInner() {
         open={documentSelection.present}
         readError={documentSelection.error ?? detailRead.error}
         onRetry={detailId != null ? detailRead.retry : undefined}
-        onClose={() => setDetailId(null)}
+        onClose={() => { if (!generatingRef.current) setDetailId(null); }}
         width={860}
         loading={detailLoading}
         extra={
           detail ? (
             <Space>
-              {detail.status === "approved" && generatedKnown && existingJgNo == null ? (
-                <Button type="primary" icon={<ThunderboltOutlined />} onClick={openGenerate}>
+              {canGenerate && detail.status === "approved" && generatedKnown && existingJgNo == null ? (
+                <Button type="primary" disabled={generating} icon={<ThunderboltOutlined />} onClick={openGenerate}>
                   生成单据
                 </Button>
               ) : null}
@@ -698,9 +714,13 @@ function WoInner() {
         title={`生成采购订单 / 加工通知单${detail ? ` — ${detail.docNo}` : ""}`}
         open={genOpen}
         onOk={() => void handleGenerate()}
-        onCancel={() => setGenOpen(false)}
+        onCancel={() => { if (!generatingRef.current) { setGenOpen(false); loadDetail(); } }}
         confirmLoading={generating}
-        width={860}
+        okButtonProps={{ disabled: !!generationError }}
+        cancelButtonProps={{ disabled: generating }}
+        closable={!generating}
+        keyboard={!generating}
+        width="min(860px, calc(100vw - 24px))"
         forceRender
         maskClosable={false}
         okText="生成"
@@ -710,14 +730,16 @@ function WoInner() {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="按需求快照预填：可按供应商分组拆分 PO（0..n 张），数量/单价逐行可改；同时生成 1 张加工通知单。"
+          message="仅预填建议采购量大于零的物料；零建议不会替换为毛需求。可人工添加或调整 PO，同时生成 1 张 JG 草稿，仍须提交审批。快照不代表当前可用量，请先核对库存、在途与供应商。"
         />
+        {generationError ? <Alert type="error" showIcon message="生成结果需核对" description={generationError}
+          style={{ marginBottom: 16 }} action={<Button onClick={() => { setGenOpen(false); loadDetail(); }}>刷新核对</Button>} /> : null}
         {/* W2 审计 6：这里是全系统唯一一个真的在选供应商的地方，此前只有一个光秃秃的下拉框。
             面板只读——摆事实，不排名次、不自动改表单。 */}
         <SourcingAidPanel
           skuOptions={(detail?.lines ?? []).map((l) => ({ value: l.materialSkuId, label: `${l.skuCode} ${l.skuName}` }))}
         />
-        <Form form={genForm} layout="vertical">
+        <Form form={genForm} layout="vertical" disabled={generating || !!generationError}>
           <Form.List name="poGroups">
             {(groups, { add: addGroup, remove: removeGroup }) => (
               <div>
@@ -771,14 +793,14 @@ function WoInner() {
                                 rules={[{ required: true, message: "数量必填" }]}
                                 style={{ marginBottom: 8 }}
                               >
-                                <InputNumber min={0.0001} precision={4} placeholder="数量" style={{ width: 130 }} />
+                                <InputNumber stringMode min="0.0001" max="9999999999.9999" precision={4} placeholder="数量" style={{ width: 130 }} />
                               </Form.Item>
                               <Form.Item
                                 name={[line.name, "price"]}
                                 rules={[{ required: true, message: "单价必填" }]}
                                 style={{ marginBottom: 8 }}
                               >
-                                <InputNumber min={0} precision={2} placeholder="单价" style={{ width: 120 }} />
+                                <InputNumber stringMode min="0" max="999999999999.99" precision={2} placeholder="单价" style={{ width: 120 }} />
                               </Form.Item>
                               <Button
                                 type="text"
@@ -811,7 +833,7 @@ function WoInner() {
           <Typography.Text strong>加工通知单（JG）</Typography.Text>
           <Space style={{ marginTop: 8 }} align="baseline" wrap>
             <Form.Item name="jgQty" label="加工数量" style={{ marginBottom: 8 }}>
-              <InputNumber min={0.0001} precision={4} style={{ width: 160 }} />
+              <InputNumber stringMode min="0.0001" max={detail?.qty} precision={4} style={{ width: 160 }} />
             </Form.Item>
             <Form.Item name="jgDueDate" label="交期" style={{ marginBottom: 8 }}>
               <DatePicker style={{ width: 160 }} />
