@@ -321,6 +321,10 @@ function PcInner() {
               <Radio value="retroactive">含已收追溯</Radio>
             </Radio.Group>
           </Form.Item>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+            仅未收：合格收货按收货单创建时点分段取价。含已收追溯：已批准后，未结算的合格收货也用追溯价；之后的新时段价继续生效。
+            让步价仍按现行比例计算。已有结算草稿须手动更新加工费，待审批单须驳回后更新；已审批结算冻结，不自动改历史金额。
+          </Typography.Paragraph>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} maxLength={500} />
           </Form.Item>

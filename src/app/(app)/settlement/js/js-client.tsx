@@ -274,6 +274,7 @@ export default function JsClient() {
   const detailLoading = detailRead.phase === "loading";
   const loadDetail = detailRead.retry;
   const [actionLoading, setActionLoading] = useState(false);
+  const actionLock = useRef(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
   // 结余（负实际损耗）409 → 短溢确认弹窗
@@ -430,7 +431,8 @@ export default function JsClient() {
 
   // ---- 提交 / 审批（错误由调用方处理：approve 的 409 结余闸门需特殊分支） ----
   const post = async (path: string, body: unknown, successText: string) => {
-    if (!detail) return false;
+    if (!detail || actionLock.current) return false;
+    actionLock.current = true;
     setActionLoading(true);
     try {
       await postJson(`/api/settlement/js/${detail.id}/${path}`, body);
@@ -438,6 +440,7 @@ export default function JsClient() {
       refresh();
       return true;
     } finally {
+      actionLock.current = false;
       setActionLoading(false);
     }
   };
@@ -553,6 +556,15 @@ export default function JsClient() {
     detail != null && (hasAnyRole(me, "pmc") || (me != null && detail.createdBy === me.id));
   const drawerActions = detail ? (
     <Space>
+      {detail.status === "draft" && hasAnyRole(me, "pmc") ? (
+        <Popconfirm title="按当前已批准改价更新此草稿的加工费？"
+          description="仅更新加工费与结算合计；收货数量必须一致，物料扣款和手工调整保持不变。"
+          okText="更新加工费" cancelText="取消"
+          onConfirm={() => void post("refresh-fee", { version: detail.version }, "加工费已更新，请核对金额后提交财务审批")
+            .catch(e => message.error((e as Error).message))}>
+          <Button disabled={actionLoading}>更新加工费</Button>
+        </Popconfirm>
+      ) : null}
       {detail.status === "draft" && canSubmitDetail ? (
         <Popconfirm
           title="确认提交审批（财务）？"
@@ -791,7 +803,9 @@ export default function JsClient() {
         open={documentSelection.present}
         readError={documentSelection.error ?? detailRead.error}
         onRetry={detailId != null ? detailRead.retry : undefined}
-        onClose={() => setDetailId(null)}
+        onClose={() => { if (!actionLock.current) setDetailId(null); }}
+        maskClosable={!actionLoading}
+        keyboard={!actionLoading}
         width={960}
         loading={detailLoading}
         extra={drawerActions}
@@ -799,6 +813,9 @@ export default function JsClient() {
         {detail ? (
           <div>
             <ChainStrip docType="js" id={detail.id} />
+            {(detail.status === "draft" || detail.status === "pending") && <Alert type="info" showIcon style={{ marginBottom: 12 }}
+              message="此处是已保存的结算金额，不会随改价静默变化"
+              description="加工费变化后：草稿由PMC更新加工费并核对；待审批单由财务驳回后更新再提交。已审批结算保持冻结。" />}
             <Descriptions column={{ xs: 1, sm: 3 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="JG 单号">{detail.jgDocNo}</Descriptions.Item>
               <Descriptions.Item label="关联工单">{detail.woDocNo}</Descriptions.Item>

@@ -1,11 +1,13 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-   flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
+   approvals, pcDocs, flDocs, flLines, jgDocs, jgFeeSegments, jsDocs, jsLines,
   shDocs, shLines, qcLines, skus, suppliers, sysParams,
   tlDocs, tlLines, users, warehouses, woDocs, woLines,
 } from "@/db/schema";
 import { PARAM_KEYS } from "@/server/core/constants";
-import { dAdd, dCmp, dDiv, dMoney, dMul, dNeg, dQty, dZero } from "@/server/core/decimal";
+import { dAdd, dCmp, dDiv, dMoney, dMul, dNeg, dQty, dSub, dZero } from "@/server/core/decimal";
+import { currentWriteActor } from "@/server/core/current-write-actor";
+import { processingFeeAt } from "@/server/rules/processing-fee";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
@@ -102,6 +104,7 @@ export type JsPreview = {
   effectiveQty: string;
   /** 分段 rate → DTO 键名 feeRate（SENSITIVE_FIELDS 收录 feeRate，保证脱敏可剥） */
   feeSegments: { qty: string; feeRate: string }[];
+  retrospectivePc: { id: number; docNo: string; approvedAt: Date } | null;
   concessionPrice: string; // 敏感
   feePayable: string; // 敏感
   deductionTotal: string; // 敏感
@@ -182,15 +185,17 @@ export async function previewJs(jgId: number, manualAdj = "0", dbArg?: AnyDb): P
     .where(eq(jgFeeSegments.jgId, jgId))
     .orderBy(asc(jgFeeSegments.effectiveFrom), asc(jgFeeSegments.id));
 
-  const rateAt = (t: Date): string => {
-    let rate: string | null = null;
-    for (const s of segments) {
-      if (s.effectiveFrom.getTime() <= t.getTime()) rate = s.rate;
-    }
-    // 无分段（数据异常）→ 现价；SH 早于首段 → 首段费率
-    if (rate == null) rate = segments[0]?.rate ?? jg.feeRateCurrent;
-    return rate;
-  };
+  // Use the actual approved PC and its exact approval cycle, not matching price/time guesses.
+  const retros: { id: number; docNo: string; rate: string; approvedAt: Date; approvalId: number | null }[] = await db
+    .select({ id: pcDocs.id, docNo: pcDocs.docNo, rate: pcDocs.newPrice, approvedAt: pcDocs.updatedAt, approvalId: approvals.id })
+    .from(pcDocs).leftJoin(approvals, and(eq(approvals.docType, "pc"), eq(approvals.docId, pcDocs.id),
+      eq(approvals.action, "approve"), eq(approvals.cycle, sql`${pcDocs.version} - 1`)))
+    .where(and(eq(pcDocs.jgId, jgId), eq(pcDocs.target, "jg_fee"), eq(pcDocs.status, "approved"), eq(pcDocs.scope, "retroactive")))
+    .orderBy(desc(pcDocs.updatedAt), desc(approvals.id));
+  if (retros.some(r => r.approvalId == null)) throw new ApiError(409, "追溯改价缺少对应审批依据，请核对PC审批记录后再计算结算");
+  const latestRetro = retros[0];
+  const retroactive = latestRetro?.approvedAt ? { rate: latestRetro.rate, approvedAt: latestRetro.approvedAt } : undefined;
+  if (latestRetro) warnings.push(`合格收货已按追溯改价 ${latestRetro.docNo} 重算；之后的新时段价格继续生效。已审批结算不自动改写。`);
   if (segments.length === 0 && goodByShId.size > 0) {
     warnings.push("该 JG 无加工费分段记录，按现价单段计价");
   }
@@ -202,7 +207,7 @@ export async function previewJs(jgId: number, manualAdj = "0", dbArg?: AnyDb): P
   );
   for (const e of shEntries) {
     if (dZero(e.qty)) continue;
-    const rate = rateAt(e.createdAt);
+    const rate = processingFeeAt(e.createdAt, segments, jg.feeRateCurrent, retroactive);
     const last = segAgg[segAgg.length - 1];
     if (last && dCmp(last.feeRate, rate) === 0) last.qty = dAdd(last.qty, e.qty, 4);
     else segAgg.push({ qty: dQty(e.qty), feeRate: dMoney(rate) });
@@ -330,6 +335,7 @@ export async function previewJs(jgId: number, manualAdj = "0", dbArg?: AnyDb): P
     spareQty,
     effectiveQty: result.effectiveQty,
     feeSegments: segAgg,
+    retrospectivePc: latestRetro?.approvedAt ? { id: latestRetro.id, docNo: latestRetro.docNo, approvedAt: latestRetro.approvedAt } : null,
     concessionPrice,
     feePayable: result.feePayable,
     deductionTotal: result.deductionTotal,
@@ -356,9 +362,10 @@ export async function closeJgReceiving(
   version: number,
   dbArg?: AnyDb,
 ): Promise<JgRow> {
-  requireAnyRole(user, "pmc");
   const db = await resolveDb(dbArg);
-  const [jg]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, jgId));
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentWriteActor(tx, user); requireAnyRole(actor, "pmc");
+  const [jg]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, jgId)).for("update");
   if (!jg) throw new ApiError(404, `加工通知单不存在: #${jgId}`);
   let target: DocStatus;
   try {
@@ -367,24 +374,26 @@ export async function closeJgReceiving(
     if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可关闭收货: ${jg.status}`);
     throw e;
   }
-  const updated: JgRow[] = await db
+  const updated: JgRow[] = await tx
     .update(jgDocs)
     .set({ status: target, inProduction: false, version: sql`${jgDocs.version} + 1`, updatedAt: new Date() })
     .where(and(eq(jgDocs.id, jgId), eq(jgDocs.version, version)))
     .returning();
   if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "jg", entityId: jgId, action: "complete" });
+  await writeAudit(tx, { userId: actor.id, entity: "jg", entityId: jgId, action: "complete" });
   return updated[0];
+  });
 }
 
 // ---------- 创建 ----------
 
 export async function createJs(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<JsRow & { lines: (typeof jsLines.$inferSelect)[] }> {
-  requireAnyRole(user, "pmc"); // 《01》§6：JS 制单=PMC
   const v = createJsSchema.parse(input);
   const db = await resolveDb(dbArg);
-
-  const [jg]: JgRow[] = await db.select().from(jgDocs).where(eq(jgDocs.id, v.jgId));
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentWriteActor(tx, user);
+  requireAnyRole(actor, "pmc"); // 《01》§6：JS 制单=PMC
+  const [jg]: JgRow[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, v.jgId)).for("update");
   if (!jg) throw new ApiError(404, `加工通知单不存在: #${v.jgId}`);
   // 收货关闭（completed）或短关（closed）后方可开结算（《01》§3 JS）
   if (jg.status !== "completed" && jg.status !== "closed") {
@@ -392,15 +401,13 @@ export async function createJs(user: SessionUser, input: unknown, dbArg?: AnyDb)
   }
 
   // 一 JG 一 JS（应用层先查友好报错；schema UNIQUE(jg_id) 并发兜底）
-  const [existing] = await db
+  const [existing] = await tx
     .select({ docNo: jsDocs.docNo })
     .from(jsDocs)
     .where(eq(jsDocs.jgId, v.jgId));
   if (existing) throw new ApiError(409, `该 JG 已存在结算单 ${existing.docNo}（一 JG 一 JS）`);
 
-  const preview = await previewJs(v.jgId, v.manualAdj, db);
-
-  return db.transaction(async (tx: AnyDb) => {
+  const preview = await previewJs(v.jgId, v.manualAdj, tx);
     const docNo = await nextDocNo(tx, "JS");
     const [doc]: JsRow[] = await tx
       .insert(jsDocs)
@@ -417,7 +424,7 @@ export async function createJs(user: SessionUser, input: unknown, dbArg?: AnyDb)
         deductionTotal: preview.deductionTotal,
         manualAdj: preview.manualAdj,
         settleAmount: preview.settleAmount,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     const insertedLines: (typeof jsLines.$inferSelect)[] = preview.lines.length
@@ -440,7 +447,7 @@ export async function createJs(user: SessionUser, input: unknown, dbArg?: AnyDb)
           .returning()
       : [];
     await writeAudit(tx, {
-      userId: user.id,
+      userId: actor.id,
       entity: "js",
       entityId: doc.id,
       action: "create",
@@ -452,6 +459,7 @@ export async function createJs(user: SessionUser, input: unknown, dbArg?: AnyDb)
         settleAmount: preview.settleAmount,
         warnings: preview.warnings,
         deductPriceSource: preview.deductPriceSource,
+        retrospectivePc: preview.retrospectivePc,
       },
     });
     return { ...doc, lines: insertedLines };
@@ -460,23 +468,67 @@ export async function createJs(user: SessionUser, input: unknown, dbArg?: AnyDb)
 
 // ---------- 提交 ----------
 
+/** Same lock order as PC approval: JG authority before settlement document. */
+async function lockedJs(tx: AnyDb, id: number): Promise<JsRow> {
+  const [target]: JsRow[] = await tx.select().from(jsDocs).where(eq(jsDocs.id, id));
+  if (!target) throw new ApiError(404, "单据不存在");
+  await tx.select({ id: jgDocs.id }).from(jgDocs).where(eq(jgDocs.id, target.jgId)).for("update");
+  const [doc]: JsRow[] = await tx.select().from(jsDocs).where(eq(jsDocs.id, id)).for("update");
+  return doc;
+}
+
+async function currentFeePreview(tx: AnyDb, doc: JsRow) {
+  const preview = await previewJs(doc.jgId, doc.manualAdj, tx);
+  if ((["goodQty", "concessionQty", "spareQty"] as const).some(k => dCmp(doc[k], preview[k]) !== 0)) {
+    throw new ApiError(409, "结算收货数量依据已变化，请先核对收货与质检；不能只更新加工费");
+  }
+  return preview;
+}
+
+async function assertCurrentFee(tx: AnyDb, doc: JsRow) {
+  const preview = await currentFeePreview(tx, doc);
+  if (dCmp(doc.feePayable, preview.feePayable) !== 0 || dCmp(doc.concessionPrice, preview.concessionPrice) !== 0) {
+    throw new ApiError(409, "加工费依据已变化：草稿请先更新加工费；待审批单请由财务驳回后更新再提交");
+  }
+}
+
+/** Explicit fee-only draft refresh: preserve material deductions, manual adjustments and posted history. */
+export async function refreshJsFee(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb) {
+  const { version } = submitJsSchema.parse(input), db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user); requireAnyRole(actor, "pmc");
+    const doc = await lockedJs(tx, id);
+    if (doc.status !== "draft" || doc.version !== version) throw new ApiError(409, "仅当前版本草稿可更新加工费，请刷新核对");
+    const preview = await currentFeePreview(tx, doc);
+    const settleAmount = dMoney(dAdd(dSub(preview.feePayable, doc.deductionTotal), doc.manualAdj));
+    const [updated]: JsRow[] = await tx.update(jsDocs).set({ feePayable: preview.feePayable, concessionPrice: preview.concessionPrice,
+      settleAmount, version: sql`${jsDocs.version} + 1`, updatedAt: new Date() }).where(eq(jsDocs.id, id)).returning();
+    await writeAudit(tx, { userId: actor.id, entity: "js", entityId: id, action: "refresh_fee",
+      before: { feePayable: doc.feePayable, concessionPrice: doc.concessionPrice, settleAmount: doc.settleAmount },
+      after: { feePayable: updated.feePayable, concessionPrice: updated.concessionPrice, settleAmount, retrospectivePc: preview.retrospectivePc } });
+    return updated;
+  });
+}
+
 export async function submitJs(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<JsRow> {
   const { version } = submitJsSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const [doc]: JsRow[] = await db.select().from(jsDocs).where(eq(jsDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("pmc") && !user.roles.includes("admin")) {
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentWriteActor(tx, user), doc = await lockedJs(tx, id);
+  if (doc.createdBy !== actor.id && !actor.roles.includes("pmc") && !actor.roles.includes("admin")) {
     throw new ApiError(403, "仅制单人/PMC/管理员可提交");
   }
   if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-  const updated: JsRow[] = await db
+  await assertCurrentFee(tx, doc);
+  const updated: JsRow[] = await tx
     .update(jsDocs)
     .set({ status: "pending", version: sql`${jsDocs.version} + 1`, updatedAt: new Date() })
     .where(and(eq(jsDocs.id, id), eq(jsDocs.version, version)))
     .returning();
   if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "js", entityId: id, action: "submit" });
+  await writeAudit(tx, { userId: actor.id, entity: "js", entityId: id, action: "submit" });
   return updated[0];
+  });
 }
 
 // ---------- 审批（财务）→ 同事务损耗核销过账 → completed ----------
@@ -492,8 +544,7 @@ export async function approveJs(
 
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [doc]: JsRow[] = await tx.select().from(jsDocs).where(eq(jsDocs.id, id));
-      if (!doc) throw new ApiError(404, "单据不存在");
+      const actor = await currentWriteActor(tx, user), doc = await lockedJs(tx, id);
       const lines: (typeof jsLines.$inferSelect)[] = await tx
         .select()
         .from(jsLines)
@@ -522,15 +573,16 @@ export async function approveJs(
         docType: "js",
         table: jsDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
+      if (v.action === "approve") await assertCurrentFee(tx, doc);
 
       await writeAudit(tx, {
-        userId: user.id,
+        userId: actor.id,
         entity: "js",
         entityId: id,
         action: v.action,
@@ -578,7 +630,7 @@ export async function approveJs(
         .update(jsDocs)
         .set({ status: finalStatus, version: sql`${jsDocs.version} + 1`, updatedAt: new Date() })
         .where(eq(jsDocs.id, id));
-      await writeAudit(tx, { userId: user.id, entity: "js", entityId: id, action: "complete" });
+      await writeAudit(tx, { userId: actor.id, entity: "js", entityId: id, action: "complete" });
       return { status: finalStatus, idempotent: false };
     });
   } catch (e) {
