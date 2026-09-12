@@ -68,6 +68,29 @@ export function dMulDiv(a: Dec, b: Dec, divisor: Dec, scale = 4): string {
   const rounded = divRoundHalf(toUnits(a) * toUnits(b) * factor, denominator * POW);
   return fromUnits(rounded * (POW / factor), scale);
 }
+/** Mathematical floor division, including negative operands; never rounds a capacity up. */
+function divFloor(n: bigint, d: bigint): bigint {
+  if (d === 0n) throw new Error("division by zero");
+  if (d < 0n) return divFloor(-n, -d);
+  const q = n / d;
+  return n % d < 0n ? q - 1n : q;
+}
+/** Exact multiply/divide, flooring only the final result (input contract: at most six decimals). */
+export function dMulDivFloor(a: Dec, b: Dec, divisor: Dec, scale = 0): string {
+  if (!Number.isInteger(scale) || scale < 0 || scale > SCALE) throw new RangeError("invalid decimal scale");
+  const factor = 10n ** BigInt(scale);
+  const units = divFloor(toUnits(a) * toUnits(b) * factor, toUnits(divisor) * POW);
+  return fromUnits(units * (POW / factor), scale);
+}
+/** Floor to a positive multiple, then floor to output precision; unlike monetary half rounding. */
+export function dFloorToMultiple(a: Dec, multiple: Dec, scale = 4): string {
+  if (!Number.isInteger(scale) || scale < 0 || scale > SCALE) throw new RangeError("invalid decimal scale");
+  const m = toUnits(multiple);
+  if (m <= 0n) throw new RangeError("multiple must be positive");
+  const result = divFloor(toUnits(a), m) * m;
+  const drop = 10n ** BigInt(SCALE - scale);
+  return fromUnits(divFloor(result, drop) * drop, scale);
+}
 /** 比较：a<b → -1, a==b → 0, a>b → 1 */
 export function dCmp(a: Dec, b: Dec): -1 | 0 | 1 {
   const d = toUnits(a) - toUnits(b);

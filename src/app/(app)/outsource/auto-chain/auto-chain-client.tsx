@@ -15,7 +15,7 @@ import LoadErrorAlert from "@/components/LoadErrorAlert";
 
 interface Batch {
   woId: number; woDocNo: string; productCode: string; productName: string; woQty: string;
-  producible: number; alreadyBatched: string; existingBatches: number; suggestQty: number; blockedReason: string | null;
+  producible: string; alreadyBatched: string; existingBatches: number; suggestQty: string; blockedReason: string | null;
   kitDate: string | null; kitNote: string;
   kitBlockers: { materialSkuId: number; shortBy: string; readyDate: string | null }[];
   referenceKitDate: string | null;
@@ -98,7 +98,7 @@ export default function AutoChainClient() {
     { title: "工单", dataIndex: "woDocNo", width: 170, render: (v: string, r) => <Link href={`/outsource/wo?docId=${r.woId}`}>{v}</Link> },
     { title: "成品", key: "product", width: 240, render: (_, r) => <div style={{ overflowWrap: "anywhere" }}><Typography.Text>{r.productCode}</Typography.Text><div>{r.productName || "名称未补录"}</div></div> },
     { title: "工单量", dataIndex: "woQty", width: 90, align: "right", render: (v: string) => formatQty(v) },
-    { title: "到料可产", dataIndex: "producible", width: 100, align: "right", render: (v: number) => formatQty(v) },
+    { title: "到料可产", dataIndex: "producible", width: 100, align: "right", render: (v: string) => <span style={{ overflowWrap: "anywhere" }}>{formatQty(v)}</span> },
     {
       // E2-09：「现在够不够」之外，回答业务真正要问的「几号能齐套」。
       // 视野内齐不了就直说并指出卡在哪个料，不给一个含糊的日期。
@@ -122,7 +122,7 @@ export default function AutoChainClient() {
     },
     { title: "已下批", dataIndex: "alreadyBatched", width: 90, align: "right", render: (v: string) => formatQty(v) },
     { title: "批次数", dataIndex: "existingBatches", width: 70, align: "right" },
-    { title: "建议新批", dataIndex: "suggestQty", width: 100, align: "right", render: (v: number) => (v > 0 ? <Tag color="green">{v.toLocaleString("zh-CN")}</Tag> : "—") },
+    { title: "建议新批", dataIndex: "suggestQty", width: 100, align: "right", render: (v: string) => (formatQty(v) !== "0" ? <Tag color="green">{formatQty(v)}</Tag> : "—") },
     {
       title: "操作", width: 160,
       render: (_, r) => r.blockedReason

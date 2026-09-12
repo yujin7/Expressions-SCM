@@ -7,17 +7,17 @@ describe("R18 齐套引擎（D33）", () => {
     expect(producibleQty("1000", [
       { materialSkuId: 1, grossReq: "2000", netIssued: "900" },
       { materialSkuId: 2, grossReq: "1000", netIssued: "800" },
-    ])).toBe(450);
+    ])).toBe("450");
   });
   it("零需求行不约束；空行/零单=0", () => {
-    expect(producibleQty("100", [{ materialSkuId: 1, grossReq: "0", netIssued: "0" }])).toBe(0);
-    expect(producibleQty("0", [])).toBe(0);
+    expect(producibleQty("100", [{ materialSkuId: 1, grossReq: "0", netIssued: "0" }])).toBe("0");
+    expect(producibleQty("0", [])).toBe("0");
   });
   it("建议批量：扣已批、按倍数下整、不超 WO 余量", () => {
-    expect(suggestBatchQty({ producible: 450, alreadyBatched: "100", woQty: "1000", orderMultiple: "50" })).toBe(350);
-    expect(suggestBatchQty({ producible: 450, alreadyBatched: "100", woQty: "400", orderMultiple: "50" })).toBe(300);
-    expect(suggestBatchQty({ producible: 30, alreadyBatched: "0", woQty: "1000", orderMultiple: "50" })).toBe(0);
-    expect(suggestBatchQty({ producible: 80, alreadyBatched: "80", woQty: "1000" })).toBe(0);
+    expect(suggestBatchQty({ producible: "450", alreadyBatched: "100", woQty: "1000", orderMultiple: "50" })).toBe("350.0000");
+    expect(suggestBatchQty({ producible: "450", alreadyBatched: "100", woQty: "400", orderMultiple: "50" })).toBe("300.0000");
+    expect(suggestBatchQty({ producible: "30", alreadyBatched: "0", woQty: "1000", orderMultiple: "50" })).toBe("0.0000");
+    expect(suggestBatchQty({ producible: "80", alreadyBatched: "80", woQty: "1000" })).toBe("0.0000");
   });
   it("批次护栏", () => {
     expect(batchAllowed(7)).toBe(true);

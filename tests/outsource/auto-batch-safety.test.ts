@@ -70,7 +70,7 @@ it("refuses inactive product, changed WO status, review flags and invalid source
 });
 it("uses the current received quantity rather than the prior visible preview", async () => {
   const f = await fixture();
-  expect((await previewAutoChain(db)).batches.find(b => b.woId === f.wo.id)?.suggestQty).toBe(50);
+  expect((await previewAutoChain(db)).batches.find(b => b.woId === f.wo.id)?.suggestQty).toBe("50.0000");
   await db.update(s.poLines).set({ receivedQty: "20" }).where(eq(s.poLines.poId, f.po.id));
   expect((await createBatchJg(actor, f.wo.id, db)).qty).toBe("20.0000");
 });
@@ -80,7 +80,7 @@ it("aggregates duplicate WO material requirements before sharing the same receiv
   await db.insert(s.woLines).values({ woId: f.wo.id, materialSkuId: line.materialSkuId, qtyPer: "1", grossReq: "100", suggestedQty: "100" });
   const preview = (await previewAutoChain(db)).batches.find(b => b.woId === f.wo.id);
   expect(preview?.receivedBasis).toHaveLength(1);
-  expect(preview?.suggestQty).toBe(25); // 50 received / (200 total material / 100 products)
+  expect(preview?.suggestQty).toBe("25.0000"); // 50 received / (200 total material / 100 products)
   expect((await createBatchJg(actor, f.wo.id, db)).qty).toBe("25.0000");
 });
 it("audit failure rolls back draft, fee segment and number allocation; retry succeeds", async () => {
@@ -99,4 +99,33 @@ it("continues after a legacy batch sequence gap without colliding or exceeding t
   const f = await fixture();
   await db.insert(s.jgDocs).values({ docNo: `JG-GAP-${f.wo.id}`, woId: f.wo.id, batchSeq: 3, productSkuId: f.product.id, supplierId: f.sup.id, qty: "10", feeRateCurrent: "1", status: "completed", createdBy: actor.id });
   expect(await createBatchJg(actor, f.wo.id, db)).toMatchObject({ batchSeq: 4, qty: "40.0000" });
+});
+
+it.each([
+  ["3000", "1", "0.5", "1500.0000"],
+  ["1000", "0.0001", "0.0001", "1000.0000"],
+] as const)("preview, draft and audit share exact capacity for WO %s gross %s", async (qty, grossReq, receivedQty, expected) => {
+  const f = await fixture();
+  await db.update(s.woDocs).set({ qty }).where(eq(s.woDocs.id, f.wo.id));
+  await db.update(s.woLines).set({ grossReq }).where(eq(s.woLines.woId, f.wo.id));
+  await db.update(s.poLines).set({ receivedQty }).where(eq(s.poLines.poId, f.po.id));
+  const before = await db.select().from(s.stockLedger);
+  const row = (await previewAutoChain(db)).batches.find(b => b.woId === f.wo.id)!;
+  expect(row.suggestQty).toBe(expected);
+  const draft = await createBatchJg(actor, f.wo.id, db);
+  expect(draft.qty).toBe(expected);
+  const [event] = await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "auto_chain"), eq(s.auditLogs.entityId, draft.id), eq(s.auditLogs.action, "batch_jg")));
+  expect(event.after).toMatchObject({ qty: expected, producible: row.producible });
+  expect(await db.select().from(s.stockLedger)).toEqual(before);
+});
+
+it("a tiny missing material cannot be skipped to generate a full production batch", async () => {
+  const f = await fixture();
+  const [base] = await db.select().from(s.woLines).where(eq(s.woLines.woId, f.wo.id));
+  await db.update(s.woDocs).set({ qty: "1000" }).where(eq(s.woDocs.id, f.wo.id));
+  const [material] = await db.insert(s.skus).values({ code: `TINY-${f.wo.id}`, name: "合成微量料", spuId: f.product.spuId, skuType: "packaging", baseUom: "个" }).returning();
+  await db.insert(s.woLines).values({ woId: f.wo.id, materialSkuId: material.id, qtyPer: "0.0001", grossReq: "0.0001", suggestedQty: "0.0001" });
+  expect(base.materialSkuId).not.toBe(material.id);
+  await expect(createBatchJg(actor, f.wo.id, db)).rejects.toMatchObject({ status: 409 });
+  expect(await batches(f.wo.id)).toHaveLength(0);
 });

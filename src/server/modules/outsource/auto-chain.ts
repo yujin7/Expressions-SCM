@@ -9,7 +9,7 @@ import { and, eq, inArray, or, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { currentWriteActor } from "@/server/core/current-write-actor";
-import { dAdd, dQty } from "@/server/core/decimal";
+import { dAdd, dCmp, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { getMaterialReferenceLines } from "@/server/core/material-reference";
 import { getNumParam } from "@/server/core/params";
@@ -36,7 +36,7 @@ export interface BatchSuggestion {
   productName: string;
   woQty: string;
   receivedBasis: { materialCode: string; received: string; perUnit: string }[];
-  producible: number;
+  producible: string;
   /** E2-09 预计齐套日（YYYY-MM-DD）；null = 视野内齐不了 */
   kitDate: string | null;
   /** 卡住齐套的物料（最多 3 个，够定位不刷屏） */
@@ -50,7 +50,7 @@ export interface BatchSuggestion {
   referenceReservedQty: string;
   alreadyBatched: string;
   existingBatches: number;
-  suggestQty: number;
+  suggestQty: string;
   blockedReason: string | null; // 护栏命中说明；null=可生成
 }
 
@@ -201,11 +201,11 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
     if (!wo.productActive) blockedReason = "成品已停用，不能生成新批次";
     else if (wo.supplierStatus == null) blockedReason = "加工厂不存在，请核对工单来源";
     else if (supplierBlock.blocked) blockedReason = supplierBlock.reason;
-    else if (suggest <= 0) blockedReason = producible <= Number(alreadyBatched) ? "到料尚不足新批（或已全部下批）" : "不足一个订货倍数";
+    else if (dCmp(suggest, "0") <= 0) blockedReason = dCmp(producible, alreadyBatched) <= 0 ? "到料尚不足新批（或已全部下批）" : "不足一个订货倍数";
     else if (!batchAllowed(jgs.length)) blockedReason = `批次已达上限 ${MAX_AUTO_BATCHES}，转人工`;
     else if (needsReview) blockedReason = "成品档案待复核（needsReview）——不自动，请人工核对后生成";
     else if (hasDraft) blockedReason = "已有待审批批次草稿——先处理再生成";
-    if (suggest > 0 || jgs.length > 0) {
+    if (dCmp(suggest, "0") > 0 || jgs.length > 0) {
       batches.push({
         woId: wo.id,
         woDocNo: wo.docNo,
@@ -346,7 +346,7 @@ async function createBatchInTransaction(tx: AnyDb, actor: SessionUser, woId: num
     const [s] = await previewBatches(tx, woId);
     if (!s) return { jg: null, blockedReason: "该工单当前无可生成批次建议，请刷新核对到料与物料依据" };
     if (s.blockedReason) return { jg: null, blockedReason: s.blockedReason };
-    const candidateQty = dQty(String(s.suggestQty));
+    const candidateQty = dQty(s.suggestQty);
     const capacity = await getSupplierCapacitySignal({
       supplierId: wo.supplierId,
       baseUom: product.baseUom,
