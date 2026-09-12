@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import * as s from "@/db/schema";
 import * as audit from "@/server/core/audit";
-import { suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
+import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
+import { getSh, listShs } from "@/server/modules/matflow/sh-read";
 import { listReviewItems } from "@/server/modules/review/checklist";
 import type { DB } from "@/db";
 import type { SessionUser } from "@/server/core/dto";
@@ -46,6 +47,57 @@ async function fixture(completed = true) {
   return { wo, jg, fl, sh, ql };
 }
 const items = (id: number) => db.select().from(s.reviewItems).where(eq(s.reviewItems.refKey, String(id)));
+const acknowledgements = (id: number) => db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "sh"), eq(s.auditLogs.entityId, id), eq(s.auditLogs.action, "material_review_checked")));
+it("legacy completed receipt remains unverified until a successful durable calculation; repeats do not duplicate review or stock", async () => {
+  const f = await fixture();
+  expect((await getSh(f.sh.id, db)).materialReview).toEqual({ checkedAt: null, reviewItemId: null, basisStatus: null });
+  expect((await listShs(f.sh.docNo, { page: 1, pageSize: 1, materialReviewPending: true }, db)).total).toBe(1);
+  const ledger = await db.select().from(s.stockLedger);
+  await refreshInboundMaterialReview(actor, f.sh.id, db);
+  const [item] = await items(f.jg.id);
+  expect((await getSh(f.sh.id, db)).materialReview).toMatchObject({ checkedAt: expect.any(Date), reviewItemId: item.id, basisStatus: "needs_review" });
+  expect((await listShs(f.sh.docNo, { page: 1, pageSize: 1, materialReviewPending: true }, db)).total).toBe(0);
+  await refreshInboundMaterialReview(actor, f.sh.id, db);
+  expect(await items(f.jg.id)).toHaveLength(1);
+  expect(await acknowledgements(f.sh.id)).toHaveLength(2); // two user attempts, one business item
+  expect(await db.select().from(s.stockLedger)).toEqual(ledger);
+  expect((await getSh(f.sh.id, db)).status).toBe("completed");
+});
+it("no-difference and incomplete-basis calculations have explicit durable outcomes", async () => {
+  const f = await fixture();
+  await db.update(s.flLines).set({ qty: "100" }).where(eq(s.flLines.flId, f.fl.id));
+  await refreshInboundMaterialReview(actor, f.sh.id, db);
+  expect(await items(f.jg.id)).toHaveLength(0);
+  expect((await getSh(f.sh.id, db)).materialReview).toMatchObject({ basisStatus: "no_difference", reviewItemId: null });
+  await db.delete(s.qcLines).where(eq(s.qcLines.id, f.ql[0].id));
+  await refreshInboundMaterialReview(actor, f.sh.id, db);
+  expect((await getSh(f.sh.id, db)).materialReview).toMatchObject({ basisStatus: "unknown", reviewItemId: expect.any(Number) });
+});
+it("success acknowledgement failure rolls back the new estimate, keeping a recoverable missing acknowledgement", async () => {
+  const f = await fixture();
+  const original = audit.writeAudit;
+  const fail = vi.spyOn(audit, "writeAudit").mockImplementation(async (tx, input) => {
+    if (input.action === "material_review_checked") throw Error("synthetic acknowledgement failure");
+    return original(tx, input);
+  });
+  try { await expect(refreshInboundMaterialReview(actor, f.sh.id, db)).rejects.toThrow("acknowledgement failure"); }
+  finally { fail.mockRestore(); }
+  expect(await items(f.jg.id)).toHaveLength(0); expect(await acknowledgements(f.sh.id)).toHaveLength(0);
+  expect((await getSh(f.sh.id, db)).materialReview?.checkedAt).toBeNull();
+  await refreshInboundMaterialReview(actor, f.sh.id, db); expect(await items(f.jg.id)).toHaveLength(1);
+});
+it("recovery rejects unposted/PO/wrong-source receipts and revoked identities without writes", async () => {
+  const f = await fixture(false), other = await fixture();
+  await expect(refreshInboundMaterialReview(actor, f.sh.id, db)).rejects.toMatchObject({ status: 409 });
+  await expect(suggestLeftoverAfterInbound(actor, f.jg.id, db, other.sh.id)).rejects.toMatchObject({ status: 409 });
+  await db.update(s.shDocs).set({ sourceType: "po", status: "completed" }).where(eq(s.shDocs.id, f.sh.id));
+  await expect(refreshInboundMaterialReview(actor, f.sh.id, db)).rejects.toMatchObject({ status: 409 });
+  await expect(refreshInboundMaterialReview(actor, 2147483647, db)).rejects.toMatchObject({ status: 404 });
+  const [u] = await db.insert(s.users).values({ name: "撤权仓管", roles: ["ops"] }).returning();
+  await expect(refreshInboundMaterialReview({ ...u, roles: ["warehouse"] }, other.sh.id, db)).rejects.toMatchObject({ status: 403 });
+  await expect(refreshInboundMaterialReview({ ...actor, sessionVersion: 99 }, other.sh.id, db)).rejects.toMatchObject({ status: 401 });
+  expect(await acknowledgements(f.sh.id)).toHaveLength(0); expect(await items(other.jg.id)).toHaveLength(0);
+});
 it("aggregates duplicate WO material once; completed pass+concession+spare+rework total is 100", async () => {
   const f = await fixture(); await suggestLeftoverAfterInbound(actor, f.jg.id, db);
   const [row] = await items(f.jg.id);
@@ -53,7 +105,7 @@ it("aggregates duplicate WO material once; completed pass+concession+spare+rewor
   expect(row.detail).toContain("净发料 120.0000；毛用量估算 100.0000；差额 20.0000");
   expect(row.detail).toContain("不是实盘或可退库存");
   expect((await db.select().from(s.stockLedger))).toHaveLength(0);
-  const log = await db.select().from(s.auditLogs).where(eq(s.auditLogs.entityId, row.id)); expect(log).toHaveLength(1);
+  const log = await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "review_item"), eq(s.auditLogs.entityId, row.id))); expect(log).toHaveLength(1);
   const filtered = await listReviewItems({ category: "material_leftover", page: 1, pageSize: 100 }, db as unknown as DB);
   expect(filtered.data.every(r => r.category === "material_leftover")).toBe(true);
 });

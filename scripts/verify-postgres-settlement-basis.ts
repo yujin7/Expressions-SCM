@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as s from "@/db/schema";
 import { approveJs, createJs, getJsBasis, refreshJsBasis, submitJs } from "@/server/modules/settlement/js";
 import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
-import { suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
+import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
 import type { DB } from "@/db";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
@@ -179,7 +179,29 @@ async function main() {
     assert(triggeredReview); assert.match(triggeredReview.detail ?? "", /差额 20.0000/);
     assert((await db.select().from(s.stockLedger).where(and(eq(s.stockLedger.sourceDocType, "sh_outsource_in"), eq(s.stockLedger.sourceDocId, triggerSh.id)))).length > 0);
     console.log("PASS actual SH inbound posts inventory and its committed receipt triggers the material review");
-    console.log(JSON.stringify({ passed: true, cases: 13, fixture: key, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    const recoveryJg = await setup();
+    const [recoverySh] = await db.select().from(s.shDocs).where(and(eq(s.shDocs.sourceType, "jg"), eq(s.shDocs.sourceId, recoveryJg.id)));
+    await db.update(s.shDocs).set({ status: "approved" }).where(eq(s.shDocs.id, recoverySh.id));
+    await db.execute(sql`CREATE FUNCTION scm_review_recovery_test_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='material_review_checked' THEN RAISE EXCEPTION 'synthetic recovery acknowledgement fail'; END IF; RETURN NEW; END $$`);
+    await db.execute(sql`CREATE TRIGGER scm_review_recovery_test_fail BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION scm_review_recovery_test_fail()`);
+    try { assert.deepEqual(await confirmInbound(maker, recoverySh.id, db), { status: "completed", materialReview: "pending" }); }
+    finally {
+      await db.execute(sql`DROP TRIGGER scm_review_recovery_test_fail ON audit_logs`);
+      await db.execute(sql`DROP FUNCTION scm_review_recovery_test_fail()`);
+    }
+    const recoveryLedger = () => db.select().from(s.stockLedger).where(and(eq(s.stockLedger.sourceDocType, "sh_outsource_in"), eq(s.stockLedger.sourceDocId, recoverySh.id))).orderBy(s.stockLedger.id);
+    const committedLedger = await recoveryLedger(); assert(committedLedger.length > 0);
+    assert.equal((await db.select().from(s.reviewItems).where(eq(s.reviewItems.refKey, String(recoveryJg.id)))).length, 0);
+    console.log("PASS failed material acknowledgement rolls back the review but preserves completed stock posting");
+    const recoveryRace = await race(tx => refreshInboundMaterialReview(maker, recoverySh.id, tx),
+      () => refreshInboundMaterialReview(checker, recoverySh.id, other));
+    assert(recoveryRace.second.ok);
+    assert.deepEqual(await recoveryLedger(), committedLedger);
+    assert.equal((await db.select().from(s.reviewItems).where(eq(s.reviewItems.refKey, String(recoveryJg.id)))).length, 1);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "sh"), eq(s.auditLogs.entityId, recoverySh.id), eq(s.auditLogs.action, "material_review_checked")))).length, 2);
+    console.log("PASS concurrent recovery attempts produce one review, two attempt acknowledgements and no duplicate stock");
+    console.log(JSON.stringify({ passed: true, cases: 15, fixture: key, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+      recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }

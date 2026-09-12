@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   approvalConfigs, auditLogs, boms, jgDocs, offsetPools, shDocs, skus, spus,
@@ -10,6 +10,7 @@ import {
   approveSh, confirmInbound, createQc, createSh, getSh, listShs, submitSh,
 } from "@/server/modules/matflow/sh";
 import { createTestDb, type TestDb } from "../helpers/db";
+import { refreshInboundMaterialReview } from "@/server/modules/outsource/leftover";
 
 /**
  * W4 收货 SH（jg 源）+ QC + 入库确认：
@@ -188,8 +189,16 @@ describe("物料流转 W4：SH 收货（jg 源）+ QC + 入库", () => {
   });
 
   it("3) 入库确认：成品仓+(合格+让步)+备品；委外仓−qtyPer×(合格+让步+备品)；对冲池零成本；二次入库 409", async () => {
-    const r = await confirmInbound(whCreator, sh1, db);
-    expect(r.status).toBe("completed");
+    await db.execute(sql`CREATE FUNCTION sh_review_ack_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='material_review_checked' THEN RAISE EXCEPTION 'synthetic review acknowledgement fail'; END IF; RETURN NEW; END $$`);
+    await db.execute(sql`CREATE TRIGGER sh_review_ack_fail BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION sh_review_ack_fail()`);
+    try {
+      const r = await confirmInbound(whCreator, sh1, db);
+      expect(r).toEqual({ status: "completed", materialReview: "pending" });
+      expect((await getSh(sh1, db)).materialReview?.checkedAt).toBeNull();
+    } finally {
+      await db.execute(sql`DROP TRIGGER sh_review_ack_fail ON audit_logs`);
+      await db.execute(sql`DROP FUNCTION sh_review_ack_fail()`);
+    }
 
     // 成品仓：正常行 350+20=370，备品行 +5（零成本另一事件）→ 375
     expect(await getBalance(db, cp, whFinId)).toBe("375.0000");
@@ -221,6 +230,14 @@ describe("物料流转 W4：SH 收货（jg 源）+ QC + 入库", () => {
       status: 409, message: expect.stringContaining("不可重复入库"),
     });
     expect(await getBalance(db, cp, whFinId)).toBe("375.0000");
+  });
+
+  it("3b) 提示失败后单独恢复，只写核对与审计，不重复库存/对冲池", async () => {
+    const before = await db.select().from(stockLedger), pools = await db.select().from(offsetPools);
+    await refreshInboundMaterialReview(whCreator, sh1, db);
+    expect((await getSh(sh1, db)).materialReview).toMatchObject({ checkedAt: expect.any(Date), basisStatus: "needs_review" });
+    expect(await db.select().from(stockLedger)).toEqual(before);
+    expect(await db.select().from(offsetPools)).toEqual(pools);
   });
 
   it("4) 累计校验：分次累加；超上限(JG数量−已判不合格+容差) 409；rework/spare 不占累计", async () => {

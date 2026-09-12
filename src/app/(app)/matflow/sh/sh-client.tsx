@@ -8,7 +8,7 @@ import DocumentTargetLink from "@/components/DocumentTargetLink";
 
 import SearchInput from "@/components/SearchInput";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { App, Alert, Badge, Button, DatePicker, Descriptions, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
@@ -20,8 +20,8 @@ import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import RemoteSelect from "@/components/RemoteSelect";
-import { postJson } from "@/components/fetchJson";
-import { formatQty } from "@/components/format";
+import { JsonRequestError, postJson } from "@/components/fetchJson";
+import { formatQty, formatAsOf } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
@@ -86,6 +86,7 @@ interface ShRow {
   hasQc: boolean;
   inbound: boolean;
   createdByName: string | null;
+  materialReviewPending?: boolean;
   createdAt: string;
 }
 
@@ -135,6 +136,7 @@ interface ShDetail {
   qc: { id: number; conclusion: string | null; createdAt: string; lines: QcLine[] } | null;
   inbound: boolean;
   approvals: DocApproval[];
+  materialReview: { checkedAt: string | null; reviewItemId: number | null; basisStatus: string | null } | null;
 }
 
 interface JgSource {
@@ -221,7 +223,7 @@ export default function ShClient() {
 
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「到货」级点数字回链到本页时带过来
-  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "sh", defaults: { q: "", status: "", from: "", to: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "sh", defaults: { q: "", status: "", from: "", to: "", materialReviewPending: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
@@ -231,6 +233,7 @@ export default function ShClient() {
   if (status) listParams.set("status", status);
   if (from) listParams.set("from", from);
   if (to) listParams.set("to", to);
+  if (filters.materialReviewPending) listParams.set("materialReviewPending", filters.materialReviewPending);
   const listRead = useDocumentRead<{ rows: ShRow[]; total: number }>(`/api/matflow/sh?${listParams}`);
   const listValid = listRead.data != null && Array.isArray(listRead.data.rows) && Number.isSafeInteger(listRead.data.total)
     && listRead.data.total >= 0 && listRead.data.rows.every(r => r && Number.isSafeInteger(r.id) && r.id > 0 && typeof r.docNo === "string");
@@ -258,6 +261,9 @@ export default function ShClient() {
   const [qcConclusion, setQcConclusion] = useState("");
   const [qcLoading, setQcLoading] = useState(false);
   const [inboundLoading, setInboundLoading] = useState(false);
+  const reviewBusy = useRef(false);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState<{ id: number; message: string } | null>(null);
 
   // 创建
   const [createOpen, setCreateOpen] = useState(false);
@@ -528,7 +534,7 @@ export default function ShClient() {
     if (!detail || !detail.qc) return;
     setInboundLoading(true);
     try {
-      await postJson(`/api/matflow/sh/${detail.id}/inbound`, {});
+      const result = await postJson<{ materialReview?: "checked" | "pending" }>(`/api/matflow/sh/${detail.id}/inbound`, {});
       let pass = "0";
       let concession = "0";
       for (const l of detail.qc.lines) {
@@ -547,11 +553,31 @@ export default function ShClient() {
       if (decCmp(concession, "0") > 0) parts.push(`让步 ${formatQty(concession)}`);
       if (detail.sourceType === "jg" && decCmp(spare, "0") > 0) parts.push(`备品 ${formatQty(spare)}`);
       message.success(`入库完成：${parts.join("、")}`);
+      if (result.materialReview === "pending") message.warning("库存已入账；物料核对提示尚未生成，请在入库区重试核对，不要再次入库。", 8);
       refresh();
     } catch (e) {
       message.error((e as Error).message);
     } finally {
       setInboundLoading(false);
+    }
+  };
+
+  const handleMaterialReview = async () => {
+    if (!detail || !detail.inbound || detail.sourceType !== "jg" || !canWrite || reviewBusy.current) return;
+    const target = { id: detail.id, docNo: detail.docNo };
+    reviewBusy.current = true;
+    setReviewLoading(true);
+    setReviewError(null);
+    try {
+      await postJson(`/api/matflow/sh/${target.id}/material-review`, {});
+      message.success(`${target.docNo}：核对提示已重新计算；未重复入库，也未自动完成复核。`);
+      refresh();
+    } catch (e) {
+      setReviewError({ id: target.id, message: e instanceof JsonRequestError && e.status < 500 ? e.message
+        : "未能确认本次计算结果，请先刷新查看上次计算记录，再安全重试核对。" });
+    } finally {
+      reviewBusy.current = false;
+      setReviewLoading(false);
     }
   };
 
@@ -587,9 +613,11 @@ export default function ShClient() {
     {
       title: "已入库",
       dataIndex: "inbound",
-      width: 90,
-      render: (v: boolean) =>
-        v ? <Badge status="success" text="已入库" /> : <Badge status="default" text="未入库" />,
+      width: 160,
+      render: (v: boolean, row: ShRow) => <Space direction="vertical" size={2}>
+        {v ? <Badge status="success" text="已入库" /> : <Badge status="default" text="未入库" />}
+        {row.materialReviewPending ? <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setDetailId(row.id)}>物料核对待计算</Button> : null}
+      </Space>,
     },
     {
       title: "时间",
@@ -935,7 +963,7 @@ export default function ShClient() {
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
-        onChange={(key) => listState.setFilter({ status: key })}
+        onChange={(key) => listState.setFilter({ status: key, materialReviewPending: "" })}
       />
       <ListToolbar
         state={listState}
@@ -943,6 +971,11 @@ export default function ShClient() {
           <>
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
               刷新
+            </Button>
+            <Button type={filters.materialReviewPending ? "primary" : "default"}
+              aria-pressed={Boolean(filters.materialReviewPending)}
+              onClick={() => listState.setFilter({ materialReviewPending: filters.materialReviewPending ? "" : "1", status: "" })}>
+              {filters.materialReviewPending ? "物料核对待计算 ×" : "物料核对待计算"}
             </Button>
             {canWrite ? (
               <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
@@ -1126,7 +1159,27 @@ export default function ShClient() {
             <Typography.Title level={5}>③ 入库区</Typography.Title>
             <div style={{ marginBottom: 24 }}>
               {detail.inbound ? (
-                <Alert type="success" showIcon message="已完成入库" />
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  <Alert type="success" showIcon message="已完成入库" />
+                  {detail.sourceType === "jg" ? (
+                    <Alert type={detail.materialReview?.checkedAt ? "info" : "warning"} showIcon
+                      message={detail.materialReview?.checkedAt
+                        ? `物料估算上次计算：${formatAsOf(detail.materialReview.checkedAt)}`
+                        : "物料估算尚无成功计算记录（可能未运行或失败）"}
+                      description={<Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        <Typography.Text>这是计算时的累计估算，不是当前实盘，也不代表负责人已复核；发退料变化后可重算。此操作不会重复入库。</Typography.Text>
+                        {detail.materialReview?.basisStatus === "unknown" ? <Typography.Text type="warning">来源依据不完整，请进入复核项核对，不能按零差额处理。</Typography.Text> : null}
+                        {detail.materialReview?.basisStatus === "no_difference" ? <Typography.Text>上次估算无差额，不等于账实相符。</Typography.Text> : null}
+                        <Space wrap>
+                          {canWrite ? <Button loading={reviewLoading} onClick={() => void handleMaterialReview()}>重算物料核对</Button>
+                            : <Typography.Text type="secondary">请仓管/管理员重算核对。</Typography.Text>}
+                          {detail.materialReview?.reviewItemId ? <a href={`/review/checklist?category=material_leftover&status=all&id=${detail.materialReview.reviewItemId}`}>查看核对事项</a> : null}
+                        </Space>
+                        {reviewError?.id === detail.id ? <Alert type="error" showIcon message={`核对提示：${reviewError.message}`} description="入库结果不受影响；重算不会重复生成相同事项或再次入库。" /> : null}
+                      </Space>}
+                    />
+                  ) : null}
+                </Space>
               ) : (
                 <Space direction="vertical">
                   {detail.qc == null ? (

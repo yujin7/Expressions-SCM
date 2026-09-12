@@ -21,6 +21,7 @@ vi.mock("@/components/useDocumentTarget", () => ({ useDocumentTarget: () => ({ i
 vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: h.q, status: "", from: h.from, to: h.to }, page: 1, pageSize: 20, tableSize: "small", paginationProps: (v: unknown) => v,
   setFilter: (patch: { from?: string; to?: string }) => { if (patch.from !== undefined) h.from = patch.from; if (patch.to !== undefined) h.to = patch.to; } }) }));
 vi.mock("react", async original => ({ ...await original<typeof import("react")>(),
+  useRef: (initial: unknown) => { const i = h.cursor++; if (!(i in h.slots)) h.slots[i] = { current: initial }; return h.slots[i]; },
   useState: <T,>(initial: T | (() => T)) => { const i = h.cursor++; if (!(i in h.slots)) h.slots[i] = typeof initial === "function" ? (initial as () => T)() : initial;
     return [h.slots[i], (update: T | ((old: T) => T)) => { const v = typeof update === "function" ? (update as (old: T) => T)(h.slots[i] as T) : update; if (!Object.is(v, h.slots[i])) h.changed = true; h.slots[i] = v; }]; },
   useCallback: (fn: unknown, deps: readonly unknown[]) => { const i = h.cursor++; const p = h.slots[i] as { fn: unknown; deps: readonly unknown[] } | undefined;
@@ -130,4 +131,30 @@ it("opening creates no unbounded candidate preloads; closing withdraws all sourc
   render(); await flush(); open(); expect(fetchMock.mock.calls.every(([url]) => !String(url).includes("999"))).toBe(true);
   select(1); await flush(); (create().props.onCancel as () => void)(); render(); open(); expect(lines()).toBeUndefined();
   expect(nodes(create()).find(n => n.props.placeholder === "选择来源单据")?.props.api).toBe("/api/outsource/po?receiptEligible=1");
+});
+
+it.each([409, 500])("recovery is a distinct deduplicated POST; late %i failure cannot attach to another receipt and is retryable on its own", async status => {
+  h.detailId = 61;
+  const pending = Promise.withResolvers<Response>();
+  const detail = (id: number) => Response.json({ id, docNo: `SH-${id}`, status: "completed", version: 3, sourceType: "jg", sourceId: 9, lines: [], qc: null, approvals: [], inbound: true, materialReview: { checkedAt: null, reviewItemId: null, basisStatus: null } });
+  fetchMock.mockImplementation(async (url, init) => init?.method === "POST" ? pending.promise
+    : /\/sh\/\d+$/.test(String(url)) ? detail(Number(String(url).split("/").at(-1))) : Response.json({ rows: [], total: 0 }));
+  render(); await flush();
+  const panel = () => nodes(render()).find(n => n.type === "alert" && String(n.props.message).includes("物料估算"))!;
+  const button = () => nodes(panel().props.description as ReactNode).find(n => n.type === "button" && n.props.children === "重算物料核对")!;
+  expect(panel().props.type).toBe("warning");
+  const click = button().props.onClick as () => void;
+  click(); click(); render();
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  expect(fetchMock.mock.calls.find(([, init]) => init?.method === "POST")![0]).toBe("/api/matflow/sh/61/material-review");
+  h.detailId = 62; render(); await flush(); pending.resolve(Response.json({ error: "合成核对失败" }, { status })); await flush();
+  const expected = status === 409 ? "合成核对失败" : "未能确认本次计算结果";
+  expect(JSON.stringify(panel().props.description)).not.toContain(expected);
+  h.detailId = 61; render(); await flush(); expect(JSON.stringify(panel().props.description)).toContain(expected);
+  expect(JSON.stringify(panel().props.description)).not.toContain("勿重复提交");
+  fetchMock.mockImplementation(async (url, init) => init?.method === "POST" ? Response.json({ status: "checked" })
+    : /\/sh\/\d+$/.test(String(url)) ? detail(Number(String(url).split("/").at(-1))) : Response.json({ rows: [], total: 0 }));
+  (button().props.onClick as () => void)(); await flush();
+  expect(h.message.success).toHaveBeenCalledWith(expect.stringContaining("SH-61"));
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").every(([url]) => String(url).endsWith("/material-review"))).toBe(true);
 });

@@ -4,6 +4,7 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { currentWriteActor } from "@/server/core/current-write-actor";
+import { ApiError } from "@/server/modules/master/common";
 import { dCmp } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { estimateInboundMaterials, type InboundMaterialFact } from "@/server/rules/inbound-materials";
@@ -11,15 +12,33 @@ import { type AnyDb, requireAnyRole, resolveDb } from "./common";
 
 type Facts = { wo_qty: string | null; inbound: string; completed_receipts: number; invalid_lines: number; materials: InboundMaterialFact[] };
 
-export async function suggestLeftoverAfterInbound(user: SessionUser, jgId: number, dbArg?: AnyDb): Promise<void> {
+/** Recover only the estimate, never call receipt posting again. */
+export async function refreshInboundMaterialReview(user: SessionUser, shId: number, dbArg?: AnyDb): Promise<void> {
+  if (!Number.isSafeInteger(shId) || shId <= 0 || shId > 2_147_483_647) throw new ApiError(400, "无效的收货单ID");
+  await suggestLeftoverAfterInbound(user, 0, dbArg, shId);
+}
+
+export async function suggestLeftoverAfterInbound(user: SessionUser, jgId: number, dbArg?: AnyDb, receiptId?: number): Promise<void> {
   const db = await resolveDb(dbArg);
   await db.transaction(async (tx: AnyDb) => {
     const actor = await currentWriteActor(tx, user);
     requireAnyRole(actor, "warehouse");
+    if (receiptId != null) {
+      // Completed receipt identity is immutable; do not invert the posting SH → JG lock order.
+      const [receipt] = await tx.select().from(schema.shDocs).where(eq(schema.shDocs.id, receiptId));
+      if (!receipt) throw new ApiError(404, "收货单不存在");
+      if (receipt.sourceType !== "jg" || (jgId !== 0 && receipt.sourceId !== jgId) || receipt.status !== "completed") {
+        throw new ApiError(409, "仅已入库的委外收货单可重算物料核对；此操作不会再次入库");
+      }
+      jgId = receipt.sourceId;
+    }
     // Serialize this producer's dedup/update, including simultaneous receipt hooks.
     const [jg]: (typeof schema.jgDocs.$inferSelect)[] = await tx.select().from(schema.jgDocs)
       .where(eq(schema.jgDocs.id, jgId)).for("update");
-    if (!jg) return;
+    if (!jg) {
+      if (receiptId != null) throw new ApiError(409, "加工单来源缺失，请核对原收货单");
+      return;
+    }
     // One statement snapshot; query count does not grow with material count. Aggregate each
     // source BEFORE joining, so duplicate WO lines cannot multiply FL/TL or receipt facts.
     const result = await tx.execute(sql`
@@ -58,15 +77,23 @@ export async function suggestLeftoverAfterInbound(user: SessionUser, jgId: numbe
     const estimate = estimateInboundMaterials(facts.materials, facts.wo_qty, facts.invalid_lines ? null : facts.inbound);
     const fingerprint = createHash("sha256").update(JSON.stringify({ version: 2, jgId, facts })).digest("hex");
     const marker = `依据指纹 D33-b/v2:${fingerprint}`;
+    const unknown = facts.invalid_lines > 0 || !facts.materials.length || estimate.some(line => line.delta === null);
+    const needsReview = unknown || estimate.some(line => line.delta !== null && dCmp(line.delta, "0") !== 0);
+    const finish = async (reviewItemId: number | null) => {
+      if (receiptId == null) return;
+      // Even no-difference/idempotent results need a durable success receipt. If this fails,
+      // the estimate mutation also rolls back; committed stock is in a different transaction.
+      await writeAudit(tx, { userId: actor.id, entity: "sh", entityId: receiptId, action: "material_review_checked",
+        after: { jgId, fingerprint, reviewItemId, basisStatus: unknown ? "unknown" : needsReview ? "needs_review" : "no_difference" } });
+    };
     const items: (typeof schema.reviewItems.$inferSelect)[] = await tx.select().from(schema.reviewItems)
       .where(and(eq(schema.reviewItems.category, "material_leftover"), eq(schema.reviewItems.refType, "jg"),
         or(eq(schema.reviewItems.refKey, String(jgId)), eq(schema.reviewItems.refKey, jg.docNo))))
       .orderBy(desc(schema.reviewItems.id)).for("update");
     // Identical facts must not recreate an item already decided by a human.
     const pending = items.find(item => item.status === "open");
-    if ((pending ?? items[0])?.detail?.endsWith(marker)) return;
-    const needsReview = facts.invalid_lines > 0 || estimate.some(line => line.delta === null || dCmp(line.delta, "0") !== 0);
-    if (!needsReview && !pending && facts.materials.length > 0) return;
+    if ((pending ?? items[0])?.detail?.endsWith(marker)) return finish((pending ?? items[0]).id);
+    if (!needsReview && !pending) return finish(null);
     const lines = estimate.map(line => `${line.code}（${line.unit}）：净发料 ${line.netIssued}；毛用量估算 ${line.expected ?? "未知"}；差额 ${line.delta ?? "未知"}${line.reason ? `；${line.reason}` : ""}`);
     const detail = [
       "这是生成时的估算快照，不是实盘或可退库存；差额不自动生成TL/FL，也不代表欠料必须补发。",
@@ -85,5 +112,6 @@ export async function suggestLeftoverAfterInbound(user: SessionUser, jgId: numbe
       action: pending ? "material_estimate_refresh" : "material_estimate_create",
       before: pending ? { title: pending.title, detail: pending.detail, refKey: pending.refKey } : undefined,
       after: { ...values, jgId, fingerprint, formulaVersion: "D33-b/v2" } });
+    await finish(item.id);
   });
 }
