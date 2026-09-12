@@ -416,13 +416,13 @@ function WoInner() {
       if (!isWoGenerationReceipt(res)) throw new Error("生成回执不完整，请核对来源工单下的已有单据");
       if (!mounted.current) return;
       setGenOpen(false);
-      modal.success({
+      const receipt = modal.success({
         title: `${source.docNo}：草稿已生成，尚未提交审批`,
         zIndex: 1200,
         content: (
           <div>
-            {res.pos.map(p => <div key={p.id}>采购订单：<Link href={`/outsource/po?docId=${p.id}`}>{p.docNo}</Link></div>)}
-            <div>加工通知单：<Link href={`/outsource/jg?docId=${res.jg.id}`}>{res.jg.docNo}</Link></div>
+            {res.pos.map(p => <div key={p.id}>采购订单：<Link onClick={() => receipt.destroy()} href={`/outsource/po?docId=${p.id}`}>{p.docNo}</Link></div>)}
+            <div>加工通知单：<Link onClick={() => receipt.destroy()} href={`/outsource/jg?docId=${res.jg.id}`}>{res.jg.docNo}</Link></div>
           </div>
         ),
       });
@@ -663,8 +663,8 @@ function WoInner() {
                 message={`该工单已生成加工通知单 ${existingJgNo}，不可重复生成。`}
               />
             ) : null}
-            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="成品">
+            <Descriptions column={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="成品" span={{ xs: 1, sm: 2, md: 2, lg: 2, xl: 2, xxl: 2 }}>
                 {detail.productSkuCode} {detail.productSkuName}
               </Descriptions.Item>
               <Descriptions.Item label="数量">{formatQty(detail.qty)}</Descriptions.Item>
@@ -739,7 +739,7 @@ function WoInner() {
         {/* W2 审计 6：这里是全系统唯一一个真的在选供应商的地方，此前只有一个光秃秃的下拉框。
             面板只读——摆事实，不排名次、不自动改表单。 */}
         <SourcingAidPanel
-          skuOptions={(detail?.lines ?? []).map((l) => ({ value: l.materialSkuId, label: `${l.skuCode} ${l.skuName}` }))}
+          skuOptions={(genOpen ? detail?.lines ?? [] : []).map((l) => ({ value: l.materialSkuId, label: `${l.skuCode} ${l.skuName}` }))}
         />
         <Form form={genForm} layout="vertical" disabled={generating || !!generationError}>
           <Form.List name="poGroups">

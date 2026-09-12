@@ -10,10 +10,10 @@
  * 本面板**只读**：不排名次、不给「推荐」标记、不自动改表单——把事实摆出来，选谁仍由采购判断。
  * 金额由服务端按角色剥离（moneyVisible=false 时显示「无权限」，不是 0 也不是空）。
  */
-import { useCallback, useEffect, useState } from "react";
-import { Alert, Card, Empty, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { useState } from "react";
+import { Alert, Button, Card, Empty, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson } from "@/components/fetchJson";
+import { useDocumentRead } from "@/components/useDocumentRead";
 
 interface Row {
   supplierId: number;
@@ -57,29 +57,12 @@ export interface SourcingSkuOption {
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
 export default function SourcingAidPanel({ skuOptions }: { skuOptions: SourcingSkuOption[] }) {
-  const [skuId, setSkuId] = useState<number | undefined>(skuOptions[0]?.value);
-  const [data, setData] = useState<Data | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    // 物料行变了就跟着换默认项；用户手选过的值若仍在候选里则保留
-    if (skuId == null || !skuOptions.some((o) => o.value === skuId)) setSkuId(skuOptions[0]?.value);
-  }, [skuOptions, skuId]);
-
-  const load = useCallback(async () => {
-    if (skuId == null) { setData(null); return; }
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await fetchJson<Data>(`/api/outsource/sourcing-aid?skuId=${skuId}`));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [skuId]);
-  useEffect(() => { void load(); }, [load]);
+  const [selectedId, setSkuId] = useState<number | undefined>(skuOptions[0]?.value);
+  // Withdraw the previous material's facts during render, not after an effect.
+  const skuId = skuOptions.some(o => o.value === selectedId) ? selectedId : skuOptions[0]?.value;
+  const read = useDocumentRead<Data>(skuId == null ? null : `/api/outsource/sourcing-aid?skuId=${skuId}`);
+  const { data, error } = read;
+  const loading = read.phase === "loading";
 
   const columns: ColumnsType<Row> = [
     {
@@ -152,19 +135,20 @@ export default function SourcingAidPanel({ skuOptions }: { skuOptions: SourcingS
 
   return (
     <Card size="small" title="选源参考（只读，不排名次）" style={{ marginBottom: 16 }}>
-      <Space style={{ marginBottom: 8 }} wrap>
+      <div style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <Typography.Text type="secondary">物料</Typography.Text>
         <Select
           value={skuId}
           onChange={setSkuId}
           options={skuOptions}
-          style={{ width: 320 }}
+          style={{ width: 320, maxWidth: "100%", minWidth: 0 }}
+          aria-label="选源参考物料"
           placeholder="选择要比对的物料"
           showSearch
           optionFilterProp="label"
         />
-      </Space>
-      {error ? <Alert type="error" showIcon message="选源参考加载失败" description={error} style={{ marginBottom: 8 }} /> : null}
+      </div>
+      {error ? <Alert type="error" showIcon message="选源参考加载失败" description={error} style={{ marginBottom: 8 }} action={<Button onClick={read.retry}>重试读取</Button>} /> : null}
       {skuOptions.length === 0 ? (
         <Empty description="先在下方添加物料行，再看该物料的候选供应商事实" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
@@ -177,7 +161,7 @@ export default function SourcingAidPanel({ skuOptions }: { skuOptions: SourcingS
             dataSource={data?.rows ?? []}
             pagination={false}
             scroll={{ x: 1000, y: 220 }}
-            locale={{ emptyText: "该物料在系统内既无价目表基准价、也无历史采购行——这是首次寻源，没有可比事实" }}
+            locale={{ emptyText: read.phase === "success" ? "该物料在系统内既无价目表基准价、也无历史采购行——这是首次寻源，没有可比事实" : "选源事实尚未成功读取，不代表没有供应商记录" }}
           />
           {data?.limitations.length ? (
             <details style={{ marginTop: 8 }}>

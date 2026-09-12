@@ -4,7 +4,7 @@ import WoClient from "@/app/(app)/outsource/wo/wo-client";
 
 // Lifecycle/callback proof, not AntD rendering. Layout is checked in the isolated browser.
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false, id: 18, permitted: true,
-  formIndex: 0, values: {} as Record<string, unknown>, validate: vi.fn(), post: vi.fn(), retry: vi.fn(), success: vi.fn(), error: vi.fn(),
+  formIndex: 0, values: {} as Record<string, unknown>, validate: vi.fn(), post: vi.fn(), retry: vi.fn(), success: vi.fn(), error: vi.fn(), destroy: vi.fn(),
   generated: { phase: "success", data: { rows: [] as { docNo: string }[] } },
 }));
 vi.mock("antd", () => ({ App: { useApp: () => ({ message: { error: h.error, success: vi.fn() }, modal: { success: h.success } }) },
@@ -59,7 +59,7 @@ const dialog = () => nodes(render()).find(n => n.type === "modal" && String(n.pr
 const open = () => { (generateButton()!.props.onClick as () => void)(); render(); };
 const submit = () => (dialog().props.onOk as () => void)();
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); render(); };
-beforeEach(() => { h.slots = []; h.effects = []; h.id = 18; h.permitted = true; h.generated = { phase: "success", data: { rows: [] } }; h.post.mockReset(); h.validate.mockReset().mockImplementation(async () => h.values); h.success.mockClear(); h.error.mockClear(); h.retry.mockClear(); vi.stubGlobal("React", React); });
+beforeEach(() => { h.slots = []; h.effects = []; h.id = 18; h.permitted = true; h.generated = { phase: "success", data: { rows: [] } }; h.post.mockReset(); h.validate.mockReset().mockImplementation(async () => h.values); h.success.mockReset().mockReturnValue({ destroy: h.destroy }); h.destroy.mockClear(); h.error.mockClear(); h.retry.mockClear(); vi.stubGlobal("React", React); });
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.unstubAllGlobals(); });
 
 it("role and existing-generation checks gate the button; zero suggestion opens without PO", () => {
@@ -78,6 +78,7 @@ it("same-tick double submit is blocked before asynchronous form validation", asy
   expect(h.success.mock.calls[0][0].title).toContain("尚未提交审批");
   expect(h.success.mock.calls[0][0].zIndex).toBe(1200);
   expect(nodes(h.success.mock.calls[0][0].content).filter(n => n.type === "a").map(n => n.props.href)).toEqual(["/outsource/po?docId=41", "/outsource/jg?docId=42"]);
+  (nodes(h.success.mock.calls[0][0].content).find(n => n.type === "a")!.props.onClick as () => void)(); expect(h.destroy).toHaveBeenCalledTimes(1);
 });
 it("switching source during validation never submits to the old or the new WO", async () => {
   open(); const validation = Promise.withResolvers<Record<string, unknown>>(); h.validate.mockReturnValue(validation.promise); submit(); h.id = 19; render(); validation.resolve(h.values); await flush(); expect(h.post).not.toHaveBeenCalled();
