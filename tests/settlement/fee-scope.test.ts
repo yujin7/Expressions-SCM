@@ -158,3 +158,28 @@ it("JS detail follows current approval configuration and retains monetary maskin
     await f.db.update(s.approvalConfigs).set({ approverRole: "finance" }).where(eq(s.approvalConfigs.docType, "js"));
   }
 });
+it.each(["ops", "warehouse", "quality"])("JS configured %s checker cannot approve hidden amounts; rejection stays atomic", async role => {
+  const a = await setup(), checker = await actor([role]);
+  const js = await createJs(a.pmc, { jgId: a.jg.id }, f.db);
+  await submitJs(a.pmc, js.id, { version: 1 }, f.db);
+  await f.db.update(s.approvalConfigs).set({ approverRole: role }).where(eq(s.approvalConfigs.docType, "js"));
+  try {
+    const detail = maskSensitive(await getJs(js.id, f.db, checker), checker.roles);
+    expect(detail.actions).toMatchObject({ approve: false, reject: true });
+    expect(detail).not.toHaveProperty("feePayable");
+    await expect(approveJs(checker, js.id, { action: "approve", version: 2 }, f.db))
+      .rejects.toMatchObject({ status: 403, message: expect.stringContaining("不可查看结算金额") });
+    // A stale caller-supplied finance role cannot bypass the current database identity.
+    await expect(approveJs({ ...checker, roles: [role, "finance"] }, js.id, { action: "approve", version: 2 }, f.db))
+      .rejects.toMatchObject({ status: 403 });
+    expect((await getJs(js.id, f.db)).status).toBe("pending");
+    expect((await getJs(js.id, f.db)).approvals).toEqual([]);
+    expect((await getJs(js.id, f.db)).version).toBe(2);
+    await approveJs(checker, js.id, { action: "reject", version: 2, comment: "请配置金额可见审批人" }, f.db);
+    const rejected = await getJs(js.id, f.db);
+    expect(rejected).toMatchObject({ status: "draft", version: 3, feePayable: "20.00" });
+    expect(rejected.approvals).toHaveLength(1);
+  } finally {
+    await f.db.update(s.approvalConfigs).set({ approverRole: "finance" }).where(eq(s.approvalConfigs.docType, "js"));
+  }
+});
