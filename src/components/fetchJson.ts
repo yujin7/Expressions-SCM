@@ -1,5 +1,18 @@
 "use client";
 
+/** Keep bounded machine metadata, never the raw response body. Existing Error consumers still work. */
+export class JsonRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+    this.name = "JsonRequestError";
+  }
+}
+
+function serverErrorCode(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null || !("code" in body)) return undefined;
+  return typeof body.code === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(body.code) ? body.code : undefined;
+}
+
 function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 }
@@ -48,7 +61,7 @@ export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> 
   signal?.throwIfAborted();
   if (!res.ok) {
     const message = serverErrorMessage(body) ?? `请求失败（${res.status}）`;
-    throw new Error(res.status >= 500 ? unconfirmedMessage(message, init) : message);
+    throw new JsonRequestError(res.status >= 500 ? unconfirmedMessage(message, init) : message, res.status, serverErrorCode(body));
   }
   return body as T;
 }

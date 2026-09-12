@@ -40,14 +40,14 @@ export const refreshJsBasisSchema = submitJsSchema.extend({
   note: z.string().trim().min(1, "请填写依据更新说明").max(500),
 });
 
-// ---------- 审批（财务；结余物料须确认或先退料 TL） ----------
+// ---------- 审批（财务；净发料低于标准用量须核对并说明确认） ----------
 
 export const approveJsSchema = z
   .object({
     action: z.enum(["approve", "reject"]),
     comment: z.string().trim().max(500).optional(),
     version: z.number().int().positive(),
-    /** 存在负实际损耗（结余）物料时，财务显式确认后方可通过 */
+    /** 历史接口名，确认负实际损耗，不是认可可退余料；仍须财务资格与说明。 */
     acknowledgeSurplus: z.boolean().optional().default(false),
     surplusNote: z.string().trim().max(500).optional(),
   })
@@ -56,7 +56,7 @@ export const approveJsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["surplusNote"],
-        message: "确认结余必须填写短溢说明（留痕）",
+        message: "确认用量负差必须填写差异说明（留痕）",
       });
     }
   });

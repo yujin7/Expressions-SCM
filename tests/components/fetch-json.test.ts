@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchJson, patchJson, postJson, putJson } from "@/components/fetchJson";
+import { fetchJson, JsonRequestError, patchJson, postJson, putJson } from "@/components/fetchJson";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -31,6 +31,17 @@ function delayedBody(status = 200) {
 }
 
 describe("shared JSON request contract", () => {
+  it("preserves bounded error code and status for workflow decisions without retaining response data", async () => {
+    respond(JSON.stringify({ error: "用量负差待核对", code: "SURPLUS_UNACKED", secret: "never retain" }), 409);
+    const error = await postJson("/api/example", {}).catch(e => e);
+    expect(error).toBeInstanceOf(JsonRequestError);
+    expect(error).toMatchObject({ message: "用量负差待核对", code: "SURPLUS_UNACKED", status: 409 });
+    expect(error).not.toHaveProperty("secret"); expect(error).not.toHaveProperty("body");
+  });
+  it.each([undefined, null, {}, 42, "bad code", "<html>", "X".repeat(81), "CODE\n", "code"])("rejects unsafe/non-contract machine code %j", async code => {
+    respond(JSON.stringify({ error: "结余 acknowledgeSurplus 只是普通错误文本", code }), 403);
+    await expect(postJson("/api/example", {})).rejects.toMatchObject({ status: 403, code: undefined });
+  });
   it.each([{ rows: [] }, [], null, 0, false, "已完成"])("preserves valid JSON %j without imposing a DTO shape", async (value) => {
     const request = respond(JSON.stringify(value));
     await expect(fetchJson("/api/example")).resolves.toEqual(value);

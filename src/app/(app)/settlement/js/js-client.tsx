@@ -18,7 +18,8 @@ import dayjs from "dayjs";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import ListToolbar from "@/components/ListToolbar";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson, JsonRequestError, postJson } from "@/components/fetchJson";
+import { compareDecimalValues } from "@/lib/decimal-sort";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
@@ -158,7 +159,7 @@ function DeductPriceSourceAlert() {
   );
 }
 
-/** js_line 逐物料表（预览与详情共用）：超额损耗>0 标红；结余（负实际损耗）标黄 */
+/** js_line 逐物料表（预览与详情共用）：超额损耗>0 标红；用量负差标黄，不推断实物结余 */
 function JsLinesTable({ lines, showPreviewCols }: { lines: JsLine[]; showPreviewCols: boolean }) {
   const columns: ColumnsType<JsLine> = [
     {
@@ -204,8 +205,8 @@ function JsLinesTable({ lines, showPreviewCols }: { lines: JsLine[]; showPreview
       width: 100,
       align: "right",
       render: (v: string) =>
-        Number(v) < 0 ? (
-          <Tooltip title="负实际损耗=结余：该物料仍压在委外仓，审批前必须退料（TL）或财务短溢确认">
+        compareDecimalValues(v, "0") < 0 ? (
+          <Tooltip title="净发料（发料−退料）低于标准用量；可能是节约或记录/单位/BOM差异，不等于实物余料。请先核对，不能用继续退料消除负差。">
             <Typography.Text type="warning">{formatQty(v)}</Typography.Text>
           </Tooltip>
         ) : (
@@ -218,7 +219,7 @@ function JsLinesTable({ lines, showPreviewCols }: { lines: JsLine[]; showPreview
       width: 100,
       align: "right",
       render: (v: string) =>
-        Number(v) > 0 ? <Typography.Text type="danger">{formatQty(v)}</Typography.Text> : formatQty(v),
+        compareDecimalValues(v, "0") > 0 ? <Typography.Text type="danger">{formatQty(v)}</Typography.Text> : formatQty(v),
     },
     {
       title: "扣款单价",
@@ -249,7 +250,7 @@ function JsLinesTable({ lines, showPreviewCols }: { lines: JsLine[]; showPreview
         pagination={false}
         scroll={{ x: 900 }}
         rowClassName={(r) =>
-          Number(r.excessLoss) > 0 ? "js-line-excess" : Number(r.actualLoss) < 0 ? "js-line-surplus" : ""
+          compareDecimalValues(r.excessLoss, "0") > 0 ? "js-line-excess" : compareDecimalValues(r.actualLoss, "0") < 0 ? "js-line-surplus" : ""
         }
       />
     </>
@@ -274,7 +275,7 @@ export default function JsClient() {
   // ---- 详情 Drawer ----
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
-  useEffect(() => { setRejectOpen(false); setSurplusOpen(false); }, [detailId]);
+  useEffect(() => { setRejectOpen(false); setSurplusTarget(null); setSurplusAck(false); setSurplusNote(""); }, [detailId]);
   const detailRead = useDocumentRead<JsDetail>(detailId == null ? null : `/api/settlement/js/${detailId}`);
   const detail = detailRead.data;
   const detailLoading = detailRead.phase === "loading";
@@ -288,8 +289,8 @@ export default function JsClient() {
   useEffect(() => { setBasisOpen(false); setBasisNote(""); }, [detailId]);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
-  // 结余（负实际损耗）409 → 短溢确认弹窗
-  const [surplusOpen, setSurplusOpen] = useState(false);
+  // Historical API names retained; acknowledgement is bound to the challenged document/version.
+  const [surplusTarget, setSurplusTarget] = useState<{ id: number; version: number } | null>(null);
   const [surplusMsg, setSurplusMsg] = useState("");
   const [surplusAck, setSurplusAck] = useState(false);
   const [surplusNote, setSurplusNote] = useState("");
@@ -440,7 +441,7 @@ export default function JsClient() {
     }
   };
 
-  // ---- 提交 / 审批（错误由调用方处理：approve 的 409 结余闸门需特殊分支） ----
+  // ---- 提交 / 审批（仅明确的409机器码可触发负差确认） ----
   const post = async (path: string, body: unknown, successText: string) => {
     if (!detail || actionLock.current) return false;
     actionLock.current = true;
@@ -458,28 +459,37 @@ export default function JsClient() {
 
   const doApprove = async (extra?: { acknowledgeSurplus: boolean; surplusNote: string }) => {
     if (!detail) return;
+    const target = { id: detail.id, version: detail.version };
+    if (extra && (surplusTarget?.id !== target.id || surplusTarget.version !== target.version || !detail.actions?.approve)) {
+      message.error("单据或处理资格已变化，请重新核对后审批。");
+      return;
+    }
     try {
-      await post(
+      const approved = await post(
         "approve",
         { action: "approve", version: detail.version, ...(extra ?? {}) },
         "审批已通过，损耗已核销",
       );
-      setSurplusOpen(false);
+      if (!approved) return;
+      setSurplusTarget(null);
       setSurplusAck(false);
       setSurplusNote("");
     } catch (e) {
       const msg = (e as Error).message;
-      // 结余闸门 409：物料结余未退 → 弹出短溢确认
-      if (msg.includes("acknowledgeSurplus") || msg.includes("结余")) {
+      // Do not interpret arbitrary error prose as permission to send an acknowledgement.
+      if (e instanceof JsonRequestError && e.status === 409 && e.code === "SURPLUS_UNACKED") {
         setSurplusMsg(msg);
-        setSurplusOpen(true);
+        setSurplusAck(false);
+        setSurplusNote("");
+        setSurplusTarget(target);
       } else {
         message.error(msg);
       }
     }
   };
 
-  const surplusLines = detail?.lines.filter((l) => Number(l.actualLoss) < 0) ?? [];
+  const surplusLines = detail?.lines.filter((l) => compareDecimalValues(l.actualLoss, "0") < 0) ?? [];
+  const surplusCurrent = detail != null && detail.id === surplusTarget?.id && detail.version === surplusTarget.version && detail.actions?.approve === true;
 
   // ---- 列表列 ----
   const columns: ColumnsType<JsRow> = [
@@ -745,16 +755,16 @@ export default function JsClient() {
                   type="warning"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message="存在结余物料（负实际损耗）"
+                  message="净发料低于标准用量，需核对差异"
                   description={
                     <div>
                       {preview.surplusMaterials.map((s) => (
                         <div key={s.skuId}>
-                          物料 {s.skuCode} 结余 {formatQty(s.surplus)}
+                          物料 {s.skuCode} 低于标准 {formatQty(s.surplus)}
                         </div>
                       ))}
                       <Typography.Text type="secondary">
-                        审批前须先退料（TL）或由财务短溢确认，否则无法通过。
+                        先核对发料、退料、产出、单位和 BOM；负差不等于实物余料，继续退料会扩大差异。确认无误后由财务填写说明审批。
                       </Typography.Text>
                     </div>
                   }
@@ -859,9 +869,9 @@ export default function JsClient() {
                 type="warning"
                 showIcon
                 style={{ marginBottom: 12 }}
-                message="存在结余物料（负实际损耗）——审批通过前须先退料（TL）或财务短溢确认"
+                message="用量负差待核对：净发料低于标准用量，不等于可退余料"
                 description={surplusLines
-                  .map((l) => `物料 ${l.skuCode} 结余 ${formatQty(String(-Number(l.actualLoss)))}`)
+                  .map((l) => `物料 ${l.skuCode} 低于标准 ${formatQty(l.actualLoss.replace(/^-/, ""))}`)
                   .join("；")}
               />
             ) : null}
@@ -960,16 +970,16 @@ export default function JsClient() {
         />
       </Modal>
 
-      {/* ---- 结余短溢确认 Modal（approve 409 → acknowledgeSurplus 重试） ---- */}
+      {/* ---- 用量负差确认；历史acknowledgeSurplus字段保留，绑定当前单据版本 ---- */}
       <Modal
-        title="结余物料短溢确认"
-        open={surplusOpen}
+        title="用量负差核对确认"
+        open={surplusCurrent}
         okText="确认并通过审批"
-        okButtonProps={{ danger: true, disabled: !surplusAck || !surplusNote.trim() }}
+        okButtonProps={{ danger: true, disabled: !surplusCurrent || !surplusAck || !surplusNote.trim() }}
         cancelText="取消"
         confirmLoading={actionLoading}
         onCancel={() => {
-          setSurplusOpen(false);
+          setSurplusTarget(null);
           setSurplusAck(false);
           setSurplusNote("");
         }}
@@ -979,13 +989,13 @@ export default function JsClient() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="以下物料存在结余（负实际损耗），仍压在委外仓"
+          message="以下物料净发料低于标准用量，不能据此判定仓库实物结余"
           description={
             <div>
               {surplusLines.length > 0
                 ? surplusLines.map((l) => (
                     <div key={l.materialSkuId}>
-                      物料 {l.skuCode} {l.skuName} 结余 {formatQty(String(-Number(l.actualLoss)))}
+                      物料 {l.skuCode} {l.skuName} 低于标准 {formatQty(l.actualLoss.replace(/^-/, ""))}
                     </div>
                   ))
                 : null}
@@ -994,16 +1004,16 @@ export default function JsClient() {
           }
         />
         <Typography.Paragraph type="secondary">
-          建议优先退料（TL）使委外仓余额归零；确需短溢处理时，勾选确认并填写说明（审批留痕）。
+          请核对发料、退料、产出、单位与 BOM，并记录差异原因（例如实际节约或漏记）。继续退料会扩大负差；有记录错误时先驳回纠正。确认只允许按已核对依据结算，不会补入库存或证明账实相符。
         </Typography.Paragraph>
         <Checkbox checked={surplusAck} onChange={(e) => setSurplusAck(e.target.checked)}>
-          确认短溢：知悉上述结余不退回，按短溢口径通过结算
+          已核对差异原因及结算依据；知悉确认不会自动补库存或纠正原单
         </Checkbox>
         <Input.TextArea
           rows={3}
           maxLength={500}
           style={{ marginTop: 8 }}
-          placeholder="短溢说明（必填，留痕）"
+          placeholder="差异原因及核对依据（必填，留痕）"
           value={surplusNote}
           onChange={(e) => setSurplusNote(e.target.value)}
         />

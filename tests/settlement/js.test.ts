@@ -391,7 +391,7 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
     expect(preview.deductionTotal).toBe("0.00");
   });
 
-  it("4) 结余闸门：负实际损耗 → 审批 409；acknowledgeSurplus+说明 → 通过且该料不过账、留痕", async () => {
+  it("4) 负差闸门：净发料低于标准 → 409核对；明确确认+说明 → 通过且不自动补库存、留痕", async () => {
     const sc = await mkScenario({
       feeRateCurrent: "2.00",
       segments: [{ rate: "2.00", effectiveFrom: T_SEG1 }],
@@ -399,7 +399,7 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
         { skuId: yl, qtyPer: "0.05" },
         { skuId: bc, qtyPer: "10" },
       ],
-      // Q=100：YL std=5，发10退6 → 实际损耗 −1（结余）；BC std=1000，发1100 → 损耗100（允许50，超50）
+      // Q=100：YL std=5，发10退6 → 净发4，实际损耗−1；这不是实物结余。BC超损50独立扣款。
       fl: [
         { skuId: yl, qty: "10" },
         { skuId: bc, qty: "1100" },
@@ -407,7 +407,7 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
       tl: [{ skuId: yl, qty: "6" }],
       shs: [{ createdAt: T_SH1, lines: [{ lineType: "normal", actualQty: "100", passQty: "100" }] }],
       outsourceBalances: [
-        { skuId: yl, qty: "-1" }, // 结余料仍留仓（此处仅验证不再被核销触碰）
+        { skuId: yl, qty: "-1" }, // 合成负账；确认不能静默补库存或把负数称作余料
         { skuId: bc, qty: "100" },
       ],
     });
@@ -417,16 +417,16 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
     const doc = await createJs(pmcCreator, { jgId: sc.jgId }, db);
     const pending = await submitJs(pmcCreator, doc.id, { version: doc.version }, db);
 
-    // 未确认结余 → 409，指名物料与结余量
+    // 未确认负差 → 409，指名物料、方向与核对入口，不能建议继续退料
     await expect(
       approveJs(financeApprover, doc.id, { action: "approve", version: pending.version }, db),
-    ).rejects.toThrow(/YL00001.*结余1\.0000.*退料\(TL\)/);
+    ).rejects.toMatchObject({ status: 409, code: "SURPLUS_UNACKED", message: expect.stringContaining("YL00001净发料低于标准用量1.0000") });
     // 确认但缺说明 → 校验失败（留痕强制）
     await expect(
       approveJs(financeApprover, doc.id, {
         action: "approve", version: pending.version, acknowledgeSurplus: true,
       }, db),
-    ).rejects.toThrow(/短溢说明/);
+    ).rejects.toThrow(/差异说明/);
 
     const r = await approveJs(financeApprover, doc.id, {
       action: "approve", version: pending.version,
@@ -434,7 +434,7 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
     }, db);
     expect(r.status).toBe("completed");
 
-    // 结余（负损耗）物料不过账——仅 BC 有核销流水
+    // 负差物料不自动补库存——仅 BC 有核销流水
     const ledger = await db
       .select()
       .from(stockLedger)
@@ -451,7 +451,7 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
       .select()
       .from(stockBalances)
       .where(and(eq(stockBalances.warehouseId, sc.whWxId), eq(stockBalances.skuId, yl)));
-    expect(ylBal.qty).toBe("-1.0000"); // 结余料未被触碰（真实结余留账）
+    expect(ylBal.qty).toBe("-1.0000"); // 确认结算不等于账实差异已纠正
 
     // 短溢确认审计留痕
     const audits = await db

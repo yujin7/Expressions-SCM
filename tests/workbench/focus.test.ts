@@ -170,14 +170,14 @@ describe("工作台角色聚焦 getWorkbenchFocus", () => {
     for (const s of sections) for (const m of s.metrics) expect(m.href).toMatch(/^\//);
   });
 
-  it("财务：期初/盘点/结算待审批 + 对账差异 + 结余未确认", async () => {
+  it("财务：期初/盘点/结算待审批 + 对账差异 + 用量负差待核对", async () => {
     const { sections } = await getWorkbenchFocus(["finance"], db);
     expect(sections).toHaveLength(1);
     expect(metric(sections, "finance", "openingPending").value).toBe(1); // 仅 subtype=opening 的 pending
     expect(metric(sections, "finance", "countPending").value).toBe(1);
     expect(metric(sections, "finance", "jsPending").value).toBe(1);
     expect(metric(sections, "finance", "reconOpen")).toMatchObject({ value: 2, href: "/jobs/recon" });
-    expect(metric(sections, "finance", "jsSurplusUnacked").value).toBe(1); // 负实际损耗行
+    expect(metric(sections, "finance", "jsSurplusUnacked")).toMatchObject({ value: 1, label: "用量负差待核对", href: "/settlement/js?status=pending" });
   });
 
   it("PMC：可销天数<30 仅统计成品（快照仓取最新快照）；放行阻塞/别名待认领", async () => {
