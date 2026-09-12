@@ -67,6 +67,7 @@ it("role and existing-generation checks gate the button; zero suggestion opens w
   h.generated.phase = "loading"; expect(generateButton()).toBeUndefined(); h.generated.phase = "success";
   h.generated.data.rows = [{ docNo: "JG-1" }]; expect(generateButton()).toBeUndefined(); h.generated.data.rows = [];
   open(); expect(h.values.poGroups).toEqual([]); expect(h.values.jgQty).toBe("100.0000");
+  expect(dialog().props.zIndex).toBe(1100); // sibling drawer defaults to 1000, so portal creation order cannot cover the form
 });
 it("same-tick double submit is blocked before asynchronous form validation", async () => {
   open(); const validation = Promise.withResolvers<Record<string, unknown>>(), write = Promise.withResolvers<unknown>(); h.validate.mockReturnValue(validation.promise); h.post.mockReturnValue(write.promise);
@@ -75,6 +76,7 @@ it("same-tick double submit is blocked before asynchronous form validation", asy
   validation.resolve(h.values); await flush(); expect(h.post).toHaveBeenCalledTimes(1);
   write.resolve({ pos: [{ id: 41, docNo: "PO-41" }], jg: { id: 42, docNo: "JG-42" } }); await flush();
   expect(h.success.mock.calls[0][0].title).toContain("尚未提交审批");
+  expect(h.success.mock.calls[0][0].zIndex).toBe(1200);
   expect(nodes(h.success.mock.calls[0][0].content).filter(n => n.type === "a").map(n => n.props.href)).toEqual(["/outsource/po?docId=41", "/outsource/jg?docId=42"]);
 });
 it("switching source during validation never submits to the old or the new WO", async () => {

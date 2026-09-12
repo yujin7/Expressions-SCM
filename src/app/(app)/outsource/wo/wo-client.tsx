@@ -418,6 +418,7 @@ function WoInner() {
       setGenOpen(false);
       modal.success({
         title: `${source.docNo}：草稿已生成，尚未提交审批`,
+        zIndex: 1200,
         content: (
           <div>
             {res.pos.map(p => <div key={p.id}>采购订单：<Link href={`/outsource/po?docId=${p.id}`}>{p.docNo}</Link></div>)}
@@ -712,6 +713,7 @@ function WoInner() {
 
       <Modal
         title={`生成采购订单 / 加工通知单${detail ? ` — ${detail.docNo}` : ""}`}
+        zIndex={1100}
         open={genOpen}
         onOk={() => void handleGenerate()}
         onCancel={() => { if (!generatingRef.current) { setGenOpen(false); loadDetail(); } }}
@@ -748,7 +750,7 @@ function WoInner() {
                     key={group.key}
                     style={{ border: "1px solid #f0f0f0", borderRadius: 8, padding: 12, marginBottom: 12 }}
                   >
-                    <Space align="baseline" style={{ display: "flex", justifyContent: "space-between" }}>
+                    <Space align="baseline" wrap style={{ display: "flex", justifyContent: "space-between" }}>
                       <Form.Item
                         name={[group.name, "supplierId"]}
                         label="供应商"
@@ -759,7 +761,7 @@ function WoInner() {
                           api="/api/master/supplier"
                           getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
                           placeholder="选择供应商"
-                          style={{ width: 280 }}
+                          style={{ width: "min(280px, calc(100vw - 128px))" }}
                         />
                       </Form.Item>
                       <Button
@@ -785,7 +787,7 @@ function WoInner() {
                                   api="/api/master/sku?type=raw,packaging"
                                   getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
                                   placeholder="选择物料（原料/包材）"
-                                  style={{ width: 300 }}
+                                  style={{ width: "min(300px, calc(100vw - 128px))" }}
                                 />
                               </Form.Item>
                               <Form.Item
