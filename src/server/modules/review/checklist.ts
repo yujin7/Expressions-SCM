@@ -22,6 +22,7 @@ export const REVIEW_CATEGORIES = [
   "uncoded",
   // W2-#7：运营提报「标红且未处置」的投影（refType=ops_demand_submission，责任角色 pmc）
   "ops_demand",
+  "material_leftover",
   "other",
 ] as const;
 

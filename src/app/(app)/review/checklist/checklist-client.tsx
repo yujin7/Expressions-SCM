@@ -23,10 +23,11 @@ const CATEGORY_LABELS: Record<string, string> = {
   blocked_sku: "放行受阻",
   activation_sample: "BOM 生效抽检",
   uncoded: "无编码物料",
+  material_leftover: "入库物料核对",
   other: "其他",
 };
 const CATEGORY_ORDER = [
-  "spu_cluster", "bom_version", "segment", "shell_brand", "blocked_sku", "activation_sample", "uncoded", "other",
+  "spu_cluster", "bom_version", "segment", "shell_brand", "blocked_sku", "activation_sample", "uncoded", "material_leftover", "other",
 ];
 const STATUS_LABELS: Record<string, string> = { open: "待复核", done: "已通过", overruled: "已改判" };
 const STATUS_COLORS: Record<string, string> = { open: "processing", done: "success", overruled: "warning" };
@@ -55,6 +56,9 @@ function refLink(r: ReviewItem): React.ReactNode {
   const q = encodeURIComponent(r.refKey);
   if (r.refType === "sku") return <a href={`/inventory/balance?q=${q}`}>{r.refKey}</a>;
   if (r.refType === "bom") return <a href={`/master/bom?q=${q}`}>{r.refKey}</a>;
+  if (r.refType === "jg") return /^[1-9]\d{0,9}$/.test(r.refKey) && Number(r.refKey) <= 2_147_483_647
+    ? <a href={`/outsource/jg?docId=${q}`}>查看加工单 #{r.refKey}</a>
+    : <a href={`/outsource/jg?q=${q}`}>{r.refKey}</a>;
   return r.refKey;
 }
 
@@ -326,8 +330,13 @@ export default function ChecklistClient() {
       dataIndex: "detail",
       width: 320,
       ellipsis: { showTitle: false },
-      render: (v: string | null) =>
-        v ? (
+      render: (v: string | null, r) =>
+        v && r.category === "material_leftover" ? (
+          <Button type="link" size="small" onClick={() => Modal.info({
+            title: r.title, width: 720, okText: "关闭",
+            content: <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "60vh", overflowY: "auto" }}>{v}</div>,
+          })}>查看核对依据</Button>
+        ) : v ? (
           <Tooltip title={v} placement="topLeft">
             <Typography.Text type="secondary" style={{ maxWidth: 300 }} ellipsis>
               {v}

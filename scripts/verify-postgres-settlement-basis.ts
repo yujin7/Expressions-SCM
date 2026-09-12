@@ -8,6 +8,9 @@ import * as s from "@/db/schema";
 import { approveJs, createJs, getJsBasis, refreshJsBasis, submitJs } from "@/server/modules/settlement/js";
 import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
+import { suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
+import { decideReviewItem } from "@/server/modules/review/checklist";
+import type { DB } from "@/db";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function main() {
@@ -149,7 +152,25 @@ async function main() {
       assert.equal((await db.select().from(s.approvals).where(and(eq(s.approvals.docType, "tl"), eq(s.approvals.docId, target.id)))).length, 0);
       console.log(`PASS TL ${operation} waits for actual JS approval/writeoff and refuses pooled stock reuse`);
     }
-    console.log(JSON.stringify({ passed: true, cases: 10, fixture: key, browserDraft: js.id, browserJg: jg.id,
+    const reviewJg = await setup();
+    const duplicateReview = await race(tx => suggestLeftoverAfterInbound(maker, reviewJg.id, tx),
+      () => suggestLeftoverAfterInbound(checker, reviewJg.id, other));
+    assert(duplicateReview.second.ok);
+    const reviewRows = await db.select().from(s.reviewItems).where(and(eq(s.reviewItems.category, "material_leftover"), eq(s.reviewItems.refKey, String(reviewJg.id))));
+    assert.equal(reviewRows.length, 1);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "review_item"), eq(s.auditLogs.entityId, reviewRows[0].id)))).length, 1);
+    console.log("PASS concurrent inbound review hooks wait on JG and create one item/audit");
+    const [reviewFl] = await db.select().from(s.flDocs).where(eq(s.flDocs.jgId, reviewJg.id));
+    await db.update(s.flLines).set({ qty: "130" }).where(eq(s.flLines.flId, reviewFl.id));
+    const decisionRace = await race(tx => decideReviewItem(pmc, reviewRows[0].id, { status: "done", note: "合成关闭：旧依据已核对" }, tx as unknown as DB),
+      () => suggestLeftoverAfterInbound(checker, reviewJg.id, other));
+    assert(decisionRace.second.ok);
+    const afterDecision = await db.select().from(s.reviewItems).where(and(eq(s.reviewItems.category, "material_leftover"), eq(s.reviewItems.refKey, String(reviewJg.id))));
+    assert.equal(afterDecision.length, 2);
+    assert.equal(afterDecision.find(row => row.id === reviewRows[0].id)?.status, "done");
+    assert.match(afterDecision.find(row => row.status === "open")?.detail ?? "", /差额 30.0000/);
+    console.log("PASS changed estimate waits for human decision and does not overwrite or reopen the decided item");
+    console.log(JSON.stringify({ passed: true, cases: 12, fixture: key, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }

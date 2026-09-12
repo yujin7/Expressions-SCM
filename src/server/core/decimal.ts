@@ -59,6 +59,15 @@ export function dDiv(a: Dec, b: Dec, scale = 4): string {
   // 半进位（红队 m4：dDiv(2,3,6)=0.666667 而非截断 0.666666）
   return fromUnits(divRoundHalf(toUnits(a) * POW, bu), scale);
 }
+/** Multiply then divide with one final rounding; preserves tiny products and repeating ratios. */
+export function dMulDiv(a: Dec, b: Dec, divisor: Dec, scale = 4): string {
+  if (!Number.isInteger(scale) || scale < 0 || scale > SCALE) throw new RangeError("invalid decimal scale");
+  const denominator = toUnits(divisor);
+  if (denominator === 0n) throw new Error("division by zero");
+  const factor = 10n ** BigInt(scale);
+  const rounded = divRoundHalf(toUnits(a) * toUnits(b) * factor, denominator * POW);
+  return fromUnits(rounded * (POW / factor), scale);
+}
 /** 比较：a<b → -1, a==b → 0, a>b → 1 */
 export function dCmp(a: Dec, b: Dec): -1 | 0 | 1 {
   const d = toUnits(a) - toUnits(b);
