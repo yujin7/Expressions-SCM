@@ -129,8 +129,28 @@ async function main() {
     assert.equal(submitted.status, "pending"); assert.equal(submitted.version, retryFl.version + 1);
     assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "fl"), eq(s.auditLogs.entityId, retryFl.id), eq(s.auditLogs.action, "submit")))).length, 1);
     console.log("PASS duplicate FL submission waits and cannot duplicate status, version or audit");
-    console.log(JSON.stringify({ passed: true, cases: 7, fixture: key, browserDraft: js.id, browserJg: jg.id,
-      browserFl: retryFl.id, issueJg: retrySource.id, database: new URL(connectionString).pathname.slice(1) }));
+    let frozenJg = 0;
+    for (const operation of ["create", "submit", "approve"] as const) {
+      const settledJg = await setup(); frozenJg = settledJg.id;
+      const input = { jgId: settledJg.id, toWarehouseId: own.id, lines: [{ skuId: material.id, qty: "1", reason: "surplus_return" }] };
+      const draft = await createTl(maker, input, db);
+      const target = operation === "approve" ? await submitTl(maker, draft.id, draft.version, db) : draft;
+      const settlement = await createJs(pmc, { jgId: settledJg.id }, db);
+      const waiting = await submitJs(pmc, settlement.id, { version: settlement.version }, db);
+      const lateReturn = await race(tx => approveJs(finance, settlement.id, { action: "approve", version: waiting.version }, tx),
+        (): Promise<unknown> => operation === "create" ? createTl(maker, input, other) : operation === "submit"
+          ? submitTl(maker, target.id, target.version, other)
+          : approveTl(checker, target.id, { action: "approve", version: target.version }, other));
+      assert(!lateReturn.second.ok); assert.equal(lateReturn.second.error.status, 409);
+      assert.match(lateReturn.second.error.message, /结算单.*已冻结/);
+      assert.equal((await db.select().from(s.tlDocs).where(eq(s.tlDocs.jgId, settledJg.id))).length, 1);
+      assert.equal((await db.select().from(s.tlDocs).where(eq(s.tlDocs.id, target.id)))[0].version, target.version);
+      assert.equal((await db.select().from(s.stockLedger).where(and(eq(s.stockLedger.sourceDocType, "tl_return"), eq(s.stockLedger.sourceDocId, target.id)))).length, 0);
+      assert.equal((await db.select().from(s.approvals).where(and(eq(s.approvals.docType, "tl"), eq(s.approvals.docId, target.id)))).length, 0);
+      console.log(`PASS TL ${operation} waits for actual JS approval/writeoff and refuses pooled stock reuse`);
+    }
+    console.log(JSON.stringify({ passed: true, cases: 10, fixture: key, browserDraft: js.id, browserJg: jg.id,
+      browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

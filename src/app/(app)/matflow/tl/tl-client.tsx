@@ -516,8 +516,8 @@ export default function TlClient() {
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
-          <Alert type="info" showIcon message="收货关闭后仍可退回实物余料；退料不会自动更新结算。"
-            description="草稿或待审批结算需通知PMC核对依据；已审批结算的金额差异交财务另行处理，不改写历史金额。" />
+          <Alert type="info" showIcon message="收货关闭后、结算冻结前可退回实物余料。"
+            description="退料不会自动更新结算，请通知PMC核对草稿或待审批依据。结算已冻结的工单禁止继续退料，请联系财务和仓管核对库存及差额纠错，不改写历史金额。" />
           <div>
             <div style={{ marginBottom: 4 }}>加工通知单（已审批、执行中、收货关闭或短关）</div>
             <RemoteSelect

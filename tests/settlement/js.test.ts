@@ -12,6 +12,7 @@ import {
   approveJs, closeJgReceiving, createJs, getJs, getJsBasis, listJss, previewJs, refreshJsBasis, submitJs,
 } from "@/server/modules/settlement/js";
 import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
+import { listJgs } from "@/server/modules/outsource/jg";
 import * as auditModule from "@/server/core/audit";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -561,6 +562,7 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
     const closed = await getJsBasis(pmcCreator, js.id, db);
     await expect(refreshJsBasis(pmcCreator, js.id, { version: closed.version, basisToken: closed.basisToken, note: "不可改历史" }, db)).rejects.toMatchObject({ status: 409 });
     expect((await db.select().from(stockBalances).where(and(eq(stockBalances.warehouseId, sc.whWxId), eq(stockBalances.skuId, bc))))[0].qty).toBe("0.0000");
+    expect(await approveTl(warehouseChecker, tl.id, { action: "approve", version: tlPending.version }, db)).toMatchObject({ idempotent: true });
   });
 
   it("核对后再次变化、跨单token、权限/审计失败都不能替换草稿依据", async () => {
@@ -588,6 +590,33 @@ describe("委外结算 W4：previewJs/createJs/approveJs → js_loss_writeoff（
     await expect(refreshJsBasis(pmcCreator, js.id, { ...input, basisToken: current.basisToken }, db)).rejects.toMatchObject({ status: 409 });
     expect(updated.version).toBe(js.version + 1);
     expect((await getJsBasis(pmcCreator, js.id, db)).changed).toBe(false);
+  });
+
+  it("结算核销后禁止从混合库存继续退料，创建/提交/批准无副作用，拒绝出口保留", async () => {
+    const sc = await mkScenario({ feeRateCurrent: "2", materials: [{ skuId: bc, qtyPer: "1" }],
+      fl: [{ skuId: bc, qty: "120" }], outsourceBalances: [{ skuId: bc, qty: "1020" }],
+      shs: [{ createdAt: T_SH1, lines: [{ lineType: "normal", actualQty: "100", passQty: "100" }] }] });
+    const input = { jgId: sc.jgId, toWarehouseId: whRaw, lines: [{ skuId: bc, qty: "1", reason: "surplus_return" }] };
+    const draft = await createTl(warehouseMaker, input, db);
+    const tl = await createTl(warehouseMaker, input, db);
+    const pendingTl = await submitTl(warehouseMaker, tl.id, tl.version, db);
+    const js = await createJs(pmcCreator, { jgId: sc.jgId }, db);
+    const pendingJs = await submitJs(pmcCreator, js.id, { version: js.version }, db);
+    await approveJs(financeApprover, js.id, { action: "approve", version: pendingJs.version }, db);
+    expect((await db.select().from(stockBalances).where(and(eq(stockBalances.warehouseId, sc.whWxId), eq(stockBalances.skuId, bc))))[0].qty).toBe("1000.0000");
+    const snapshot = async () => ({ docs: await db.select().from(tlDocs), lines: await db.select().from(tlLines),
+      ledger: await db.select().from(stockLedger), balances: await db.select().from(stockBalances),
+      approvals: await db.select().from(approvals), audit: await db.select().from(auditLogs) });
+    const before = await snapshot();
+    for (const write of [() => createTl(warehouseMaker, input, db), () => submitTl(warehouseMaker, draft.id, draft.version, db),
+      () => approveTl(warehouseChecker, tl.id, { action: "approve", version: pendingTl.version }, db)]) {
+      await expect(write()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("结算单") });
+      expect(await snapshot()).toEqual(before);
+    }
+    const selected = await listJgs("", { returnEligible: true, selectedValues: [sc.jgId], page: 1, pageSize: 1 }, db);
+    expect(selected).toEqual({ rows: [], total: 0 });
+    expect((await listJgs("", { selectedValues: [sc.jgId], page: 1, pageSize: 1 }, db)).total).toBe(1);
+    expect(await approveTl(warehouseChecker, tl.id, { action: "reject", version: pendingTl.version }, db)).toMatchObject({ status: "draft" });
   });
 
   it("6) 扣款价代理：无 price_lists 行 → deductPrice=0 + 预览警告 + 口径标识", async () => {

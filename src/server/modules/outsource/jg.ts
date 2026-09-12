@@ -1,7 +1,7 @@
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notExists, notInArray, or, sql } from "drizzle-orm";
 import { selectedOptionsPredicate, SELECTED_OPTIONS_LIMIT, type SelectedOptionValue } from "@/server/core/selected-options";
 import {
-   approvalConfigs, jgDocs, jgFeeSegments, pcDocs, skus, suppliers, users, woDocs,
+   approvalConfigs, jgDocs, jgFeeSegments, jsDocs, pcDocs, skus, suppliers, users, woDocs,
 } from "@/db/schema";
 import { dDeviationPct, dMoney, dZero } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -16,7 +16,7 @@ import { getSupplierCapacitySignal } from "@/server/modules/report/supplier-capa
 import { skuHeaderMatch } from "@/server/core/doc-search";
 import { businessDateSchema } from "@/server/core/business-date-schema";
 import { currentWriteActor } from "@/server/core/current-write-actor";
-import { assertJgFeeMutable } from "@/server/core/jg-fee-boundary";
+import { assertJgFeeMutable, MUTABLE_JG_SETTLEMENT_STATUSES } from "@/server/core/jg-fee-boundary";
 
 /**
  * 委外加工通知单 JG。审批走 docType "jg"（JG 与 WO 同域=PMC 审批）；
@@ -275,7 +275,12 @@ export async function listJgs(
   if (opts.status) conds.push(eq(jgDocs.status, opts.status as DocStatus));
   if (opts.woId) conds.push(eq(jgDocs.woId, opts.woId));
   if (opts.receiptEligible) conds.push(inArray(jgDocs.status, ["approved", "in_progress"]));
-  if (opts.returnEligible) conds.push(inArray(jgDocs.status, ["approved", "in_progress", "completed", "closed"]));
+  if (opts.returnEligible) conds.push(
+    inArray(jgDocs.status, ["approved", "in_progress", "completed", "closed"]),
+    notExists(db.select({ id: jsDocs.id }).from(jsDocs).where(and(
+      eq(jsDocs.jgId, jgDocs.id), notInArray(jsDocs.status, [...MUTABLE_JG_SETTLEMENT_STATUSES]),
+    ))),
+  );
   const selected = selectedOptionsPredicate(opts.selectedValues, { id: jgDocs.id, text: [jgDocs.docNo] });
   if (selected) conds.push(selected);
   const where = conds.length ? and(...conds) : undefined;
