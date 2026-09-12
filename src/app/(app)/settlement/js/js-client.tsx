@@ -70,6 +70,7 @@ interface DocApproval {
 }
 
 interface JsDetail {
+  actions?: { submit: boolean; refreshFee: boolean; approve: boolean; reject: boolean; reason: string };
   id: number;
   docNo: string;
   status: string;
@@ -254,7 +255,6 @@ export default function JsClient() {
   const searchParams = useSearchParams();
   const me = useMe();
   const canCreate = hasAnyRole(me, "pmc");
-  const canApprove = me != null && (me.roles.includes("admin") || (me.isApprover && me.roles.includes("finance")));
 
   const [rows, setRows] = useState<JsRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -552,11 +552,9 @@ export default function JsClient() {
   ];
 
   // ---- 详情操作按钮 ----
-  const canSubmitDetail =
-    detail != null && (hasAnyRole(me, "pmc") || (me != null && detail.createdBy === me.id));
   const drawerActions = detail ? (
     <Space>
-      {detail.status === "draft" && hasAnyRole(me, "pmc") ? (
+      {detail.actions?.refreshFee ? (
         <Popconfirm title="按当前已批准改价更新此草稿的加工费？"
           description="仅更新加工费与结算合计；收货数量必须一致，物料扣款和手工调整保持不变。"
           okText="更新加工费" cancelText="取消"
@@ -565,7 +563,7 @@ export default function JsClient() {
           <Button disabled={actionLoading}>更新加工费</Button>
         </Popconfirm>
       ) : null}
-      {detail.status === "draft" && canSubmitDetail ? (
+      {detail.actions?.submit ? (
         <Popconfirm
           title="确认提交审批（财务）？"
           okText="提交"
@@ -581,7 +579,7 @@ export default function JsClient() {
           </Button>
         </Popconfirm>
       ) : null}
-      {detail.status === "pending" && canApprove ? (
+      {detail.actions?.approve ? (
         <>
           <Popconfirm
             title="确认审批通过？通过后立即核销委外仓损耗"
@@ -813,9 +811,10 @@ export default function JsClient() {
         {detail ? (
           <div>
             <ChainStrip docType="js" id={detail.id} />
-            {(detail.status === "draft" || detail.status === "pending") && <Alert type="info" showIcon style={{ marginBottom: 12 }}
-              message="此处是已保存的结算金额，不会随改价静默变化"
-              description="加工费变化后：草稿由PMC更新加工费并核对；待审批单由财务驳回后更新再提交。已审批结算保持冻结。" />}
+            <Alert type="info" showIcon style={{ marginBottom: 12 }}
+              message={detail.actions?.reason ?? "操作资格未加载，请刷新详情后重试。"}
+              description={detail.status === "draft" || detail.status === "pending"
+                ? "此处为已保存金额，不随改价静默变化。待审批单须由有资格的审批人驳回，再由PMC更新加工费并重新提交。" : undefined} />
             <Descriptions column={{ xs: 1, sm: 3 }} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="JG 单号">{detail.jgDocNo}</Descriptions.Item>
               <Descriptions.Item label="关联工单">{detail.woDocNo}</Descriptions.Item>

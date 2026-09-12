@@ -8,9 +8,10 @@ import { DOCUMENT_TRANSIENT_PARAMS } from "@/lib/document-links";
 import DocumentDrawer from "@/components/DocumentDrawer";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   App,
+  Alert,
   Button,
   Descriptions,
   Form,
@@ -52,6 +53,7 @@ interface PcRow {
 }
 
 interface PcDetail extends PcRow {
+  actions?: { approve: boolean; reject: boolean; reason: string };
   approvals: { approverName: string | null; action: "approve" | "reject"; comment: string | null; createdAt: string }[];
 }
 
@@ -103,6 +105,9 @@ function PcInner() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const saveLock = useRef(false);
+  const actionLock = useRef(false);
+  const [canCreate, setCanCreate] = useState(false);
   const [jgOptions, setJgOptions] = useState<{ value: number; label: string }[]>([]);
 
   const documentSelection = useDocumentTarget();
@@ -121,13 +126,15 @@ function PcInner() {
     try {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
-      const res = await fetchJson<{ rows: PcRow[]; total: number }>(
+      const res = await fetchJson<{ rows: PcRow[]; total: number; actions?: { createFee: boolean } }>(
         `/api/outsource/pc?${params.toString()}`, { signal: readRequest.signal });
       if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
+      setCanCreate(res.actions?.createFee === true);
     } catch (e) {
       if (!readRequest.isCurrent()) return;
+      setCanCreate(false);
       message.error((e as Error).message);
     } finally {
       if (readRequest.isCurrent()) { setLoading(false); }
@@ -159,6 +166,8 @@ function PcInner() {
   }, [createOpen]);
 
   const handleCreate = async () => {
+    if (saveLock.current || !canCreate) return;
+    saveLock.current = true;
     try {
       const values = await form.validateFields();
       setSaving(true);
@@ -175,11 +184,14 @@ function PcInner() {
     } catch (e) {
       if (e instanceof Error && e.message) message.error(e.message);
     } finally {
+      saveLock.current = false;
       setSaving(false);
     }
   };
 
   const approve = async (row: PcRow, action: "approve" | "reject", comment?: string) => {
+    if (actionLock.current || !current?.actions?.[action]) return;
+    actionLock.current = true;
     setActionLoading(true);
     try {
       await postJson(`/api/outsource/pc/${row.id}/approve`, {
@@ -195,6 +207,7 @@ function PcInner() {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      actionLock.current = false;
       setActionLoading(false);
     }
   };
@@ -268,7 +281,7 @@ function PcInner() {
             <Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>
               刷新
             </Button>
-            <Button
+            {canCreate && <Button
               size="small"
               type="primary"
               icon={<PlusOutlined />}
@@ -278,7 +291,7 @@ function PcInner() {
               }}
             >
               发起加工费改价
-            </Button>
+            </Button>}
           </>
         }
       />
@@ -296,7 +309,8 @@ function PcInner() {
         title="发起加工费改价"
         open={createOpen}
         onOk={() => void handleCreate()}
-        onCancel={() => setCreateOpen(false)}
+        onCancel={() => { if (!saveLock.current) setCreateOpen(false); }}
+        keyboard={!saving}
         confirmLoading={saving}
         width={560}
         forceRender
@@ -347,12 +361,14 @@ function PcInner() {
         loading={detailRead.phase === "loading"}
         readError={documentSelection.error ?? detailRead.error}
         onRetry={detailId != null ? detailRead.retry : undefined}
-        onClose={() => setDetailId(null)}
+        onClose={() => { if (!actionLock.current) setDetailId(null); }}
+        maskClosable={!actionLoading}
+        keyboard={!actionLoading}
         width={560}
         extra={
-          current && current.status === "pending" ? (
+          current && (current.actions?.approve || current.actions?.reject) ? (
             <Space>
-              <Popconfirm
+              {current.actions.approve && <Popconfirm
                 title={
                   current.target === "jg_fee"
                     ? "确认审批通过？通过后立即更新 JG 加工费现价并新增费率分段。"
@@ -365,16 +381,17 @@ function PcInner() {
                 <Button type="primary" loading={actionLoading}>
                   审批通过
                 </Button>
-              </Popconfirm>
-              <Button danger loading={actionLoading} onClick={() => setRejectOpen(true)}>
+              </Popconfirm>}
+              {current.actions.reject && <Button danger loading={actionLoading} onClick={() => setRejectOpen(true)}>
                 驳回
-              </Button>
+              </Button>}
             </Space>
           ) : null
         }
       >
         {current ? (
-          <><Descriptions column={1} size="small" bordered>
+          <><Alert type="info" showIcon style={{ marginBottom: 12 }} message={current.actions?.reason ?? "操作资格未加载，请刷新详情后重试。"} />
+          <Descriptions column={1} size="small" bordered>
             <Descriptions.Item label="变更对象">{TARGET_LABELS[current.target]}</Descriptions.Item>
             <Descriptions.Item label="关联单据">{targetText(current)}</Descriptions.Item>
             <Descriptions.Item label="原价">{current.oldPrice ?? "—"}</Descriptions.Item>
@@ -401,7 +418,9 @@ function PcInner() {
         okButtonProps={{ danger: true }}
         cancelText="取消"
         confirmLoading={actionLoading}
-        onCancel={() => setRejectOpen(false)}
+        onCancel={() => { if (!actionLock.current) setRejectOpen(false); }}
+        maskClosable={!actionLoading}
+        keyboard={!actionLoading}
         onOk={() => {
           if (current) void approve(current, "reject", rejectComment);
         }}

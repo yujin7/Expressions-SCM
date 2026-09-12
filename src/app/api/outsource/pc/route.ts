@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
+import { errorResponse, parseListQuery, readJson } from "@/server/modules/master/common";
 import { maskSensitive } from "@/server/core/dto";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { listPcs } from "@/server/modules/outsource/po";
@@ -7,17 +7,17 @@ import { createPcForJgFee } from "@/server/modules/outsource/jg";
 
 export async function GET(req: NextRequest) {
   try {
-    const user = await guardRead();
+    const user = await guardFreshWrite();
     const { page, pageSize, searchParams } = parseListQuery(req.url);
     // listPcs 内按 canSeePrices 剥 oldPrice/newPrice/deviationPct；再套 maskSensitive 兜底
     return NextResponse.json(
       maskSensitive(
-        await listPcs(user.roles, {
+        { ...await listPcs(user.roles, {
           status: searchParams.get("status") ?? undefined,
           target: searchParams.get("target") ?? undefined,
           page,
           pageSize,
-        }),
+        }), actions: { createFee: user.roles.some(role => role === "admin" || role === "purchasing") } },
         user.roles,
       ),
     );
