@@ -133,7 +133,7 @@ it("opening creates no unbounded candidate preloads; closing withdraws all sourc
   expect(nodes(create()).find(n => n.props.placeholder === "选择来源单据")?.props.api).toBe("/api/outsource/po?receiptEligible=1");
 });
 
-it("recovery is a distinct deduplicated POST; late failure cannot attach to another receipt and is retryable on its own", async () => {
+it.each([409, 500])("recovery is a distinct deduplicated POST; late %i failure cannot attach to another receipt and is retryable on its own", async status => {
   h.detailId = 61;
   const pending = Promise.withResolvers<Response>();
   const detail = (id: number) => Response.json({ id, docNo: `SH-${id}`, status: "completed", version: 3, sourceType: "jg", sourceId: 9, lines: [], qc: null, approvals: [], inbound: true, materialReview: { checkedAt: null, reviewItemId: null, basisStatus: null } });
@@ -147,9 +147,11 @@ it("recovery is a distinct deduplicated POST; late failure cannot attach to anot
   click(); click(); render();
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   expect(fetchMock.mock.calls.find(([, init]) => init?.method === "POST")![0]).toBe("/api/matflow/sh/61/material-review");
-  h.detailId = 62; render(); await flush(); pending.resolve(Response.json({ error: "合成核对失败" }, { status: 409 })); await flush();
-  expect(JSON.stringify(panel().props.description)).not.toContain("合成核对失败");
-  h.detailId = 61; render(); await flush(); expect(JSON.stringify(panel().props.description)).toContain("合成核对失败");
+  h.detailId = 62; render(); await flush(); pending.resolve(Response.json({ error: "合成核对失败" }, { status })); await flush();
+  const expected = status === 409 ? "合成核对失败" : "未能确认本次计算结果";
+  expect(JSON.stringify(panel().props.description)).not.toContain(expected);
+  h.detailId = 61; render(); await flush(); expect(JSON.stringify(panel().props.description)).toContain(expected);
+  expect(JSON.stringify(panel().props.description)).not.toContain("勿重复提交");
   fetchMock.mockImplementation(async (url, init) => init?.method === "POST" ? Response.json({ status: "checked" })
     : /\/sh\/\d+$/.test(String(url)) ? detail(Number(String(url).split("/").at(-1))) : Response.json({ rows: [], total: 0 }));
   (button().props.onClick as () => void)(); await flush();

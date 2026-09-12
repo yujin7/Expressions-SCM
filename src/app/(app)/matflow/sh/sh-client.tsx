@@ -20,7 +20,7 @@ import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import RemoteSelect from "@/components/RemoteSelect";
-import { postJson } from "@/components/fetchJson";
+import { JsonRequestError, postJson } from "@/components/fetchJson";
 import { formatQty, formatAsOf } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe } from "@/components/useMe";
@@ -573,7 +573,8 @@ export default function ShClient() {
       message.success(`${target.docNo}：核对提示已重新计算；未重复入库，也未自动完成复核。`);
       refresh();
     } catch (e) {
-      setReviewError({ id: target.id, message: (e as Error).message });
+      setReviewError({ id: target.id, message: e instanceof JsonRequestError && e.status < 500 ? e.message
+        : "未能确认本次计算结果，请先刷新查看上次计算记录，再安全重试核对。" });
     } finally {
       reviewBusy.current = false;
       setReviewLoading(false);
@@ -972,8 +973,9 @@ export default function ShClient() {
               刷新
             </Button>
             <Button type={filters.materialReviewPending ? "primary" : "default"}
+              aria-pressed={Boolean(filters.materialReviewPending)}
               onClick={() => listState.setFilter({ materialReviewPending: filters.materialReviewPending ? "" : "1", status: "" })}>
-              {filters.materialReviewPending ? "显示全部收货" : "物料核对待计算"}
+              {filters.materialReviewPending ? "物料核对待计算 ×" : "物料核对待计算"}
             </Button>
             {canWrite ? (
               <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
@@ -1173,7 +1175,7 @@ export default function ShClient() {
                             : <Typography.Text type="secondary">请仓管/管理员重算核对。</Typography.Text>}
                           {detail.materialReview?.reviewItemId ? <a href={`/review/checklist?category=material_leftover&status=all&id=${detail.materialReview.reviewItemId}`}>查看核对事项</a> : null}
                         </Space>
-                        {reviewError?.id === detail.id ? <Alert type="error" showIcon message={`核对计算未完成：${reviewError.message}`} description="入库结果不受影响；可重试上述核对，不要再次入库。" /> : null}
+                        {reviewError?.id === detail.id ? <Alert type="error" showIcon message={`核对提示：${reviewError.message}`} description="入库结果不受影响；重算不会重复生成相同事项或再次入库。" /> : null}
                       </Space>}
                     />
                   ) : null}
