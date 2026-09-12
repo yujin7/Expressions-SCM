@@ -85,6 +85,7 @@ const CATALOG: Record<string, CatalogEntry> = {
   auto_wo: { domain: "plan", label: "自动建工单", verb: "autoWo", isStateChange: true },
   auto_wo_failed: { domain: "plan", label: "自动建工单失败", verb: "autoWoFailed", isStateChange: false },
   auto_jg_failed: { domain: "plan", label: "自动建加工单失败", verb: "autoJgFailed", isStateChange: false },
+  receipt_batch_checked: { domain: "plan", label: "采购入库建批核对", verb: "receiptBatchChecked", isStateChange: false },
   batch_jg: { domain: "plan", label: "批量建加工单", verb: "batchJg", isStateChange: true },
   reschedule: { domain: "plan", label: "重排计划", verb: "reschedule", isStateChange: false },
   apply_leadtime_suggestion: { domain: "plan", label: "采纳交期建议", verb: "applyLeadtime", isStateChange: false },

@@ -5,7 +5,7 @@
  * 护栏：批次≤8、成品 attrs.needsReview 非空不自动、钩子失败绝不阻断主流程（审计留痕）。
  * 供应商解析：OEM 归属参考（transit_refs kind='oem_map'）→ supplier_oem 别名。
  */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { currentWriteActor } from "@/server/core/current-write-actor";
@@ -21,6 +21,7 @@ import { getOpenSupplyLines } from "@/server/core/supply";
 import { nextDocNo } from "@/server/docflow/doc-no";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "./common";
+import { getReceiptBatchReview } from "@/server/modules/matflow/receipt-batch-status";
 import {
   capacityAuditSnapshot,
   getSupplierCapacitySignal,
@@ -310,15 +311,29 @@ export async function createBatchJg(user: SessionUser, woId: number, dbArg?: Any
   return db.transaction(async (tx: AnyDb) => {
     const actor = await currentWriteActor(tx, user);
     requireAnyRole(actor, "pmc");
+    const result = await createBatchInTransaction(tx, actor, woId);
+    if (!result.jg) throw new ApiError(409, result.blockedReason!);
+    return result.jg;
+  });
+}
+
+/** Shared current-state calculation; expected refusal returns before any draft write. */
+async function createBatchInTransaction(tx: AnyDb, actor: SessionUser, woId: number, receiptPoId?: number): Promise<{
+  jg: typeof schema.jgDocs.$inferSelect | null; blockedReason: string | null;
+}> {
     // Serialize proposals for this WO before reading a new waterline. The unique
     // (woId,batchSeq) constraint remains the final boundary for legacy writers.
     const [wo] = await tx.select().from(schema.woDocs).where(eq(schema.woDocs.id, woId)).for("update");
     if (!wo) throw new ApiError(404, "工单不存在");
-    if (!["approved", "in_progress"].includes(wo.status)) throw new ApiError(409, "工单当前不允许生成批次，请刷新核对状态");
     // Receipt/return services lock PO before changing its received quantities.
     // Hold those rows through the calculation; lock in deterministic order.
-    await tx.select({ id: schema.poDocs.id }).from(schema.poDocs)
-      .where(eq(schema.poDocs.woId, woId)).orderBy(schema.poDocs.id).for("share");
+    const purchaseSources: { id: number; woId: number | null }[] = await tx.select({ id: schema.poDocs.id, woId: schema.poDocs.woId }).from(schema.poDocs)
+      .where(or(eq(schema.poDocs.woId, woId), receiptPoId == null ? undefined : eq(schema.poDocs.id, receiptPoId)))
+      .orderBy(schema.poDocs.id).for("share");
+    if (receiptPoId != null && purchaseSources.find(po => po.id === receiptPoId)?.woId !== woId) {
+      throw new ApiError(409, "采购单工单来源已变化，请刷新核对；未生成批次");
+    }
+    if (!["approved", "in_progress"].includes(wo.status)) return { jg: null, blockedReason: "工单当前不允许生成批次，请刷新核对状态" };
     const existing: { batchSeq: number }[] = await tx.select({ batchSeq: schema.jgDocs.batchSeq }).from(schema.jgDocs)
       .where(eq(schema.jgDocs.woId, woId)).orderBy(schema.jgDocs.id).for("share");
     const [product] = await tx
@@ -329,8 +344,8 @@ export async function createBatchJg(user: SessionUser, woId: number, dbArg?: Any
     await tx.select({ id: schema.suppliers.id }).from(schema.suppliers)
       .where(eq(schema.suppliers.id, wo.supplierId)).for("share");
     const [s] = await previewBatches(tx, woId);
-    if (!s) throw new ApiError(409, "该工单当前无可生成批次建议，请刷新核对到料与物料依据");
-    if (s.blockedReason) throw new ApiError(409, s.blockedReason);
+    if (!s) return { jg: null, blockedReason: "该工单当前无可生成批次建议，请刷新核对到料与物料依据" };
+    if (s.blockedReason) return { jg: null, blockedReason: s.blockedReason };
     const candidateQty = dQty(String(s.suggestQty));
     const capacity = await getSupplierCapacitySignal({
       supplierId: wo.supplierId,
@@ -366,7 +381,28 @@ export async function createBatchJg(user: SessionUser, woId: number, dbArg?: Any
         capacity: capacityAuditSnapshot(capacity),
       },
     });
-    return jg;
+    return { jg, blockedReason: null };
+}
+
+/** Receipt intent + current PMC authority + WO aggregate lock + atomic result. No stock writes. */
+export async function checkBatchAfterPoReceipt(user: SessionUser, shId: number, dbArg?: AnyDb) {
+  if (!Number.isSafeInteger(shId) || shId <= 0 || shId > 2147483647) throw new ApiError(400, "收货单编号无效");
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    // Same-SH retries serialize here. Different SH for one WO serialize in the shared writer.
+    const [sh] = await tx.select().from(schema.shDocs).where(eq(schema.shDocs.id, shId)).for("update");
+    if (!sh) throw new ApiError(404, "收货单不存在");
+    const review = await getReceiptBatchReview(tx, shId);
+    if (!review) throw new ApiError(409, "该收货单没有可恢复的采购入库建批请求；请核对来源和入库时开关记录");
+    if (review.state !== "pending") return review;
+    const result = await createBatchInTransaction(tx, actor, review.woId, sh.sourceId);
+    const after = { requestId: review.requestId, woId: review.woId,
+      state: result.jg ? "created" as const : "not_generated" as const,
+      jgId: result.jg?.id ?? null, docNo: result.jg?.docNo ?? null, reason: result.blockedReason };
+    await writeAudit(tx, { userId: actor.id, entity: "sh", entityId: shId, action: "receipt_batch_checked", after });
+    return (await getReceiptBatchReview(tx, shId))!;
   });
 }
 
@@ -397,22 +433,5 @@ export async function hookAfterBhApprove(user: SessionUser, bhId: number, dbArg?
       const db = await resolveDb(dbArg);
       await writeAudit(db, { userId: user.id, entity: "auto_chain", action: "auto_wo_failed", after: { bhId, error: String(e).slice(0, 300) } });
     } catch { /* 钩子留痕失败亦不阻断 */ }
-  }
-}
-
-export async function hookAfterPoReceipt(user: SessionUser, woId: number | null, dbArg?: AnyDb): Promise<void> {
-  if (woId == null) return;
-  try {
-    const db = await resolveDb(dbArg);
-    if ((await getNumParam("auto_jg_on_ready", 0, db)) !== 1) return;
-    const { batches } = await previewAutoChain(db);
-    const s = batches.find((b) => b.woId === woId);
-    if (!s || s.blockedReason || s.suggestQty <= 0) return;
-    await createBatchJg(user, woId, db);
-  } catch (e) {
-    try {
-      const db = await resolveDb(dbArg);
-      await writeAudit(db, { userId: user.id, entity: "auto_chain", action: "auto_jg_failed", after: { woId, error: String(e).slice(0, 300) } });
-    } catch { /* 同上 */ }
   }
 }

@@ -16,6 +16,7 @@ import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, resolveDb } from "@/server/modules/outsource/common";
 import type { DocStatus } from "@/server/docflow/state";
 import { createdWithinShanghaiDays, skuLineMatch } from "@/server/core/doc-search";
+import { getReceiptBatchReview, receiptBatchPending } from "./receipt-batch-status";
 
 type QcRecordRow = typeof qcRecords.$inferSelect;
 
@@ -117,13 +118,14 @@ export async function getSh(id: number, dbArg?: AnyDb) {
     qc,
     inbound: doc.status === "completed",
     materialReview,
+    batchReview: await getReceiptBatchReview(db, id),
     approvals: await loadApprovalHistory(db, "sh", id),
   };
 }
 
 export async function listShs(
   q: string,
-  opts: { status?: string; sourceType?: string; sourceId?: number; materialReviewPending?: boolean; from?: string; to?: string; page: number; pageSize: number },
+  opts: { status?: string; sourceType?: string; sourceId?: number; materialReviewPending?: boolean; batchCheckPending?: boolean; from?: string; to?: string; page: number; pageSize: number },
   dbArg?: AnyDb,
 ): Promise<{ rows: unknown[]; total: number }> {
   const db = await resolveDb(dbArg);
@@ -133,6 +135,7 @@ export async function listShs(
       and ${auditLogs.action}='material_review_checked' and ${auditLogs.after}->>'jgId'=${shDocs.sourceId}::text
   )`;
   if (opts.materialReviewPending) conds.push(reviewPending);
+  if (opts.batchCheckPending) conds.push(receiptBatchPending);
   if (q) conds.push(or(sql`${shDocs.docNo} ILIKE ${"%" + q + "%"}`, skuLineMatch("sh_lines", "sh_id", shDocs.id, q)));
   if (opts.status) conds.push(eq(shDocs.status, opts.status as DocStatus));
   // 制单时间窗（上海业务日，含首尾）：全链漏斗「到货」级按同一口径回链到本列表
@@ -166,6 +169,7 @@ export async function listShs(
         hasQc: sql<boolean>`${qcAgg.qcId} is not null`,
         inbound: sql<boolean>`${shDocs.status} = 'completed'`,
         materialReviewPending: reviewPending,
+        batchCheckPending: receiptBatchPending,
         createdByName: users.name,
         createdAt: shDocs.createdAt,
       })

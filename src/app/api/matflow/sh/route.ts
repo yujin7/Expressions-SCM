@@ -16,6 +16,7 @@ export async function GET(req: NextRequest) {
         sourceType: searchParams.get("sourceType") ?? undefined,
         sourceId,
         materialReviewPending: optionalIntegerQuery(searchParams, "materialReviewPending", { label: "物料核对待计算筛选", min: 1, max: 1 }) === 1,
+        batchCheckPending: optionalIntegerQuery(searchParams, "batchCheckPending", { label: "采购建批待核对筛选", min: 1, max: 1 }) === 1,
         // 制单时间窗（全链漏斗回链）
         from: searchParams.get("from") ?? undefined,
         to: searchParams.get("to") ?? undefined,

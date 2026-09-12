@@ -35,7 +35,7 @@ type Column = { title: string; width: number; render?: (v: unknown, row: Row) =>
 const table = (i = 0) => all("table")[i].props;
 const cell = (title: string, i = 0) => { const p = table(i); const row = (p.dataSource as Row[])[0]; return ((p.columns as Column[]).find(c => c.title === title)!.render!)(null, row); };
 const generate = (i = 0) => nodes(cell("操作", i))[0];
-const refresh = () => (nodes(props("toolbar").primaryActions as ReactNode)[0].props.onClick as () => void)();
+const refresh = () => (nodes(props("toolbar").primaryActions as ReactNode).find(n => n.type === "button")!.props.onClick as () => void)();
 const search = () => nodes(props("toolbar").extra as ReactNode)[0].props;
 const begin = async () => { fetchMock.mockImplementation(async () => Response.json(preview())); render(); await flush(); };
 beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
