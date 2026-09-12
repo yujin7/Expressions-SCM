@@ -559,8 +559,14 @@ export async function approveJs(
     return await db.transaction(async (tx: AnyDb) => {
       const actor = await currentWriteActor(tx, user), doc = await lockedJs(tx, id);
       await assertSettlementWriteAccess(tx, actor);
+      const r = await approveDoc(tx, {
+        docType: "js", table: jsDocs, docId: id, approver: actor,
+        action: v.action, comment: v.comment, expectedVersion: v.version,
+      });
+      if (r.idempotent) return r;
       // Configuration alone cannot grant review of amounts hidden by the DTO policy.
       // Rejection remains available to an otherwise qualified checker for recovery.
+      // A new-action refusal rolls back approveDoc too; completed-cycle retries have no financial effects.
       if (v.action === "approve" && !canSeePrices(actor.roles)) {
         throw new ApiError(403, "当前角色不可查看结算金额，不能审批通过；请联系管理员配置具备金额查看权限的审批人，或驳回交PMC核对");
       }
@@ -588,16 +594,6 @@ export async function approveJs(
         }
       }
 
-      const r = await approveDoc(tx, {
-        docType: "js",
-        table: jsDocs,
-        docId: id,
-        approver: actor,
-        action: v.action,
-        comment: v.comment,
-        expectedVersion: v.version,
-      });
-      if (r.idempotent) return r;
       if (v.action === "approve") await assertCurrentFee(tx, doc);
 
       await writeAudit(tx, {

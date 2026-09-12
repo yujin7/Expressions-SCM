@@ -196,6 +196,19 @@ it.each(["ops", "warehouse", "quality"])("JS configured %s checker cannot approv
     const rejected = await getJs(js.id, f.db);
     expect(rejected).toMatchObject({ status: "draft", version: 3, feePayable: "20.00" });
     expect(rejected.approvals).toHaveLength(1);
+    await submitJs(a.pmc, js.id, { version: 3 }, f.db);
+    await f.db.update(s.users).set({ roles: [role, "finance"] }).where(eq(s.users.id, checker.id));
+    await approveJs(checker, js.id, { action: "approve", version: 4 }, f.db);
+    await f.db.update(s.users).set({ roles: [role] }).where(eq(s.users.id, checker.id));
+    const completed = await getJs(js.id, f.db);
+    const audits = await f.db.select().from(s.auditLogs);
+    const ledger = await f.db.select().from(s.stockLedger);
+    expect(await approveJs(checker, js.id, { action: "approve", version: 4 }, f.db))
+      .toMatchObject({ status: "completed", idempotent: true });
+    expect(await getJs(js.id, f.db)).toEqual(completed);
+    expect(await f.db.select().from(s.auditLogs)).toEqual(audits);
+    expect(await f.db.select().from(s.stockLedger)).toEqual(ledger);
+    await expect(approveJs(checker, js.id, { action: "approve", version: 999 }, f.db)).rejects.toMatchObject({ status: 409 });
   } finally {
     await f.db.update(s.approvalConfigs).set({ approverRole: "finance" }).where(eq(s.approvalConfigs.docType, "js"));
   }
