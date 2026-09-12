@@ -300,7 +300,7 @@ export default function TlClient() {
   ];
 
   const lineColumns: ColumnsType<TlLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 200, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     { title: "数量", dataIndex: "qty", width: 110, align: "right", render: (v: string) => formatQty(v) },
     {
@@ -318,7 +318,7 @@ export default function TlClient() {
   ];
 
   const createLineColumns: ColumnsType<CreateLine> = [
-    { title: "物料", key: "material", render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料", key: "material", width: 200, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     {
       title: "退料数量",
@@ -467,7 +467,8 @@ export default function TlClient() {
                 description={overReturnAlert}
               />
             ) : null}
-            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}
+              styles={{ label: { width: 104, whiteSpace: "nowrap" }, content: { overflowWrap: "anywhere" } }}>
               <Descriptions.Item label="加工通知单">{detail.jgDocNo}</Descriptions.Item>
               <Descriptions.Item label="退料路径">
                 {detail.fromWarehouseName} → {detail.toWarehouseName}
@@ -487,6 +488,8 @@ export default function TlClient() {
               columns={lineColumns}
               dataSource={detail.lines}
               pagination={false}
+              scroll={{ x: 660 }}
+              tableLayout="fixed"
               style={{ marginBottom: 24 }}
             />
             {detail.approvals.length > 0 ? (
@@ -555,6 +558,8 @@ export default function TlClient() {
               columns={createLineColumns}
               dataSource={createLines}
               pagination={false}
+              scroll={{ x: 580 }}
+              tableLayout="fixed"
               locale={{ emptyText: materialRead.error ? "物料读取失败" : jgId == null ? "请先选择加工通知单" : "当前工单没有物料行" }}
             />
           </div>
