@@ -580,7 +580,6 @@ export default function JsClient() {
         </Popconfirm>
       ) : null}
       {detail.actions?.approve ? (
-        <>
           <Popconfirm
             title="确认审批通过？通过后立即核销委外仓损耗"
             okText="通过"
@@ -591,10 +590,11 @@ export default function JsClient() {
               审批通过
             </Button>
           </Popconfirm>
+      ) : null}
+      {detail.actions?.reject ? (
           <Button danger loading={actionLoading} onClick={() => setRejectOpen(true)}>
             驳回
           </Button>
-        </>
       ) : null}
     </Space>
   ) : null;
