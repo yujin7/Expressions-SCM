@@ -178,6 +178,15 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     fl2 = fl.id;
     const pending = await submitFl(whCreator, fl2, 1, db);
 
+    expect((await getFl(fl2, db, whCreator)).actions).toMatchObject({ submit: false, approve: false, reject: false });
+    expect((await getFl(fl2, db, whApprover)).actions).toMatchObject({ approve: false, reject: true, reason: expect.stringContaining("超发") });
+    expect((await getFl(fl2, db, admin)).actions).toMatchObject({ approve: true, reject: true });
+    await db.update(approvalConfigs).set({ approverRole: "ops" }).where(eq(approvalConfigs.docType, "fl"));
+    try {
+      expect((await getFl(fl2, db, whApprover)).actions).toMatchObject({ approve: false, reject: false });
+      expect((await getFl(fl2, db, { ...whApprover, roles: ["ops"] })).actions).toMatchObject({ approve: false, reject: true });
+    } finally { await db.update(approvalConfigs).set({ approverRole: "warehouse" }).where(eq(approvalConfigs.docType, "fl")); }
+
     await expect(
       approveFl(whApprover, fl2, { action: "approve", version: pending.version }, db),
     ).rejects.toMatchObject({ status: 403, message: "超发需管理员审批" });
@@ -193,6 +202,9 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     expect(r).toMatchObject({ status: "completed", idempotent: false });
     expect(await getBalance(db, yl, whRawId)).toBe("40.0000");
     expect(await getBalance(db, yl, whWxId)).toBe("60.0000");
+    const finalAudit = (await db.select().from(auditLogs).where(eq(auditLogs.entityId, fl2)))
+      .find(row => row.entity === "fl" && row.action === "post_and_complete");
+    expect(finalAudit?.after).toMatchObject({ via: "approve", overIssue: true });
   });
 
   it("4) FL 详情：需求对照（毛需求 vs 累计已发）；列表", async () => {
@@ -204,6 +216,7 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     expect(detail.lines[0]).toMatchObject({ skuId: yl, qty: "30.0000", baseUom: "kg" });
     expect(detail.requirements).toEqual([{ skuId: yl, grossReq: "51.0000", issuedCum: "60.0000" }]);
     expect(detail.approvals.length).toBeGreaterThanOrEqual(1);
+    expect((await getFl(fl2, db, admin)).actions).toMatchObject({ submit: false, approve: false, reject: false });
 
     const list = await listFls("", { jgId: jg1, page: 1, pageSize: 10 }, db);
     expect(list.total).toBe(2);
@@ -217,6 +230,7 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     expect(tl.docNo.startsWith("TL-")).toBe(true);
     expect(tl.fromWarehouseId).toBe(whWxId); // 自动 = 委外仓
     const pending = await submitTl(whCreator, tl.id, 1, db);
+    expect((await getTl(tl.id, db, whApprover)).actions).toMatchObject({ submit: false, approve: true, reject: true });
     const r = await approveTl(whApprover, tl.id, { action: "approve", version: pending.version }, db);
     expect(r).toMatchObject({ status: "completed", idempotent: false });
     expect(await getBalance(db, yl, whWxId)).toBe("50.0000");
@@ -232,6 +246,9 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
       lines: [{ skuId: yl, qty: "100", reason: "defect_exchange" }],
     }, db);
     const p2 = await submitTl(whCreator, tl2.id, 1, db);
+    for (const reviewer of [whApprover, admin]) {
+      expect((await getTl(tl2.id, db, reviewer)).actions).toMatchObject({ approve: false, reject: true, reason: expect.stringContaining("超过累计发料") });
+    }
     await expect(
       approveTl(whApprover, tl2.id, { action: "approve", version: p2.version }, db),
     ).rejects.toMatchObject({ status: 409, message: expect.stringContaining("退料超过累计发料") });
@@ -268,9 +285,11 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
     const fp = await submitFl(whCreator, fl.id, fl.version, db);
     await db.update(jgDocs).set({ status: "closed" }).where(eq(jgDocs.id, jg1));
     try {
+      expect((await getFl(fl.id, db, whApprover)).actions).toMatchObject({ approve: false, reject: true });
       await expect(approveFl(whApprover, fl.id, { action: "approve", version: fp.version }, db)).rejects.toMatchObject({ status: 409 });
       expect((await db.select().from(flDocs).where(eq(flDocs.id, fl.id)))[0].status).toBe("pending");
       await approveFl(whApprover, fl.id, { action: "reject", version: fp.version }, db);
+      expect((await getFl(fl.id, db, whCreator)).actions).toMatchObject({ submit: false, approve: false, reject: false });
       const tl = await createTl(whCreator, { jgId: jg1, toWarehouseId: whRawId, lines: [{ skuId: yl, qty: "1", reason: "surplus_return" }] }, db);
       const pending = await submitTl(whCreator, tl.id, tl.version, db);
       await db.update(users).set({ isApprover: false }).where(eq(users.id, whApprover.id));

@@ -22,7 +22,6 @@ import { useJgMaterialLines } from "@/components/useJgMaterialLines";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
-import { hasAnyRole, useMe } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 
 // ---------- 客户端十进制比较（仅提交前过滤 0 行；非负字符串，禁 float） ----------
@@ -94,6 +93,7 @@ interface TlDetail {
   createdByName: string | null;
   lines: TlLine[];
   approvals: DocApproval[];
+  actions?: { submit: boolean; approve: boolean; reject: boolean; reason: string };
 }
 
 interface CreateLine {
@@ -114,10 +114,7 @@ const STATUS_TABS = [
 
 export default function TlClient() {
   const { message } = App.useApp();
-  const me = useMe();
-  const canWrite = hasAnyRole(me, "warehouse");
-  const canApprove =
-    me != null && (me.roles.includes("admin") || (me.isApprover && me.roles.includes("warehouse")));
+  const [canWrite, setCanWrite] = useState(false);
 
   const [rows, setRows] = useState<TlRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -158,13 +155,15 @@ export default function TlClient() {
   const load = useCallback(async () => {
     const readRequest = beginLoadRead();
     setLoading(true);
+    setCanWrite(false);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
-      const res = await fetchJson<{ rows: TlRow[]; total: number }>(`/api/matflow/tl?${params.toString()}`, { signal: readRequest.signal });
+      const res = await fetchJson<{ rows: TlRow[]; total: number; actions?: { create: boolean } }>(`/api/matflow/tl?${params.toString()}`, { signal: readRequest.signal });
       if (!readRequest.isCurrent()) return;
       setRows(res.rows);
       setTotal(res.total);
+      setCanWrite(res.actions?.create === true);
     } catch (e) {
       if (!readRequest.isCurrent()) return;
       message.error((e as Error).message);
@@ -358,14 +357,14 @@ export default function TlClient() {
 
   const actions = detail ? (
     <Space>
-      {detail.status === "draft" && canWrite ? (
+      {detail.actions?.submit ? (
         <Popconfirm title="确认提交审批？" okText="提交" cancelText="取消" onConfirm={() => void handleSubmit()}>
           <Button type="primary" loading={actionLoading}>
             提交
           </Button>
         </Popconfirm>
       ) : null}
-      {detail.status === "pending" && canApprove ? (
+      {detail.actions?.approve ? (
         <>
           <Popconfirm
             title="确认审批通过？通过即过账退料（委外仓 − / 退回仓 +）。"
@@ -377,10 +376,10 @@ export default function TlClient() {
               审批通过
             </Button>
           </Popconfirm>
-          <Button danger loading={actionLoading} onClick={() => setRejectOpen(true)}>
-            驳回
-          </Button>
         </>
+      ) : null}
+      {detail.actions?.reject ? (
+        <Button danger loading={actionLoading} onClick={() => setRejectOpen(true)}>驳回</Button>
       ) : null}
     </Space>
   ) : null;
@@ -456,6 +455,8 @@ export default function TlClient() {
         {detail ? (
           <div>
             <ChainStrip docType="tl" id={detail.id} />
+            <Alert type="info" showIcon style={{ marginBottom: 12 }}
+              message={detail.actions?.reason ?? "操作资格未加载，请刷新详情后重试。"} />
             {overReturnAlert ? (
               <Alert
                 type="warning"
@@ -512,7 +513,7 @@ export default function TlClient() {
         onCancel={() => { if (!createLock.current) { materialRead.cancel(); setCreateOpen(false); } }}
         maskClosable={!createLoading}
         keyboard={!createLoading}
-        okButtonProps={{ disabled: materialRead.loading || Boolean(materialRead.error) }}
+        okButtonProps={{ disabled: !canWrite || materialRead.loading || Boolean(materialRead.error) }}
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
@@ -577,7 +578,7 @@ export default function TlClient() {
         title="驳回单据"
         open={rejectOpen}
         okText="确认驳回"
-        okButtonProps={{ danger: true }}
+        okButtonProps={{ danger: true, disabled: !detail?.actions?.reject }}
         cancelText="取消"
         confirmLoading={actionLoading}
         onCancel={() => setRejectOpen(false)}
