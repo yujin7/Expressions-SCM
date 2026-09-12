@@ -5,6 +5,12 @@ const user = { id: 12, name: "合成审批人", roles: ["purchasing"], isApprove
 const pending = { status: "pending", createdBy: 11 };
 
 describe("PC and JS action qualification", () => {
+  it.each(["ops", "warehouse", "quality"])("PC configured %s checker cannot approve masked prices but can reject", role => {
+    expect(pcTaskActions({ ...user, roles: [role] }, pending, role))
+      .toMatchObject({ approve: false, reject: true, reason: expect.stringContaining("不可查看改价金额") });
+    expect(pcTaskActions({ ...user, roles: [role, "finance"] }, pending, role))
+      .toMatchObject({ approve: true, reject: true });
+  });
   it.each(["ops", "warehouse", "quality"])("JS configured %s checker cannot approve masked money but can reject", role => {
     expect(jsTaskActions({ ...user, roles: [role] }, pending, role))
       .toMatchObject({ approve: false, reject: true, reason: expect.stringContaining("不可查看结算金额") });
