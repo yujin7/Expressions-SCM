@@ -155,7 +155,7 @@ export default function AutoChainClient() {
         description={<><div>BH 自动建 WO：{data ? (data.flags.autoWoOnBh ? "开" : "关") : "未知"} · 齐套自动 JG：{data ? (data.flags.autoJgOnReady ? "开" : "关") : "未知"}（运行参数页调整）。</div><div>到料可产与建议量按系统 PO 到料计算；预计齐套日为系统供给预测。旧台账仅作旁证，不改变生成资格。批次≤8、待复核成品不自动、有待批草稿先处理。</div></>}
       />
       <ListToolbar state={list} extra={<SearchInput aria-label="筛选自动链建议" placeholder="工单 / 备货单 / 成品 / OEM" value={searchDraft} onChange={e => setSearchDraft(e.target.value)} onSearch={value => list.setFilter({ q: value.trim() })} allowClear style={{ width: 300, maxWidth: "100%" }} />}
-        primaryActions={<Button onClick={refresh} loading={loading} disabled={busy !== null}>刷新预演</Button>} />
+        primaryActions={<><a href="/matflow/sh?batchCheckPending=1">采购建批待核对</a><Button onClick={refresh} loading={loading} disabled={busy !== null}>刷新预演</Button></>} />
       <Space direction="vertical" size={12} style={{ width: "100%", minWidth: 0 }}>
         <LoadErrorAlert subject="自动链预演" error={loadError} onRetry={refresh} retrying={loading} />
         {writeError ? <Alert type="error" showIcon message="本次生成未获成功确认" description={<>{writeError}<div>先刷新预演并核对来源单据；刷新只读取，不会再次生成。</div></>} action={<Button size="small" onClick={refresh} disabled={busy !== null} loading={loading}>刷新核对</Button>} /> : null}

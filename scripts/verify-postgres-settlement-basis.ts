@@ -9,7 +9,8 @@ import { approveJs, createJs, getJsBasis, refreshJsBasis, submitJs } from "@/ser
 import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
-import { createBatchJg } from "@/server/modules/outsource/auto-chain";
+import { checkBatchAfterPoReceipt, createBatchJg } from "@/server/modules/outsource/auto-chain";
+import { getReceiptBatchReview } from "@/server/modules/matflow/receipt-batch-status";
 import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
 import type { DB } from "@/db";
@@ -237,8 +238,49 @@ async function main() {
       () => createBatchJg(revoked, revokingActor.wo.id, other));
     assert(!revokedBatch.second.ok); assert.equal(revokedBatch.second.error.status, 403);
     console.log("PASS batch generation waits for actor revocation and cannot use stale PMC claims");
+    const [originalFlag] = await db.select().from(s.sysParams).where(and(eq(s.sysParams.scope, "global"), eq(s.sysParams.key, "auto_jg_on_ready")));
+    const autoFlag = originalFlag ?? (await db.insert(s.sysParams).values({ scope: "global", key: "auto_jg_on_ready", value: "0" }).returning())[0];
+    let browserReceipt = 0;
+    try {
+      await db.update(s.sysParams).set({ value: "1" }).where(eq(s.sysParams.id, autoFlag.id));
+      const receipt = async (source: Awaited<ReturnType<typeof batchSource>>) => {
+        const [line] = await db.select().from(s.poLines).where(eq(s.poLines.poId, source.po.id));
+        const [sh] = await db.insert(s.shDocs).values({ docNo: `SH-RECOVERY-${key}-${++seq}`, sourceType: "po", sourceId: source.po.id, warehouseId: own.id, status: "approved", createdBy: maker.id }).returning();
+        const [sl] = await db.insert(s.shLines).values({ shId: sh.id, poLineId: line.id, skuId: material.id, lineType: "normal", actualQty: "10" }).returning();
+        const [qc] = await db.insert(s.qcRecords).values({ shId: sh.id, createdBy: maker.id }).returning();
+        await db.insert(s.qcLines).values({ qcId: qc.id, shLineId: sl.id, passQty: "10", failQty: "0", concessionQty: "0" });
+        assert.deepEqual(await confirmInbound(maker, sh.id, db), { status: "completed", batchCheck: "pending" });
+        return sh;
+      };
+      const sameSource = await batchSource(), sameReceipt = await receipt(sameSource);
+      const ledgerBeforeRecovery = await db.select().from(s.stockLedger).orderBy(s.stockLedger.id);
+      const sameReceiptRace = await race(tx => checkBatchAfterPoReceipt(pmc, sameReceipt.id, tx), () => checkBatchAfterPoReceipt(pmc, sameReceipt.id, other));
+      assert(sameReceiptRace.second.ok); assert.deepEqual(sameReceiptRace.second.value, sameReceiptRace.first);
+      assert.equal(sameReceiptRace.first.state, "created");
+      assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, sameSource.wo.id))).length, 1);
+      assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "sh"), eq(s.auditLogs.entityId, sameReceipt.id), eq(s.auditLogs.action, "receipt_batch_checked")))).length, 1);
+      assert.deepEqual(await db.select().from(s.stockLedger).orderBy(s.stockLedger.id), ledgerBeforeRecovery);
+      console.log("PASS same receipt recovery waits on SH, returns the exact saved draft and adds no stock or second acknowledgement");
+      const sharedSource = await batchSource(), firstReceipt = await receipt(sharedSource), secondReceipt = await receipt(sharedSource);
+      const differentReceiptRace = await race(tx => checkBatchAfterPoReceipt(pmc, firstReceipt.id, tx), () => checkBatchAfterPoReceipt(pmc, secondReceipt.id, other));
+      assert(differentReceiptRace.second.ok); assert.equal(differentReceiptRace.first.state, "created");
+      assert.equal(differentReceiptRace.second.value.state, "not_generated");
+      assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, sharedSource.wo.id))).length, 1);
+      console.log("PASS different receipts share the WO lock, second check sees the first draft and records no new eligible quantity");
+      const movingSource = await batchSource(), movedTo = await batchSource(), movingReceipt = await receipt(movingSource);
+      const rebindRace = await race(tx => tx.update(s.poDocs).set({ woId: movedTo.wo.id }).where(eq(s.poDocs.id, movingSource.po.id)),
+        () => checkBatchAfterPoReceipt(pmc, movingReceipt.id, other));
+      assert(!rebindRace.second.ok); assert.equal(rebindRace.second.error.status, 409);
+      assert.equal((await getReceiptBatchReview(db, movingReceipt.id))?.state, "pending");
+      assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, movingSource.wo.id))).length, 0);
+      console.log("PASS concurrent PO rebind is rejected after the source lock; durable handoff remains visible");
+      browserReceipt = (await receipt(await batchSource())).id;
+    } finally {
+      if (originalFlag) await db.update(s.sysParams).set({ value: originalFlag.value }).where(eq(s.sysParams.id, autoFlag.id));
+      else await db.delete(s.sysParams).where(eq(s.sysParams.id, autoFlag.id));
+    }
     const browserBatch = await batchSource();
-    console.log(JSON.stringify({ passed: true, cases: 20, fixture: key, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    console.log(JSON.stringify({ passed: true, cases: 23, fixture: key, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));

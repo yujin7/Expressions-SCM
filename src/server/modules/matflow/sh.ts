@@ -344,7 +344,7 @@ export async function confirmInbound(
   user: SessionUser,
   shId: number,
   dbArg?: AnyDb,
-): Promise<{ status: string; materialReview?: "checked" | "pending" }> {
+): Promise<{ status: string; materialReview?: "checked" | "pending"; batchCheck?: "checked" | "pending" }> {
   requireAnyRole(user, "warehouse");
   const db = await resolveDb(dbArg);
   try {
@@ -389,6 +389,9 @@ export async function confirmInbound(
       }
 
       const finalStatus = await completeApprovedDoc(tx, shDocs, shId);
+      // Durable intent is committed with stock, before a fallible post-commit hook.
+      // Later parameter changes do not erase this receipt's already-requested check.
+      const autoBatchRequested = purchase?.po.woId != null && (await getGlobalParam(tx, "auto_jg_on_ready", "0")) === "1";
       await writeAudit(tx, {
         userId: user.id, entity: "sh", entityId: shId, action: "inbound",
         after: {
@@ -396,17 +399,22 @@ export async function confirmInbound(
           sourceType: sh.sourceType,
           sourceId: sh.sourceId,
           batchPostingEnabled,
+          autoBatchRequested,
+          autoBatchWoId: autoBatchRequested ? purchase!.po.woId : null,
         },
       });
-      return { status: finalStatus, sourceType: sh.sourceType, sourceId: sh.sourceId };
-    }).then(async (r: { status: string; sourceType?: string; sourceId?: number }) => {
+      return { status: finalStatus, sourceType: sh.sourceType, sourceId: sh.sourceId, autoBatchRequested };
+    }).then(async (r: { status: string; sourceType?: string; sourceId?: number; autoBatchRequested?: boolean }) => {
       // D33 钩子②（事务外、失败不阻断）：材料到仓（po 源入库）→ 齐套自动 JG（开关默认关）
-      if (r?.sourceType === "po" && r.sourceId != null) {
+      if (r.autoBatchRequested) {
         try {
-          const [po] = await db.select({ woId: poDocs.woId }).from(poDocs).where(eq(poDocs.id, r.sourceId));
-          const { hookAfterPoReceipt } = await import("@/server/modules/outsource/auto-chain");
-          await hookAfterPoReceipt(user, po?.woId ?? null, dbArg);
-        } catch { /* 钩子失败不阻断入库 */ }
+          const { checkBatchAfterPoReceipt } = await import("@/server/modules/outsource/auto-chain");
+          await checkBatchAfterPoReceipt(user, shId, dbArg);
+          return { status: r.status, batchCheck: "checked" as const };
+        } catch {
+          log({ level: "warn", msg: "采购入库已完成，建批核对待PMC处理", shId, poId: r.sourceId });
+          return { status: r.status, batchCheck: "pending" as const };
+        }
       }
       // D33-b（0724：成品入库时核算剩余物料）：jg 源入库 → 结余提示入复核清单
       if (r?.sourceType === "jg" && r.sourceId != null) {

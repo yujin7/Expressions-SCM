@@ -28,6 +28,7 @@ import ApprovalTimeline from "@/components/ApprovalTimeline";
 import ScannerEntry from "@/components/ScannerEntry";
 import { addScanQty, findUniqueScanMatch } from "@/components/scanner";
 import QcOutcomePanel from "./qc-outcome-panel";
+import ReceiptBatchPanel, { type ReceiptBatchView } from "./receipt-batch-panel";
 
 // ---------- 客户端十进制工具（仅 UI 过滤/汇总提示用；非负字符串，禁 float） ----------
 
@@ -87,6 +88,7 @@ interface ShRow {
   inbound: boolean;
   createdByName: string | null;
   materialReviewPending?: boolean;
+  batchCheckPending?: boolean;
   createdAt: string;
 }
 
@@ -137,6 +139,7 @@ interface ShDetail {
   inbound: boolean;
   approvals: DocApproval[];
   materialReview: { checkedAt: string | null; reviewItemId: number | null; basisStatus: string | null } | null;
+  batchReview: ReceiptBatchView | null;
 }
 
 interface JgSource {
@@ -218,12 +221,13 @@ export default function ShClient() {
   const { message } = App.useApp();
   const me = useMe();
   const canWrite = hasAnyRole(me, "warehouse");
+  const canReadQcOutcome = hasAnyRole(me, "quality", "warehouse", "purchasing", "ops");
   const canApprove =
     me != null && (me.roles.includes("admin") || (me.isApprover && me.roles.includes("warehouse")));
 
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   // from/to = 制单时间窗（上海业务日，含首尾）：全链漏斗「到货」级点数字回链到本页时带过来
-  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "sh", defaults: { q: "", status: "", from: "", to: "", materialReviewPending: "" }, defaultPageSize: 20 });
+  const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "sh", defaults: { q: "", status: "", from: "", to: "", materialReviewPending: "", batchCheckPending: "" }, defaultPageSize: 20 });
   const { filters, page, pageSize } = listState;
   const q = filters.q;
   const status = filters.status;
@@ -234,6 +238,7 @@ export default function ShClient() {
   if (from) listParams.set("from", from);
   if (to) listParams.set("to", to);
   if (filters.materialReviewPending) listParams.set("materialReviewPending", filters.materialReviewPending);
+  if (filters.batchCheckPending) listParams.set("batchCheckPending", filters.batchCheckPending);
   const listRead = useDocumentRead<{ rows: ShRow[]; total: number }>(`/api/matflow/sh?${listParams}`);
   const listValid = listRead.data != null && Array.isArray(listRead.data.rows) && Number.isSafeInteger(listRead.data.total)
     && listRead.data.total >= 0 && listRead.data.rows.every(r => r && Number.isSafeInteger(r.id) && r.id > 0 && typeof r.docNo === "string");
@@ -534,7 +539,7 @@ export default function ShClient() {
     if (!detail || !detail.qc) return;
     setInboundLoading(true);
     try {
-      const result = await postJson<{ materialReview?: "checked" | "pending" }>(`/api/matflow/sh/${detail.id}/inbound`, {});
+      const result = await postJson<{ materialReview?: "checked" | "pending"; batchCheck?: "checked" | "pending" }>(`/api/matflow/sh/${detail.id}/inbound`, {});
       let pass = "0";
       let concession = "0";
       for (const l of detail.qc.lines) {
@@ -554,6 +559,7 @@ export default function ShClient() {
       if (detail.sourceType === "jg" && decCmp(spare, "0") > 0) parts.push(`备品 ${formatQty(spare)}`);
       message.success(`入库完成：${parts.join("、")}`);
       if (result.materialReview === "pending") message.warning("库存已入账；物料核对提示尚未生成，请在入库区重试核对，不要再次入库。", 8);
+      if (result.batchCheck === "pending") message.warning("库存已入账；采购建批待PMC核对，请在入库区查看，不要再次入库。", 8);
       refresh();
     } catch (e) {
       message.error((e as Error).message);
@@ -617,6 +623,7 @@ export default function ShClient() {
       render: (v: boolean, row: ShRow) => <Space direction="vertical" size={2}>
         {v ? <Badge status="success" text="已入库" /> : <Badge status="default" text="未入库" />}
         {row.materialReviewPending ? <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setDetailId(row.id)}>物料核对待计算</Button> : null}
+        {row.batchCheckPending ? <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setDetailId(row.id)}>采购建批待核对</Button> : null}
       </Space>,
     },
     {
@@ -963,7 +970,7 @@ export default function ShClient() {
       <Tabs
         activeKey={status}
         items={STATUS_TABS}
-        onChange={(key) => listState.setFilter({ status: key, materialReviewPending: "" })}
+        onChange={(key) => listState.setFilter({ status: key, materialReviewPending: "", batchCheckPending: "" })}
       />
       <ListToolbar
         state={listState}
@@ -974,8 +981,13 @@ export default function ShClient() {
             </Button>
             <Button type={filters.materialReviewPending ? "primary" : "default"}
               aria-pressed={Boolean(filters.materialReviewPending)}
-              onClick={() => listState.setFilter({ materialReviewPending: filters.materialReviewPending ? "" : "1", status: "" })}>
+              onClick={() => listState.setFilter({ materialReviewPending: filters.materialReviewPending ? "" : "1", batchCheckPending: "", status: "" })}>
               {filters.materialReviewPending ? "物料核对待计算 ×" : "物料核对待计算"}
+            </Button>
+            <Button type={filters.batchCheckPending ? "primary" : "default"}
+              aria-pressed={Boolean(filters.batchCheckPending)}
+              onClick={() => listState.setFilter({ batchCheckPending: filters.batchCheckPending ? "" : "1", materialReviewPending: "", status: "" })}>
+              {filters.batchCheckPending ? "采购建批待核对 ×" : "采购建批待核对"}
             </Button>
             {canWrite ? (
               <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
@@ -1098,7 +1110,9 @@ export default function ShClient() {
                   {detail.qc.conclusion ? `｜结论：${detail.qc.conclusion}` : ""}
                 </Typography.Text>
                 {/* W2 审计 3：不合格量必须有去向（质量案件 / 退货草稿），否则它只是报表里的一个比率 */}
-                <QcOutcomePanel shId={detail.id} canWrite={canWrite} onDone={() => void loadDetail()} />
+                {canReadQcOutcome ? <QcOutcomePanel shId={detail.id} canWrite={canWrite} onDone={() => void loadDetail()} />
+                  : detail.qc.lines.some(line => decCmp(line.failQty, "0") > 0 || decCmp(line.concessionQty, "0") > 0)
+                    ? <Alert type="info" showIcon message="本次检验有不合格或让步接收量" description="具体处置记录由质量合规、仓管、采购或运营角色查看；当前角色可继续核对入库及建批结果。" /> : null}
               </div>
             ) : detail.status === "approved" && canWrite ? (
               <div style={{ marginBottom: 24 }}>
@@ -1161,6 +1175,8 @@ export default function ShClient() {
               {detail.inbound ? (
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
                   <Alert type="success" showIcon message="已完成入库" />
+                  {detail.sourceType === "po" ? <ReceiptBatchPanel key={detail.id} receiptId={detail.id} review={detail.batchReview ?? null}
+                    canCheck={hasAnyRole(me, "pmc")} onChecked={refresh} /> : null}
                   {detail.sourceType === "jg" ? (
                     <Alert type={detail.materialReview?.checkedAt ? "info" : "warning"} showIcon
                       message={detail.materialReview?.checkedAt
