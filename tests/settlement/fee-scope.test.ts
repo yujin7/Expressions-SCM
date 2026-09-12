@@ -20,6 +20,25 @@ beforeAll(async () => {
 });
 afterAll(async () => f?.client.close());
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+it.each(["create", "refresh", "submit", "approve", "reject"])("%s rechecks stored channel restrictions without trusting caller scope", async operation => {
+  const a = await setup();
+  const js = operation === "create" ? null : await createJs(a.pmc, { jgId: a.jg.id }, f.db);
+  if (operation === "approve" || operation === "reject") await submitJs(a.pmc, js!.id, { version: 1 }, f.db);
+  const user = operation === "approve" || operation === "reject" ? a.finance : a.pmc;
+  const [channel] = await f.db.insert(s.channels).values({ code: `FS-SCOPE-${++seq}`, name: "范围限制测试", kind: "platform" }).returning();
+  await f.db.insert(s.userDataScopes).values({ userId: user.id, scopeKind: "channel", targetId: channel.id, createdBy: user.id });
+  const snapshot = async () => ({ docs: await f.db.select().from(s.jsDocs), lines: await f.db.select().from(s.jsLines),
+    approvals: await f.db.select().from(s.approvals), audits: await f.db.select().from(s.auditLogs),
+    ledger: await f.db.select().from(s.stockLedger), counters: await f.db.select().from(s.docCounters) });
+  const before = await snapshot();
+  const caller = { ...user, channelScope: null }; // Stored scope must win over stale/forged input.
+  const run = operation === "create" ? createJs(caller, { jgId: a.jg.id }, f.db)
+    : operation === "refresh" ? refreshJsFee(caller, js!.id, { version: 1 }, f.db)
+    : operation === "submit" ? submitJs(caller, js!.id, { version: 1 }, f.db)
+    : approveJs(caller, js!.id, { action: operation, version: 2 }, f.db);
+  await expect(run).rejects.toMatchObject({ status: 403, message: expect.stringContaining("渠道范围") });
+  expect(await snapshot()).toEqual(before);
+});
 async function setup() {
   const pmc = await actor(["pmc"]), purchasing = await actor(["purchasing"]), checker = await actor(["purchasing"]), finance = await actor(["finance"]);
   const key = `FS-${seq}`;
@@ -151,9 +170,7 @@ it("JS detail follows current approval configuration and retains monetary maskin
   try {
     expect((await getJs(js.id, f.db, a.finance)).actions).toMatchObject({ approve: false, reject: false });
     expect((await getJs(js.id, f.db, a.checker)).actions).toMatchObject({ approve: true, reject: true });
-    const masked = maskSensitive(await getJs(js.id, f.db, { ...a.checker, roles: ["warehouse"] }), ["warehouse"]);
-    expect(masked).not.toHaveProperty("feePayable"); expect(masked).not.toHaveProperty("settleAmount");
-    expect(masked.actions).toMatchObject({ approve: false, reject: false });
+    await expect(getJs(js.id, f.db, { ...a.checker, roles: ["warehouse"] })).rejects.toMatchObject({ status: 403 });
   } finally {
     await f.db.update(s.approvalConfigs).set({ approverRole: "finance" }).where(eq(s.approvalConfigs.docType, "js"));
   }
