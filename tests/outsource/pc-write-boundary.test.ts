@@ -144,6 +144,18 @@ it.each(["ops", "warehouse", "quality"])("configured %s checker cannot approve h
     expect(await approvePc(reader, replacement.id, { action: "approve", version: 1 }, f.db))
       .toMatchObject({ status: "approved", idempotent: false });
     expect((await snap(a.jg.id)).jg).toMatchObject({ feeRateCurrent: "2.80" });
+    await f.db.update(s.users).set({ roles: [role] }).where(eq(s.users.id, a.checker.id));
+    const completed = await snap(a.jg.id);
+    expect(await approvePc(reader, replacement.id, { action: "approve", version: 1 }, f.db))
+      .toMatchObject({ status: "approved", idempotent: true });
+    expect(await snap(a.jg.id)).toEqual(completed);
+    await expect(approvePc(reader, replacement.id, { action: "approve", version: 999 }, f.db)).rejects.toMatchObject({ status: 409 });
+    const next = await createPcForJgFee(a.maker, { ...input(a.jg.id), newPrice: "3.20" }, f.db);
+    const beforeNext = await snap(a.jg.id);
+    await expect(approvePc(reader, next.id, { action: "approve", version: 1 }, f.db)).rejects.toMatchObject({ status: 403 });
+    expect(await snap(a.jg.id)).toEqual(beforeNext);
+    await f.db.update(s.users).set({ isApprover: false }).where(eq(s.users.id, a.checker.id));
+    await expect(approvePc(reader, replacement.id, { action: "approve", version: 1 }, f.db)).rejects.toMatchObject({ status: 403 });
   } finally {
     await f.db.update(s.approvalConfigs).set({ approverRole: "purchasing" }).where(eq(s.approvalConfigs.docType, "pc"));
   }

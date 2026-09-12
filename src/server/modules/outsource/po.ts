@@ -220,9 +220,6 @@ export async function approvePc(
       const actor = await currentWriteActor(tx, user);
       const [pc]: PcRow[] = await tx.select().from(pcDocs).where(eq(pcDocs.id, id)).for("update");
       if (!pc) throw new ApiError(404, "单据不存在");
-      if (v.action === "approve" && !canSeePrices(actor.roles)) {
-        throw new ApiError(403, "当前角色不可查看改价金额，不能批准；请由具备金额可见权限且符合审批配置的审批人核对，或驳回申请。");
-      }
       const r = await approveDoc(tx, {
         docType: "pc",
         table: pcDocs,
@@ -233,6 +230,11 @@ export async function approvePc(
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
+      // A completed cycle may be replayed by a still-qualified checker without reapplying price effects.
+      // New approvals still require visible money; throwing rolls back approveDoc's nested transaction.
+      if (v.action === "approve" && !canSeePrices(actor.roles)) {
+        throw new ApiError(403, "当前角色不可查看改价金额，不能批准；请由具备金额可见权限且符合审批配置的审批人核对，或驳回申请。");
+      }
       await writeAudit(tx, {
         userId: actor.id, entity: "pc", entityId: id, action: v.action,
         after: { comment: v.comment ?? null, target: pc.target },
