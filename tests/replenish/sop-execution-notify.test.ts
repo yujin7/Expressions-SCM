@@ -168,7 +168,7 @@ describe("三方共识的通知（W2-#5）", () => {
       const created = await notes();
       expect(created.map((n) => n.targetRole).sort(), "一开就得让三方知道").toEqual(["finance", "ops", "pmc"]);
       expect(created.every((n) => n.dedupeKey?.includes(`:v${cycle.version}:await:`))).toBe(true);
-      expect(created[0].href).toBe("/replenish/sop");
+      expect(created.every(n => n.href === `/replenish/sop?cycleId=${cycle.id}`)).toBe(true);
 
       // 运营同意：只该再叫还没签的两个角色，且已发过的 await 键不重复入队
       await decideSopCycle(ops, { cycleId: cycle.id, version: cycle.version, role: "ops", decision: "agree" }, db);
@@ -183,6 +183,7 @@ describe("三方共识的通知（W2-#5）", () => {
       expect(rejects[0].userId, "驳回要通知周期发起人——他是唯一有义务改计划的人").toBe(pmc.id);
       expect(rejects[0].body).toContain("资金排期不支持该量级");
       expect(rejects[0].severity).toBe("high");
+      expect(rejects[0].href).toBe(`/replenish/sop?cycleId=${cycle.id}`);
 
       // 三方同意后冻结：全体收到，并被告知替代执行路径
       await decideSopCycle(finance, { cycleId: cycle.id, version: cycle.version, role: "finance", decision: "agree" }, db);
@@ -191,6 +192,7 @@ describe("三方共识的通知（W2-#5）", () => {
       const frozen = (await notes()).filter((n) => n.dedupeKey?.includes(":frozen:"));
       expect(frozen.map((n) => n.targetRole).sort()).toEqual(["finance", "ops", "pmc"]);
       expect(frozen[0].body).toContain("按冻结计划开单");
+      expect(frozen.every(n => n.href === `/replenish/sop?cycleId=${cycle.id}`)).toBe(true);
     } finally {
       await client.close();
     }

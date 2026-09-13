@@ -1,5 +1,6 @@
 import NoAccess from "@/components/NoAccess";
 import { auth } from "@/server/auth";
+import { Suspense } from "react";
 
 import SopClient from "./sop-client";
 
@@ -11,5 +12,5 @@ export default async function SopPage() {
   const allowed = roles.includes("admin") || roles.some((role) =>
     ["pmc", "purchasing", "ops", "finance"].includes(role));
   if (!allowed) return <NoAccess need="管理员、生产计划、运营、采购或财务" />;
-  return <SopClient />;
+  return <Suspense fallback={<div role="status">正在加载计划周期…</div>}><SopClient /></Suspense>;
 }

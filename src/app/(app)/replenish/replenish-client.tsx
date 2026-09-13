@@ -1,5 +1,7 @@
 "use client";
 
+import { sopCycleHref } from "@/lib/sop-links";
+
 import { useLatestRead } from "@/components/useLatestRead";
 
 import SearchInput from "@/components/SearchInput";
@@ -978,6 +980,7 @@ function ReplenishWorkspace({ me }: { me: Me | null }) {
           showIcon
           style={{ marginBottom: 12 }}
           message={`当月（${sopFreeze.month}）S&OP 计划已冻结——本页实时建议只读，不能生成草稿`}
+          action={sopFreeze.cycle ? <Button href={sopCycleHref(sopFreeze.cycle.id) ?? undefined}>打开冻结周期</Button> : undefined}
           description={
             <Typography.Text type="secondary">
               周期「{sopFreeze.cycle?.name ?? "—"}」当前为 {sopFreeze.cycle?.status === "executing" ? "执行中" : "已冻结"}：
