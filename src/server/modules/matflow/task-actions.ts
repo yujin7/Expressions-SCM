@@ -6,7 +6,7 @@ export function canCreateMaterialDoc(user: SessionUser) {
   return user.roles.includes("admin") || user.roles.includes("warehouse");
 }
 
-export function canEditFlDraft(user: SessionUser, doc: { status: string; createdBy: number | null }) {
+export function canEditMaterialDraft(user: SessionUser, doc: { status: string; createdBy: number | null }) {
   return doc.status === "draft" && canCreateMaterialDoc(user)
     && (doc.createdBy === user.id || user.roles.includes("admin"));
 }

@@ -2,13 +2,13 @@ import { NextRequest } from "next/server";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError } from "@/server/modules/master/common";
 import { GET as flDetail, PATCH as flUpdate } from "@/app/api/matflow/fl/[id]/route";
-import { GET as tlDetail } from "@/app/api/matflow/tl/[id]/route";
+import { GET as tlDetail, PATCH as tlUpdate } from "@/app/api/matflow/tl/[id]/route";
 import { GET as flList } from "@/app/api/matflow/fl/route";
 import { GET as tlList } from "@/app/api/matflow/tl/route";
 const h = vi.hoisted(() => ({ fresh: vi.fn(), fl: vi.fn(), tl: vi.fn(), list: vi.fn(), update: vi.fn() }));
 vi.mock("@/server/modules/outsource/common", () => ({ guardFreshWrite: h.fresh }));
 vi.mock("@/server/modules/matflow/fl", () => ({ getFl: h.fl, listFls: h.list, updateFl: h.update }));
-vi.mock("@/server/modules/matflow/tl", () => ({ getTl: h.tl, listTls: h.list }));
+vi.mock("@/server/modules/matflow/tl", () => ({ getTl: h.tl, listTls: h.list, updateTl: h.update }));
 const actor = { id: 7, name: "当前仓管", roles: ["warehouse"], isApprover: false };
 const req = new NextRequest("http://localhost/api/matflow/fl");
 const ctx = { params: Promise.resolve({ id: "19" }) };
@@ -40,6 +40,19 @@ it("draft PATCH preserves a useful version conflict, not a generic 500", async (
   expect(response.status).toBe(409);
   expect(await response.json()).toMatchObject({ error: "版本已变化，请重新读取" });
   expect(h.update).toHaveBeenCalledTimes(1);
+});
+it("TL correction forwards only the fresh actor and exact original-line payload", async () => {
+  const payload = { version: 3, toWarehouseId: 2, lines: [{ id: 17, qty: "1.25", reason: "defect_exchange" }] };
+  h.update.mockResolvedValue({ id: 19, version: 4, status: "draft" });
+  expect((await tlUpdate(patchRequest(JSON.stringify(payload)), ctx)).status).toBe(200);
+  expect(h.update).toHaveBeenCalledExactlyOnceWith(actor, 19, payload);
+});
+it("TL correction refuses stale identity, malformed JSON and invalid IDs before mutation", async () => {
+  h.fresh.mockRejectedValueOnce(new ApiError(401, "会话失效"));
+  expect((await tlUpdate(patchRequest("{}"), ctx)).status).toBe(401);
+  expect((await tlUpdate(patchRequest("{"), ctx)).status).toBe(400);
+  expect((await tlUpdate(patchRequest("{}"), { params: Promise.resolve({ id: "bad" }) })).status).toBe(400);
+  expect(h.update).not.toHaveBeenCalled();
 });
 it.each([flDetail, tlDetail, flList, tlList])("invalid current session fails before loading material facts", async handler => {
   h.fresh.mockRejectedValue(new ApiError(401, "会话已失效"));

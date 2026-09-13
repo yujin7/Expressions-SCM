@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, parseId } from "@/server/modules/master/common";
+import { errorResponse, parseId, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { maskSensitive } from "@/server/core/dto";
-import { getTl } from "@/server/modules/matflow/tl";
+import { getTl, updateTl } from "@/server/modules/matflow/tl";
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -12,4 +12,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   } catch (e) {
     return errorResponse(e);
   }
+}
+
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await guardFreshWrite();
+    const { id } = await ctx.params;
+    return NextResponse.json(await updateTl(user, parseId(id), await readJson(req)));
+  } catch (e) { return errorResponse(e); }
 }

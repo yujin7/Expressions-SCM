@@ -62,6 +62,19 @@ export const createTlSchema = z.object({
 });
 export type CreateTlInput = z.infer<typeof createTlSchema>;
 
+/** Correct original return lines, never substitute the physical SKU/batch or source JG/warehouse. */
+export const updateTlSchema = z.object({
+  version: z.number().int().positive(),
+  toWarehouseId: z.number().int().positive(),
+  remark: z.string().trim().max(500).optional(),
+  lines: z.array(z.object({
+    id: z.number().int().positive(),
+    qty: qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数"),
+    reason: createTlSchema.shape.lines.element.shape.reason,
+  }).strict()).min(1, "至少保留一行退料明细")
+    .refine(lines => new Set(lines.map(line => line.id)).size === lines.length, "退料行不可重复"),
+}).strict();
+
 // ---------- SH 收货 ----------
 
 export const createShSchema = z.object({

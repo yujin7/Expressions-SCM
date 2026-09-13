@@ -26,6 +26,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
+import TlDraftEditor from "./tl-draft-editor";
 
 // ---------- 客户端十进制比较（仅提交前过滤 0 行；非负字符串，禁 float） ----------
 
@@ -90,13 +91,14 @@ interface TlDetail {
   version: number;
   jgId: number;
   jgDocNo: string;
+  toWarehouseId: number;
   fromWarehouseName: string;
   toWarehouseName: string;
   createdAt: string;
   createdByName: string | null;
   lines: TlLine[];
   approvals: DocApproval[];
-  actions?: { submit: boolean; approve: boolean; reject: boolean; reason: string };
+  actions?: { submit: boolean; approve: boolean; reject: boolean; edit: boolean; reason: string };
 }
 
 interface CreateLine {
@@ -134,7 +136,8 @@ export default function TlClient() {
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
-  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  useEffect(() => { setRejectOpen(false); setEditingDraft(null); }, [detailId]);
+  const [editingDraft, setEditingDraft] = useState<TlDetail | null>(null);
   const detailRead = useDocumentRead<TlDetail>(detailId == null ? null : `/api/matflow/tl/${detailId}`);
   const detail = detailRead.data;
   const detailLoading = detailRead.phase === "loading";
@@ -373,9 +376,10 @@ export default function TlClient() {
 
   const actions = detail ? (
     <Space>
+      {detail.actions?.edit && <Button disabled={actionLoading || editingDraft != null} onClick={() => setEditingDraft(detail)}>修改退料草稿</Button>}
       {detail.actions?.submit ? (
         <Popconfirm title="确认提交审批？" okText="提交" cancelText="取消" onConfirm={() => void handleSubmit()}>
-          <Button type="primary" loading={actionLoading}>
+          <Button type="primary" loading={actionLoading} disabled={editingDraft != null}>
             提交
           </Button>
         </Popconfirm>
@@ -518,6 +522,10 @@ export default function TlClient() {
           </div>
         ) : null}
       </DocumentDrawer>
+
+      {editingDraft && editingDraft.id === detailId && <TlDraftEditor key={`${editingDraft.id}:${editingDraft.version}`} doc={editingDraft}
+        onClose={() => setEditingDraft(null)} onReload={() => { setEditingDraft(null); void loadDetail(); }}
+        onSaved={() => { setEditingDraft(null); message.success("原退料草稿已保存，请重新核对后提交审批"); refresh(); }} />}
 
       <Modal
         title="新建退料单"
