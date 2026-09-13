@@ -33,6 +33,13 @@ export const createFlSchema = z.object({
 });
 export type CreateFlInput = z.infer<typeof createFlSchema>;
 
+/** Complete reviewed draft replacement; source JG is immutable and batch omission is not a clear. */
+export const updateFlSchema = createFlSchema.omit({ jgId: true }).extend({
+  version: z.number().int().positive(),
+  toWarehouseId: z.number().int().positive(),
+  lines: z.array(createFlSchema.shape.lines.element.extend({ batchId: z.number().int().positive().nullable() })).min(1),
+}).strict();
+
 // ---------- TL 退料 ----------
 
 export const createTlSchema = z.object({

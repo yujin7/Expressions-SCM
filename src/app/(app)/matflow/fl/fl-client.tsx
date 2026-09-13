@@ -26,6 +26,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
+import FlDraftEditor from "./fl-draft-editor";
 
 // ---------- 客户端十进制比较/加法（仅 UI 提示用；非负十进制字符串，禁 float） ----------
 
@@ -103,6 +104,9 @@ interface FlDetail {
   version: number;
   jgId: number;
   jgDocNo: string;
+  supplierId: number;
+  fromWarehouseId: number;
+  toWarehouseId: number;
   fromWarehouseName: string;
   toWarehouseName: string;
   createdAt: string;
@@ -110,7 +114,7 @@ interface FlDetail {
   lines: FlLine[];
   requirements: FlRequirement[];
   approvals: DocApproval[];
-  actions?: { submit: boolean; approve: boolean; reject: boolean; reason: string };
+  actions?: { submit: boolean; approve: boolean; reject: boolean; edit?: boolean; reason: string };
 }
 
 interface CreateLine {
@@ -147,6 +151,10 @@ export default function FlClient() {
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
+  const [editingDraft, setEditingDraft] = useState<FlDetail | null>(null);
+  const selectedIdRef = useRef(detailId);
+  selectedIdRef.current = detailId;
+  useEffect(() => { setEditingDraft(null); }, [detailId]);
   useEffect(() => { setRejectOpen(false); }, [detailId]);
   const detailRead = useDocumentRead<FlDetail>(detailId == null ? null : `/api/matflow/fl/${detailId}`);
   const detail = detailRead.data;
@@ -398,9 +406,10 @@ export default function FlClient() {
 
   const actions = detail ? (
     <Space>
+      {detail.actions?.edit && <Button disabled={actionLoading || editingDraft != null} onClick={() => setEditingDraft(detail)}>修改草稿 / 重新配批</Button>}
       {detail.actions?.submit ? (
         <Popconfirm title="确认提交审批？" okText="提交" cancelText="取消" onConfirm={() => void handleSubmit()}>
-          <Button type="primary" loading={actionLoading}>
+          <Button type="primary" loading={actionLoading} disabled={editingDraft != null}>
             提交
           </Button>
         </Popconfirm>
@@ -543,6 +552,13 @@ export default function FlClient() {
           </div>
         ) : null}
       </DocumentDrawer>
+
+      {editingDraft && editingDraft.id === detailId && <FlDraftEditor key={`${editingDraft.id}:${editingDraft.version}`} doc={editingDraft}
+        onClose={() => setEditingDraft(null)} onReload={() => { setEditingDraft(null); void loadDetail(); }}
+        onSaved={() => {
+          if (selectedIdRef.current !== editingDraft.id) return;
+          setEditingDraft(null); message.success("草稿已保存，请核对后重新提交审批"); refresh();
+        }} />}
 
       <Modal
         title="新建发料单"
