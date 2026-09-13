@@ -21,7 +21,10 @@ import DocStatusTag from "@/components/DocStatusTag";
 import DocActions from "@/components/DocActions";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
+import { useMe, hasAnyRole, type Me } from "@/components/useMe";
+import StockCreateRecovery, { useStockCreateRecovery } from "@/components/StockCreateRecovery";
+import type { StockCreatePayload } from "@/components/stock-create-request";
 import { STOCK_SUBTYPE_LABELS, toOptions } from "@/components/labels";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import { useSearchParams } from "next/navigation";
@@ -93,14 +96,14 @@ interface ExpiryCheckItem {
 }
 
 interface CreateFormValues {
-  subtype: string;
+  subtype: StockCreatePayload["subtype"];
   warehouseId: number;
   toWarehouseId?: number;
   reason?: string; // R16：调拨业务原因
-  transferType?: string; // D60：调拨类型（固定清单，调拨必填）
+  transferType?: StockCreatePayload["transferType"]; // D60：固定清单
   remark?: string;
   riskDisposalId?: number;
-  lines?: { skuId: number; qty: number; price?: number }[];
+  lines?: { skuId: number; qty: number | string; price?: number | string | null; batchId?: number | null }[];
 }
 
 const BATCH_OUTBOUND_SUBTYPES = new Set(["issue_out", "sales_out", "transfer"]);
@@ -152,15 +155,16 @@ function SubtypeTag({ subtype }: { subtype: string }) {
 }
 
 export default function DocsClient() {
+  const me = useMe();
   // useSearchParams（列表页状态平台 E6-P1）需要 Suspense 边界
   return (
     <Suspense>
-      <DocsInner />
+      <DocsInner key={`${me?.id}:${me?.roles.join(",")}`} me={me} />
     </Suspense>
   );
 }
 
-function DocsInner() {
+function DocsInner({ me }: { me: Me | null }) {
   const { message } = App.useApp();
   const searchParams = useSearchParams();
   const [form] = Form.useForm<CreateFormValues>();
@@ -180,6 +184,10 @@ function DocsInner() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [editingRequest, setEditingRequest] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const recovery = useStockCreateRecovery(me?.id ?? null, hasAnyRole(me, "warehouse"), () => void load());
   const createSubtype = Form.useWatch("subtype", form);
   const createWarehouseId = Form.useWatch("warehouseId", form);
   const createLines = Form.useWatch("lines", form);
@@ -192,7 +200,7 @@ function DocsInner() {
   const [confirmedFefoFingerprint, setConfirmedFefoFingerprint] = useState<string | null>(null);
 
   useEffect(() => {
-    if (searchParams.get("create") !== "scrap") return;
+    if (searchParams.get("create") !== "scrap" || !recovery.ready || recovery.request || !hasAnyRole(me, "warehouse")) return;
     const skuId = Number(searchParams.get("skuId"));
     const riskDisposalId = Number(searchParams.get("disposalId"));
     const linkKey = `${skuId}:${riskDisposalId}`;
@@ -211,7 +219,7 @@ function DocsInner() {
       lines: [{ skuId, qty: 1 }],
     });
     setCreateOpen(true);
-  }, [form, searchParams]);
+  }, [form, searchParams, recovery.ready, recovery.request, me]);
 
   useEffect(() => {
     if (!createOpen) return;
@@ -323,6 +331,9 @@ function DocsInner() {
 
 
   const handleCreate = async () => {
+    if (savingRef.current || recovery.busy) return;
+    savingRef.current = true;
+    setSaveError(null);
     try {
       const values = await form.validateFields();
       const lines = (values.lines ?? []).filter((l) => l && l.skuId != null);
@@ -350,17 +361,21 @@ function DocsInner() {
         lines: lines.map((l) => ({
           skuId: l.skuId,
           qty: l.qty,
+          batchId: l.batchId,
           price: values.subtype === "opening" ? l.price : undefined,
         })),
       };
-      await postJson<{ id: number }>("/api/inventory/stock-doc", body);
-      message.success("单据已创建（草稿）");
+      const result = await recovery.submit(body, editingRequest);
+      if (!result?.document) return;
+      message.success("已确认原库存单，请核对当前状态");
       setCreateOpen(false);
+      setEditingRequest(false);
       form.resetFields();
       void load();
     } catch (e) {
-      if (e instanceof Error && e.message) message.error(e.message);
+      if (e instanceof Error && e.message) setSaveError(e.message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -454,6 +469,11 @@ function DocsInner() {
         items={STATUS_TABS}
         onChange={(key) => listState.setFilter({ status: key })}
       />
+      {!createOpen && <StockCreateRecovery recovery={recovery} onEdit={request => {
+        form.resetFields();
+        form.setFieldsValue({ ...request, toWarehouseId: request.toWarehouseId ?? undefined });
+        setEditingRequest(true); setSaveError(null); setCreateOpen(true);
+      }} />}
       <ListToolbar
         state={listState}
         primaryActions={
@@ -471,8 +491,11 @@ function DocsInner() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
+              disabled={!hasAnyRole(me, "warehouse") || !recovery.ready || recovery.busy || !!recovery.request}
               onClick={() => {
                 form.resetFields();
+                setSaveError(null);
+                setEditingRequest(false);
                 setCreateOpen(true);
               }}
             >
@@ -516,13 +539,19 @@ function DocsInner() {
         open={createOpen}
         onOk={() => void handleCreate()}
         onCancel={() => setCreateOpen(false)}
-        confirmLoading={saving}
+        confirmLoading={saving || recovery.busy}
+        okButtonProps={{ disabled: !recovery.ready || !!recovery.result?.document || (!!recovery.request && !editingRequest) }}
         width="min(720px, 100vw)"
         forceRender
         maskClosable={false}
         okText="保存草稿"
         cancelText="取消"
       >
+        <StockCreateRecovery recovery={recovery} onEdit={request => {
+          form.setFieldsValue({ ...request, toWarehouseId: request.toWarehouseId ?? undefined });
+          setEditingRequest(true); setSaveError(null);
+        }} />
+        {saveError && <Alert type="error" showIcon message="尚未保存" description={saveError} style={{ marginBottom: 12 }} />}
         <Form form={form} layout="vertical">
           <Form.Item name="riskDisposalId" hidden>
             <Input />

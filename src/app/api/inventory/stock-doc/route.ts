@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
-import { createStockDoc, guardWarehouseWrite, listStockDocs } from "@/server/modules/inventory/stock-doc";
+import { guardWarehouseWrite, listStockDocs } from "@/server/modules/inventory/stock-doc";
+import { createStockRequest } from "@/server/modules/inventory/stock-create-request";
 import { parseSelectedValues } from "@/server/core/selected-options";
 
 export async function GET(req: NextRequest) {
@@ -24,7 +25,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardWarehouseWrite();
-    return NextResponse.json(await createStockDoc(user, await readJson(req)), { status: 201 });
+    return NextResponse.json(await createStockRequest(user, await readJson(req)), { status: 201 });
   } catch (e) {
     return errorResponse(e);
   }

@@ -6,7 +6,9 @@ import SearchInput from "@/components/SearchInput";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, App, Button, Input, Modal, Select, Space, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
+import { useMe, hasAnyRole, type Me } from "@/components/useMe";
+import StockCreateRecovery, { useStockCreateRecovery } from "@/components/StockCreateRecovery";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
@@ -72,6 +74,11 @@ interface TransferSuggestData {
 const nz = (v: number): string => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 
 export default function TransferSuggestClient() {
+  const me = useMe();
+  return <TransferSuggestWorkspace key={`${me?.id}:${me?.roles.join(",")}`} me={me} />;
+}
+
+function TransferSuggestWorkspace({ me }: { me: Me | null }) {
   const { message } = App.useApp();
   const [data, setData] = useState<TransferSuggestData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -105,6 +112,7 @@ export default function TransferSuggestClient() {
       }
     }
   }, [q, skuIds, page, pageSize]);
+  const recovery = useStockCreateRecovery(me?.id ?? null, hasAnyRole(me, "warehouse"), () => void load());
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => requestRef.current?.abort(), []);
 
@@ -133,6 +141,9 @@ export default function TransferSuggestClient() {
   }, [data]);
 
   const openDraft = () => {
+    if (!hasAnyRole(me, "warehouse") || !recovery.ready || recovery.busy || recovery.request) {
+      message.info("创建库存单需仓管权限；如有待核对请求，请先找回原单"); return;
+    }
     if (selected.length === 0) return;
     setDraftLaneKey(draftLanes[0]?.key ?? null);
     setDraftedDocNo(null);
@@ -143,13 +154,11 @@ export default function TransferSuggestClient() {
     if (!activeLane) return;
     setDrafting(true);
     try {
-      const res = await postJson<{ docNo: string }>(
-        "/api/inventory/stock-doc",
-        transferDraftPayload(activeLane, { transferType: draftType, reason: draftReason, remark: draftRemark }),
-      );
+      const res = (await recovery.submit(transferDraftPayload(activeLane, { transferType: draftType, reason: draftReason, remark: draftRemark })))?.document;
+      if (!res) return;
       setDraftedDocNo(res.docNo);
       setSelected((prev) => prev.filter((r) => `${r.fromWarehouseId}>${r.toWarehouseId}` !== activeLane.key));
-      message.success(`调拨草稿已生成：${res.docNo}（草稿态，请到「库存单据」提交审批）`);
+      message.success(`已确认原库存单：${res.docNo}，请核对当前状态`);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -249,6 +258,7 @@ export default function TransferSuggestClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>调拨建议（先挪后买）</Typography.Title>
+      {!draftOpen && <StockCreateRecovery recovery={recovery} />}
       <Alert
         type="info"
         showIcon
@@ -357,12 +367,13 @@ export default function TransferSuggestClient() {
         title="生成调拨草稿"
         okText={draftedDocNo ? "关闭" : "生成草稿"}
         cancelButtonProps={{ style: draftedDocNo ? { display: "none" } : undefined }}
-        confirmLoading={drafting}
+        confirmLoading={drafting || recovery.busy}
         onCancel={() => setDraftOpen(false)}
         onOk={draftedDocNo ? () => setDraftOpen(false) : () => void submitDraft()}
-        okButtonProps={{ disabled: !draftedDocNo && (activeLane == null || drafting) }}
+        okButtonProps={{ disabled: !draftedDocNo && (activeLane == null || drafting || recovery.busy || !recovery.ready || !!recovery.request) }}
         width={720}
       >
+        <StockCreateRecovery recovery={recovery} />
         <Alert
           type="info"
           showIcon
@@ -372,12 +383,12 @@ export default function TransferSuggestClient() {
             <Typography.Text type="secondary">
               草稿落在「库存单据」列表（DB 调拨单），提交/审批/过账仍走原流程与原权限；
               一张 DB 单只能有一个（调出仓 → 调入仓），因此**逐线路建单**，跨线路的选择请分次生成。
-              建议量按建议原值带入，可在单据页调整后再提交。
+              建议量按建议原值带入；创建失败可到库存单据修正原请求，已建单请核对原单再提交。
             </Typography.Text>
           }
         />
         {draftedDocNo ? (
-          <Alert type="success" showIcon message={`草稿已生成：${draftedDocNo}`} description="请到「库存 → 库存单据」核对后提交审批。" />
+          <Alert type="success" showIcon message={`已确认原单：${draftedDocNo}`} description="请打开原库存单核对当前状态；只有草稿才可继续提交审批。" />
         ) : activeLane == null ? (
           <Alert type="warning" showIcon message="所选建议没有可成单的数量" />
         ) : (

@@ -505,6 +505,13 @@
       "when": 1789293429016,
       "tag": "0071_todo_mutation_receipt",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1789329560394,
+      "tag": "0072_stock_create_receipt",
+      "breakpoints": true
     }
   ]
 }

@@ -26,9 +26,10 @@ import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import SearchInput from "@/components/SearchInput";
 import SkuHoverCard from "@/components/SkuHoverCard";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
 import { useMe, hasAnyRole, type Me } from "@/components/useMe";
 import BhCreateRecovery, { useBhCreateRecovery } from "@/components/BhCreateRecovery";
+import StockCreateRecovery, { useStockCreateRecovery } from "@/components/StockCreateRecovery";
 import { formatCount, formatYuan } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { groupTransferDraftLanes, transferDraftPayload } from "@/lib/transfer-draft";
@@ -150,6 +151,7 @@ function MoveOrBuyWorkspace({ me }: { me: Me | null }) {
     }
   }, [query]);
   const recovery = useBhCreateRecovery(me?.id ?? null, hasAnyRole(me, "ops", "pmc"), () => void load());
+  const stockRecovery = useStockCreateRecovery(me?.id ?? null, hasAnyRole(me, "warehouse"), () => void load());
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => requestRef.current?.abort(), []);
 
@@ -178,6 +180,9 @@ function MoveOrBuyWorkspace({ me }: { me: Me | null }) {
   const activeLane = moveLanes.find((l) => l.key === laneKey) ?? moveLanes[0] ?? null;
 
   const openMove = (row: Row) => {
+    if (!hasAnyRole(me, "warehouse") || !stockRecovery.ready || stockRecovery.busy || stockRecovery.request) {
+      message.info("创建库存单需仓管权限；如有待核对请求，请先找回原单"); return;
+    }
     setMoving(row);
     setLaneKey(null);
     setMovedDocNo(null);
@@ -188,12 +193,10 @@ function MoveOrBuyWorkspace({ me }: { me: Me | null }) {
     if (!activeLane) return;
     setSubmitting(true);
     try {
-      const res = await postJson<{ docNo: string }>(
-        "/api/inventory/stock-doc",
-        transferDraftPayload(activeLane, { transferType, reason }),
-      );
+      const res = (await stockRecovery.submit(transferDraftPayload(activeLane, { transferType, reason })))?.document;
+      if (!res) return;
       setMovedDocNo(res.docNo);
-      message.success(`调拨草稿已生成：${res.docNo}（草稿态，请到「库存单据」提交审批）`);
+      message.success(`已确认原库存单：${res.docNo}，请核对当前状态`);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -411,6 +414,7 @@ function MoveOrBuyWorkspace({ me }: { me: Me | null }) {
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>先挪后买 · 统一决策表</Typography.Title>
       <BhCreateRecovery recovery={recovery} />
+      {!moving && <StockCreateRecovery recovery={stockRecovery} />}
       <CaliberNote
         summary="每个 SKU 一行，按最晚下单日排序：先看能从哪个仓挪多少，再看挪完还差多少必须买。"
         detail={
@@ -516,9 +520,10 @@ function MoveOrBuyWorkspace({ me }: { me: Me | null }) {
         confirmLoading={submitting}
         onCancel={() => setMoving(null)}
         onOk={movedDocNo ? () => setMoving(null) : () => void submitMove()}
-        okButtonProps={{ disabled: !movedDocNo && (activeLane == null || submitting) }}
+        okButtonProps={{ disabled: !movedDocNo && (activeLane == null || submitting || stockRecovery.busy || !stockRecovery.ready || !!stockRecovery.request) }}
         width={640}
       >
+        <StockCreateRecovery recovery={stockRecovery} />
         <Alert
           type="info"
           showIcon
@@ -527,7 +532,7 @@ function MoveOrBuyWorkspace({ me }: { me: Me | null }) {
           description="一张 DB 单只能有一个（调出仓 → 调入仓）；有多条线路请分次生成。"
         />
         {movedDocNo ? (
-          <Alert type="success" showIcon message={`草稿已生成：${movedDocNo}`} description="请到「库存 → 库存单据」核对后提交审批。" />
+          <Alert type="success" showIcon message={`已确认原单：${movedDocNo}`} description="请打开原库存单核对当前状态；只有草稿才可继续提交审批。" />
         ) : activeLane == null ? (
           <Alert type="warning" showIcon message="该 SKU 没有可成单的调拨量" />
         ) : (

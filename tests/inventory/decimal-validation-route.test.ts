@@ -29,7 +29,7 @@ const cases: Case[] = [
   { name: "counted quantity", handler: countPost, boundary: "db", path: "lines.0.countedQty", body: countedQty => ({ version: 1, lines: [{ lineId: 1, countedQty }] }) },
   { name: "replenishment quantity", handler: replenishPost, boundary: "createBh", path: "items.0.qty", body: qty => ({ requestKey: "93213c9b-7b03-401e-99df-f8b92fbed748", items: [{ skuId: 1, qty }] }) },
 ];
-const request = (body: unknown) => new NextRequest("http://localhost/api/test", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+const request = (body: unknown) => new NextRequest("http://localhost/api/test", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestKey: "93213c9b-7b03-401e-99df-f8b92fbed748", ...(body as object) }) });
 it.each(cases)("$name: real route/schema rejects before business persistence", async c => {
   for (const value of ["abc", "NaN", "1e3", "", "1,000", "-0.0001"]) {
     const response = await c.handler(request(c.body(value)), ctx);

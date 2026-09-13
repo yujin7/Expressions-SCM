@@ -161,7 +161,8 @@ describe("页面：两套口径必须在界面上各自带名字", () => {
   });
 
   it("动作复用既有草稿端点，不新增写入面", () => {
-    expect(client).toContain('"/api/inventory/stock-doc"');
+    expect(client).toContain('useStockCreateRecovery');
+    expect(readFileSync("src/components/stock-create-request.ts", "utf8")).toContain('"/api/inventory/stock-doc"');
     expect(client).toContain("recovery.submit");
     expect(client).toContain('source: "replenish"');
     expect(readFileSync(path.join(process.cwd(), "src/components/bh-create-request.ts"), "utf8")).toContain('"/api/replenish/draft"');
