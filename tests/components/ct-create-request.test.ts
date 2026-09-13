@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { ctCreateStorageKey, clearCtCreateRequest, loadCtCreateRequest, lookupCtCreateRequest, prepareCtCreateRequest, submitCtCreateRequest, withCtCreateLock, type CtCreatePayload } from "@/components/ct-create-request";
+import { ctCreateStorageKey, clearCtCreateRequest, loadCtCreateRequest, lookupCtCreateRequest, prepareCtCreateRequest, submitCtCreateRequest, cancelCtCreateRequest, withCtCreateLock, type CtCreatePayload } from "@/components/ct-create-request";
 
 const fetch = vi.hoisted(() => vi.fn());
 vi.mock("@/components/fetchJson", () => ({ fetchJson: fetch }));
@@ -64,6 +64,30 @@ it("not-found lookup is read-only and retains original request", async () => {
   const request = prepare(); fetch.mockResolvedValue({ requestKey: key, document: null });
   expect((await lookupCtCreateRequest(key)).document).toBeNull();
   expect(fetch).toHaveBeenCalledTimes(1); expect(fetch.mock.calls[0][1].method).toBeUndefined(); expect(loadCtCreateRequest(storage, 1)).toEqual(request);
+});
+it("cancellation reads first, then posts only the original key and verifies the terminal outcome", async () => {
+  const original = prepare(), cancelled = { requestKey: key, document: null, cancelled: true };
+  fetch.mockResolvedValueOnce({ requestKey: key, document: null }).mockResolvedValueOnce(cancelled).mockResolvedValueOnce(cancelled);
+  expect(await cancelCtCreateRequest(key)).toEqual(cancelled);
+  expect(fetch.mock.calls.map(([url]) => url)).toEqual([`/api/matflow/ct/create-result?requestKey=${key}`, "/api/matflow/ct/cancel-create", `/api/matflow/ct/create-result?requestKey=${key}`]);
+  expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ requestKey: key }); expect(loadCtCreateRequest(storage, 1)).toEqual(original);
+});
+it.each([receipt, { requestKey: key, document: null, cancelled: true }])("a known terminal result avoids a cancellation POST", async found => {
+  prepare(); fetch.mockResolvedValue(found); expect(await cancelCtCreateRequest(key)).toEqual(found); expect(fetch).toHaveBeenCalledTimes(1);
+});
+it("creation winning during cancellation returns the original document, never pretends it was cancelled", async () => {
+  fetch.mockResolvedValueOnce({ requestKey: key, document: null }).mockResolvedValueOnce(receipt).mockResolvedValueOnce(receipt);
+  expect(await cancelCtCreateRequest(key)).toEqual(receipt);
+});
+it.each([{ requestKey: key, document: null }, { ...receipt, cancelled: true }, { requestKey: key, document: null, cancelled: false }])("ambiguous cancellation responses do not authorize local clearing", async bad => {
+  const original = prepare(); fetch.mockResolvedValueOnce({ requestKey: key, document: null }).mockResolvedValueOnce(bad);
+  await expect(cancelCtCreateRequest(key)).rejects.toThrow(); expect(loadCtCreateRequest(storage, 1)).toEqual(original);
+});
+it("lost cancellation response keeps intent and GET can recover its real cancellation", async () => {
+  const original = prepare(), cancelled = { requestKey: key, document: null, cancelled: true };
+  fetch.mockResolvedValueOnce({ requestKey: key, document: null }).mockRejectedValueOnce(Error("cancel reply lost"));
+  await expect(cancelCtCreateRequest(key)).rejects.toThrow("cancel reply lost"); expect(loadCtCreateRequest(storage, 1)).toEqual(original);
+  fetch.mockResolvedValueOnce(cancelled); expect(await lookupCtCreateRequest(key)).toEqual(cancelled);
 });
 it.each([{}, { ...receipt, requestKey: next }, { ...receipt, document: null }, { ...receipt, document: { ...document, docNo: "/evil" } }])("invalid results never discard original intent", async response => {
   const request = prepare(); fetch.mockResolvedValue(response); await expect(submitCtCreateRequest(request)).rejects.toThrow(); expect(loadCtCreateRequest(storage, 1)).toEqual(request);

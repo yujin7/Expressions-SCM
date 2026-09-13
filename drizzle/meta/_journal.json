@@ -519,6 +519,13 @@
       "when": 1789335319837,
       "tag": "0073_ct_create_receipt",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1789337675947,
+      "tag": "0074_ct_create_cancel",
+      "breakpoints": true
     }
   ]
 }

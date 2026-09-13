@@ -244,3 +244,38 @@ it("late creation after account change cannot report success or navigate as the 
   fetchMock.mockResolvedValue(Response.json(receipt)); pending.resolve(Response.json(receipt)); await save; await flush();
   expect(h.message.success).not.toHaveBeenCalled(); expect(recovery().request).toBeNull(); expect(storage.size).toBe(1);
 });
+it("cancelled creation survives a lost reply and reload until explicit confirmation resets the form", async () => {
+  await prepared(); (cell("batch").onChange as (v: string) => void)("unbatched"); render(); (cell("qty").onChange as (v: string) => void)("1"); render();
+  fetchMock.mockRejectedValueOnce(Error("create failed")); await (create().props.onOk as () => Promise<void>)(); await flush();
+  const request = recovery().request!; let cancelled = false;
+  fetchMock.mockImplementation(async (url, init) => {
+    if (String(url).endsWith("cancel-create")) { expect(init?.method).toBe("POST"); cancelled = true; throw Error("cancel reply lost"); }
+    if (String(url).includes("create-result")) return Response.json({ requestKey: request.requestKey, document: null, ...(cancelled ? { cancelled: true } : {}) });
+    return Response.json({ rows: [], total: 0 });
+  });
+  await recovery().cancel(); await flush(); expect(recovery().error).toBeTruthy(); expect(storage.size).toBe(1);
+  h.rootKey = null; render(); await flush(); expect(recovery().result).toBeNull();
+  await recovery().lookup(); await flush(); expect(recovery().result).toMatchObject({ cancelled: true, document: null });
+  expect(storage.size).toBe(1); expect(await recovery().acknowledge()).toBe(true); await flush(); expect(storage.size).toBe(0);
+  open(); expect(lines().dataSource).toEqual([]); expect(create().props.okButtonProps).toMatchObject({ disabled: true });
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("cancel-create") && init?.method === "POST")).toHaveLength(1);
+});
+it("cancel success inside the original modal disables create and acknowledgment opens a blank form", async () => {
+  await prepared(); (cell("batch").onChange as (v: string) => void)("unbatched"); render(); (cell("qty").onChange as (v: string) => void)("1"); render();
+  fetchMock.mockRejectedValueOnce(Error("failed")); await (create().props.onOk as () => Promise<void>)(); await flush(); const request = recovery().request!;
+  let terminal = false; fetchMock.mockImplementation(async url => {
+    if (String(url).endsWith("cancel-create")) terminal = true;
+    return Response.json({ requestKey: request.requestKey, document: null, ...(terminal ? { cancelled: true } : {}) });
+  });
+  await recovery().cancel(); await flush(); expect(create().props.okButtonProps).toMatchObject({ disabled: true });
+  const reset = recoveryNode().props.onAcknowledged as () => void; expect(await recovery().acknowledge()).toBe(true); reset(); render();
+  expect(lines().dataSource).toEqual([]); expect(storage.size).toBe(0);
+});
+it("late cancellation cannot clear or report a result to a different account", async () => {
+  await prepared(); (cell("batch").onChange as (v: string) => void)("unbatched"); render(); (cell("qty").onChange as (v: string) => void)("1"); render();
+  fetchMock.mockRejectedValueOnce(Error("failed")); await (create().props.onOk as () => Promise<void>)(); await flush(); const key = recovery().request!.requestKey;
+  const late = Promise.withResolvers<Response>(); fetchMock.mockResolvedValueOnce(Response.json({ requestKey: key, document: null })).mockReturnValueOnce(late.promise);
+  const cancel = recovery().cancel(); await flush(); h.actorId = 2; render(); await flush();
+  const terminal = { requestKey: key, document: null, cancelled: true }; fetchMock.mockResolvedValue(Response.json(terminal)); late.resolve(Response.json(terminal)); await cancel; await flush();
+  expect(recovery().request).toBeNull(); expect(recovery().result).toBeNull(); expect(storage.size).toBe(1); expect(h.message.success).not.toHaveBeenCalled();
+});

@@ -405,13 +405,15 @@ export const ctCreateRequests = pgTable("ct_create_requests", {
   id: serial("id").primaryKey(),
   requestedBy: integer("requested_by").notNull().references(() => users.id),
   requestKey: text("request_key").notNull(),
-  requestHash: text("request_hash").notNull(),
-  ctDocId: integer("ct_doc_id").notNull().references(() => ctDocs.id),
+  requestHash: text("request_hash"),
+  ctDocId: integer("ct_doc_id").references(() => ctDocs.id),
+  cancelled: boolean("cancelled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => [
   unique("uq_ct_create_request").on(t.requestedBy, t.requestKey),
   unique("uq_ct_create_request_doc").on(t.ctDocId),
   check("ck_ct_create_request_hash", sql`${t.requestHash} ~ '^[0-9a-f]{64}$'`),
+  check("ck_ct_create_request_outcome", sql`(${t.cancelled} AND ${t.ctDocId} IS NULL AND ${t.requestHash} IS NULL) OR (NOT ${t.cancelled} AND ${t.ctDocId} IS NOT NULL AND ${t.requestHash} IS NOT NULL)`),
 ]);
 
 export const stockDocLines = pgTable("stock_doc_lines", {

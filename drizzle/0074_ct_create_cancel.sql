@@ -1,0 +1,4 @@
+ALTER TABLE "ct_create_requests" ALTER COLUMN "request_hash" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "ct_create_requests" ALTER COLUMN "ct_doc_id" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "ct_create_requests" ADD COLUMN "cancelled" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "ct_create_requests" ADD CONSTRAINT "ck_ct_create_request_outcome" CHECK (("ct_create_requests"."cancelled" AND "ct_create_requests"."ct_doc_id" IS NULL AND "ct_create_requests"."request_hash" IS NULL) OR (NOT "ct_create_requests"."cancelled" AND "ct_create_requests"."ct_doc_id" IS NOT NULL AND "ct_create_requests"."request_hash" IS NOT NULL));

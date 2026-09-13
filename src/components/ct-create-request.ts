@@ -13,7 +13,7 @@ export type CtCreateRequest = z.infer<typeof requestSchema>;
 export type CtCreatePayload = z.input<typeof payloadSchema>;
 const resultSchema = z.object({ requestKey: uuid, document: z.object({ id, docNo: z.string().regex(/^CT-[A-Za-z0-9-]{1,100}$/),
   status: z.enum(["draft", "pending", "approved", "in_progress", "completed", "closed", "void"]),
-}).nullable() });
+}).nullable(), cancelled: z.literal(true).optional() }).refine(v => !v.cancelled || v.document === null);
 export type CtCreateResult = z.infer<typeof resultSchema>;
 type RequestStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 export const ctCreateStorageKey = (actorId: number) => `scm:ct-create:v1:${id.parse(actorId)}`;
@@ -68,5 +68,16 @@ export async function submitCtCreateRequest(request: CtCreateRequest, timeoutMs 
   if (!result.document) throw Error("尚未确认原采购退货单，请继续核对");
   const current = await lookupCtCreateRequest(r.requestKey, timeoutMs);
   if (!current.document || current.document.id !== result.document.id) throw Error("原单状态尚未确认，请继续核对");
+  return current;
+}
+/** Cancellation is a durable server outcome, not deletion of local recovery data. */
+export async function cancelCtCreateRequest(requestKey: string, timeoutMs = 20_000) {
+  const key = uuid.parse(requestKey);
+  const first = await lookupCtCreateRequest(key, timeoutMs);
+  if (first.document || first.cancelled) return first;
+  const result = await boundedRequest("/api/matflow/ct/cancel-create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestKey: key }) }, key, timeoutMs);
+  if (!result.cancelled && !result.document) throw Error("取消结果尚未确认，请保留原请求继续核对");
+  const current = await lookupCtCreateRequest(key, timeoutMs);
+  if (result.cancelled !== current.cancelled || result.document?.id !== current.document?.id) throw Error("取消结果尚未确认，请保留原请求继续核对");
   return current;
 }
