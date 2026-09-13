@@ -2,6 +2,7 @@ import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import CtClient from "@/app/(app)/matflow/ct/ct-client";
 import CtDraftVoid from "@/app/(app)/matflow/ct/ct-draft-void";
+import CtCreateRecovery, { useCtCreateRecovery } from "@/components/CtCreateRecovery";
 
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
   q: "", detailId: null as number | null, actorId: 1, roles: ["warehouse"], rootKey: null as string | null, approver: false, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
@@ -37,14 +38,20 @@ function render(effects = true) { for (let i = 0; i < 12; i++) { h.cursor = 0; h
   for (const fn of h.effects.splice(0)) fn(); if (!h.changed) return tree; } throw Error("render did not settle"); }
 const props = (type: string) => nodes(render()).find(n => n.type === type)!.props;
 const fetchMock = vi.fn<typeof fetch>();
+const storage = new Map<string, string>();
 const flush = async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); return render(); };
 const list = (id: number) => Response.json({ rows: [{ id, docNo: `CT-${id}`, status: "draft" }], total: 1 });
 const po = (id: number) => Response.json({ id, lines: [{ id, skuId: id, skuCode: `SKU-${id}`, skuName: "合成物料", baseUom: "kg", receivedQty: "2" }] });
 const create = () => nodes(render()).find(n => n.type === "modal" && n.props.title === "新建采购退货单")!;
 const lines = () => nodes(create()).find(n => n.type === "table")!.props;
+const recoveryNode = () => nodes(render()).find(n => n.type === CtCreateRecovery)!;
+const recovery = () => recoveryNode().props.recovery as ReturnType<typeof useCtCreateRecovery>;
 function open() { const button = nodes(props("toolbar").primaryActions as ReactNode).find(n => n.props.children === "新建退货单")!; (button.props.onClick as () => void)(); render(); }
 function select(id: number) { const p = nodes(create()).find(n => n.props.placeholder === "选择采购订单")!.props; (p.onChange as (v: number) => void)(id); render(); }
-beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.detailId = null; h.actorId = 1; h.roles = ["warehouse"]; h.rootKey = null; h.approver = false; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
+beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.detailId = null; h.actorId = 1; h.roles = ["warehouse"]; h.rootKey = null; h.approver = false; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock);
+  storage.clear(); vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
+  vi.stubGlobal("window", new EventTarget()); vi.stubGlobal("navigator", { locks: { request: (_key: string, action: () => Promise<unknown>) => action() } });
+});
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it("list query changes withdraw old rows before effects, and reject late responses", async () => {
@@ -191,4 +198,37 @@ it("failed PO reads keep creation disabled and retries issue only GET, never a d
   (nodes(create()).find(n => n.type === "read-error")!.props.onRetry as () => void)(); render(); await flush();
   expect(lines().dataSource).toMatchObject([{ qty: "0", poLineId: 1 }]);
   expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});
+
+it("lost create response survives workspace remount; lookup/acknowledgement never resend or erase early", async () => {
+  await prepared(); (cell("batch").onChange as (v: string) => void)("unbatched"); render(); (cell("qty").onChange as (v: string) => void)("1"); render();
+  fetchMock.mockRejectedValueOnce(Error("reply lost")); await (create().props.onOk as () => Promise<void>)(); await flush();
+  const original = recovery().request!; expect(original.requestKey).toBeTruthy(); expect(storage.size).toBe(1);
+  h.rootKey = null; render(); await flush(); expect(recovery().request).toEqual(original);
+  const count = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
+  expect(count).toBe(1); expect(recovery().result).toBeNull();
+  const found = { requestKey: original.requestKey, document: { id: 90, docNo: "CT-20260914-0090", status: "void" } };
+  fetchMock.mockImplementation(async url => String(url).includes("create-result") ? Response.json(found) : Response.json({ rows: [], total: 0 }));
+  await recovery().lookup(); await flush(); expect(recovery().result).toEqual(found); expect(storage.size).toBe(1);
+  await recovery().acknowledge(); await flush(); expect(storage.size).toBe(0); expect(recovery().request).toBeNull();
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+});
+it("restored missing/changed source identity blocks correction instead of silently dropping a physical line", async () => {
+  await prepared();
+  const request = { requestKey: "ee392149-8738-4e50-992f-f565bba7f911", poId: 1, warehouseId: 10,
+    lines: [{ poLineId: 1, skuId: 999, qty: "1", batchId: null }] };
+  (recoveryNode().props.onEdit as (request: unknown) => void)(request); render(); await flush();
+  expect(create().props.okButtonProps).toMatchObject({ disabled: true });
+  expect(nodes(create()).some(n => typeof n.props.message === "string" && n.props.message.includes("物料身份已变"))).toBe(true);
+  await (create().props.onOk as () => Promise<void>)(); expect(h.message.warning).toHaveBeenCalledWith(expect.stringContaining("身份变化"));
+  expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});
+it("late creation after account change cannot report success or navigate as the new actor", async () => {
+  await prepared(); (cell("batch").onChange as (v: string) => void)("unbatched"); render(); (cell("qty").onChange as (v: string) => void)("1"); render();
+  const pending = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(pending.promise);
+  const save = (create().props.onOk as () => Promise<void>)(); render();
+  const key = recovery().request!.requestKey; h.actorId = 2; render(); await flush();
+  const receipt = { requestKey: key, document: { id: 90, docNo: "CT-20260914-0090", status: "draft" } };
+  fetchMock.mockResolvedValue(Response.json(receipt)); pending.resolve(Response.json(receipt)); await save; await flush();
+  expect(h.message.success).not.toHaveBeenCalled(); expect(recovery().request).toBeNull(); expect(storage.size).toBe(1);
 });
