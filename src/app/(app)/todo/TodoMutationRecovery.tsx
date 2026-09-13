@@ -5,6 +5,7 @@ import { useTodoMutationRequest } from "@/components/useTodoMutationRequest";
 import { clearTodoMutation, loadTodoMutation, lookupTodoMutation, submitTodoMutation, todoMutationIsObsolete, TODO_MUTATION_CHANGED, TODO_MUTATION_OPEN,
   withTodoMutationLock, type TodoMutationLookup, type TodoMutationRequest } from "@/components/todo-mutation-request";
 import { todoItemHref } from "@/lib/todo-navigation";
+import { useDialogReturnFocus } from "@/components/useDialogReturnFocus";
 import styles from "./todo-client.module.css";
 
 const labels = { open: "待处理", in_progress: "进行中", done: "已完成", cancelled: "已取消" };
@@ -16,6 +17,7 @@ function Intent({ request }: { request: TodoMutationRequest }) {
 export default function TodoMutationRecovery({ actorId, onChanged }: { actorId: number; onChanged: () => void }) {
   const recovery = useTodoMutationRequest(actorId);
   const [open, setOpen] = useState(false);
+  const focus = useDialogReturnFocus(open && !!recovery.request);
   const [confirmed, setConfirmed] = useState<{ itemId: number; text: string } | null>(null);
   useEffect(() => {
     const show = (event: Event) => { if ((event as CustomEvent).detail === actorId) { setConfirmed(null); setOpen(true); } };
@@ -28,16 +30,16 @@ export default function TodoMutationRecovery({ actorId, onChanged }: { actorId: 
     window.addEventListener("storage", changed);
     return () => { window.removeEventListener(TODO_MUTATION_OPEN, show); window.removeEventListener(TODO_MUTATION_CHANGED, changed); window.removeEventListener("storage", changed); };
   }, [actorId]);
-  return <>
+  return <section ref={focus.scopeRef} tabIndex={-1} aria-label="待办原操作恢复">
     {recovery.error ? <Alert type="error" showIcon message={recovery.error} className={styles.feedback} />
       : recovery.request ? <Alert type="warning" showIcon message={`待办 #${recovery.request.itemId} 有原操作待确认`}
         description="刷新或关闭后仍可恢复；不会自动再次完成、取消或改派。"
-        action={<Button onClick={() => { setConfirmed(null); setOpen(true); }}>恢复原操作</Button>} className={styles.feedback} /> : null}
+        action={<Button onClick={event => { focus.remember(event.currentTarget); setConfirmed(null); setOpen(true); }}>恢复原操作</Button>} className={styles.feedback} /> : null}
     {confirmed ? <Alert type="success" showIcon message={confirmed.text} className={styles.feedback}
       description={<a href={todoItemHref(confirmed.itemId)}>查看当前待办 #{confirmed.itemId}</a>} closable onClose={() => setConfirmed(null)} /> : null}
     {open && recovery.request ? <TodoMutationRecoveryDrawer key={recovery.request.requestId} actorId={actorId} request={recovery.request} onClose={() => setOpen(false)}
       onConfirmed={(r, obsolete) => { setOpen(false); setConfirmed({ itemId: r.itemId, text: obsolete ? "已核对：旧版本操作未执行，本机记录已清理" : "原操作回执已确认，本机记录已清理；当前状态以任务详情为准" }); onChanged(); }} /> : null}
-  </>;
+  </section>;
 }
 
 export function TodoMutationRecoveryDrawer({ actorId, request, onClose, onConfirmed }: {
