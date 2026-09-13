@@ -75,6 +75,7 @@ interface DocApproval {
 
 interface CtDetail {
   id: number;
+  createdBy: number;
   docNo: string;
   status: string;
   remark: string | null;
@@ -338,7 +339,7 @@ export default function CtClient() {
       render: (v: string) => formatQty(v),
     },
     { title: "实际退货批次", key: "batch", width: 280, render: (_, r) => <RemoteSelect
-      key={`${poId}:${warehouseId}:${r.rowKey}`} aria-label={`${r.skuCode} 第${r.index + 1}行实际退货批次`}
+      key={`${poId}:${warehouseId}:${r.rowKey}`} allowClear aria-label={`${r.skuCode} 第${r.index + 1}行实际退货批次`}
       api={`/api/matflow/ct/return-lots?poId=${poId}&poLineId=${r.poLineId}&warehouseId=${warehouseId}`}
       disabled={createLoading || warehouseId == null || poId == null} style={{ width: "100%" }}
       placeholder="核对实物后选择批次" value={r.batchId === null ? "unbatched" : r.batchId}
@@ -390,7 +391,7 @@ export default function CtClient() {
           </Button>
         </Popconfirm>
       ) : null}
-      {detail.status === "pending" && canApprove ? (
+      {detail.status === "pending" && canApprove && Number.isSafeInteger(detail.createdBy) && detail.createdBy !== me?.id ? (
         <>
           <Popconfirm
             title="确认审批通过？通过即过账退货出库并回冲 PO 已收数。"
@@ -407,6 +408,7 @@ export default function CtClient() {
           </Button>
         </>
       ) : null}
+      {detail.status === "pending" && detail.createdBy === me?.id ? <span>已提交，等待其他审批人处理（不可自审）</span> : null}
     </Space>
   ) : null;
 
@@ -546,6 +548,7 @@ export default function CtClient() {
             <div style={{ marginBottom: 4 }}>采购订单</div>
             <RemoteSelect
               api="/api/outsource/po?returnEligible=1"
+              allowClear
               aria-label="采购订单"
               disabled={createLoading}
               style={{ width: "100%" }}
@@ -559,6 +562,7 @@ export default function CtClient() {
             <div style={{ marginBottom: 4 }}>退货出库仓（自有实时仓）</div>
             <RemoteSelect
               aria-label="退货出库仓"
+              allowClear
               disabled={createLoading}
               api="/api/master/warehouse"
               style={{ width: "100%" }}

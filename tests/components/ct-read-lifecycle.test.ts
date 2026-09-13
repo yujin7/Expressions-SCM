@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import CtClient from "@/app/(app)/matflow/ct/ct-client";
 
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
-  q: "", message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
+  q: "", detailId: null as number | null, approver: false, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
 vi.mock("antd", () => ({ App: { useApp: () => ({ message: h.message }) }, Alert: "alert", Button: "button", Modal: "modal", Space: "space", Table: "table", Tabs: "tabs", Popconfirm: "confirm", Select: "select", InputNumber: "number",
   Input: Object.assign("input", { TextArea: "textarea" }), Descriptions: Object.assign("descriptions", { Item: "item" }), Typography: { Title: "title", Paragraph: "paragraph", Link: "a" } }));
 vi.mock("@ant-design/icons", () => ({ PlusOutlined: "plus", ReloadOutlined: "reload" }));
@@ -15,8 +15,8 @@ vi.mock("@/components/DocumentDrawer", () => ({ default: "drawer" }));
 vi.mock("@/components/ChainStrip", () => ({ default: "chain" }));
 vi.mock("@/components/DocStatusTag", () => ({ default: "status" }));
 vi.mock("@/components/ApprovalTimeline", () => ({ default: "timeline" }));
-vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 1, roles: ["warehouse"], isApprover: false }), hasAnyRole: () => true }));
-vi.mock("@/components/useDocumentTarget", () => ({ useDocumentTarget: () => ({ id: null, setId: vi.fn(), present: false }) }));
+vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 1, roles: ["warehouse"], isApprover: h.approver }), hasAnyRole: () => true }));
+vi.mock("@/components/useDocumentTarget", () => ({ useDocumentTarget: () => ({ id: h.detailId, setId: vi.fn(), present: h.detailId != null }) }));
 vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: h.q, status: "" }, page: 1, pageSize: 20, tableSize: "small", paginationProps: (v: unknown) => v }) }));
 vi.mock("react", async original => ({ ...await original<typeof import("react")>(),
   useRef: <T,>(initial: T) => { const i = h.cursor++; if (!(i in h.slots)) h.slots[i] = { current: initial }; return h.slots[i]; },
@@ -40,7 +40,7 @@ const create = () => nodes(render()).find(n => n.type === "modal" && n.props.tit
 const lines = () => nodes(create()).find(n => n.type === "table")!.props;
 function open() { const button = nodes(props("toolbar").primaryActions as ReactNode).find(n => n.props.children === "新建退货单")!; (button.props.onClick as () => void)(); render(); }
 function select(id: number) { const p = nodes(create()).find(n => n.props.placeholder === "选择采购订单")!.props; (p.onChange as (v: number) => void)(id); render(); }
-beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
+beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.detailId = null; h.approver = false; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it("list query changes withdraw old rows before effects, and reject late responses", async () => {
@@ -91,10 +91,21 @@ async function prepared() {
   (nodes(create()).find(n => n.props.placeholder === "选择退货出库仓")!.props.onChange as (v: number) => void)(10); render();
 }
 it("warehouse clear removes physical lots and quantities, disabling creation", async () => {
-  await prepared(); (cell("batch").onChange as (v: number) => void)(3); render(); (cell("qty").onChange as (v: string) => void)("1.1234"); render();
+  await prepared();
+  for (const placeholder of ["选择采购订单", "选择退货出库仓"]) expect(nodes(create()).find(n => n.props.placeholder === placeholder)!.props.allowClear).toBe(true);
+  expect(cell("batch").allowClear).toBe(true);
+  (cell("batch").onChange as (v: number) => void)(3); render(); (cell("qty").onChange as (v: string) => void)("1.1234"); render();
   (nodes(create()).find(n => n.props.placeholder === "选择退货出库仓")!.props.onChange as (v: undefined) => void)(undefined); render();
   expect(lines().dataSource).toMatchObject([{ qty: "0", batchId: undefined }]);
   expect(cell("batch").disabled).toBe(true); expect(create().props.okButtonProps).toMatchObject({ disabled: true });
+});
+it.each([1, 2, undefined])("pending approval buttons require a known different maker (%s)", async createdBy => {
+  h.detailId = 1; h.approver = true;
+  fetchMock.mockImplementation(async url => String(url).endsWith("/ct/1") ? Response.json({ id: 1, createdBy, docNo: "CT-1", status: "pending", lines: [], approvals: [] }) : Response.json({ rows: [], total: 0 }));
+  render(); await flush();
+  const buttons = nodes(props("drawer").extra as ReactNode).filter(n => n.type === "button").map(n => n.props.children);
+  expect(buttons.includes("审批通过")).toBe(createdBy === 2);
+  expect(buttons.includes("驳回")).toBe(createdBy === 2);
 });
 it("split batches preserve PO line identity and reject combined over-return before POST", async () => {
   await prepared(); (cell("batch").onChange as (v: number) => void)(3); render(); (cell("qty").onChange as (v: string) => void)("1.5"); render();
