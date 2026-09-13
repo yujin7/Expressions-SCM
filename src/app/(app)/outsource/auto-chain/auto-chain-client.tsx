@@ -135,7 +135,7 @@ export default function AutoChainClient() {
   ];
   const woCols: ColumnsType<WoSug> = [
     { title: "备货申请", dataIndex: "bhDocNo", width: 170, render: (v: string, r) => <Link href={`/outsource/bh?docId=${r.bhId}`}>{v}</Link> },
-    { title: "成品", dataIndex: "skuCode", width: 130 },
+    { title: "成品", dataIndex: "skuCode", width: 170, render: (v: string) => <span style={{ overflowWrap: "anywhere" }}>{v}</span> },
     { title: "数量", dataIndex: "qty", width: 90, align: "right", render: (v: string) => formatQty(v) },
     { title: "OEM 归属", dataIndex: "supplierName", width: 160, render: (v: string | null) => v ?? "—" },
     { title: "计划加工费", dataIndex: "feeRatePlan", width: 100, align: "right", render: (v: string | null) => v ?? "—" },
@@ -167,7 +167,8 @@ export default function AutoChainClient() {
           <Table<Batch> rowKey="woId" size={list.tableSize} tableLayout="fixed" scroll={{ x: 1265 }} columns={batchCols} dataSource={batches} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "没有匹配的批次建议，请调整或清空筛选" : "当前没有带物料需求的已审批或执行中工单") : "尚未取得预演数据" }} />
         </Card>
         <Card size="small" title={`备货→工单建议（${count(wos.length, data?.wos.length)}）`}>
-          <Table<WoSug> rowKey={(r) => `${r.bhId}-${r.skuId}`} size={list.tableSize} tableLayout="fixed" scroll={{ x: 790 }} columns={woCols} dataSource={wos} loading={loading} pagination={false} locale={{ emptyText: data ? (needle ? "没有匹配的工单建议，请调整或清空筛选" : "当前没有备货转工单建议") : "尚未取得预演数据" }} />
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>仅展示当前账号可见备货申请的建议；沿用备货列表的本人／共享渠道范围，无范围限制的账号按既有权限查看。未列出不等于申请不存在。</Typography.Paragraph>
+          <Table<WoSug> rowKey={(r) => `${r.bhId}-${r.skuId}`} size={list.tableSize} tableLayout="fixed" scroll={{ x: 830 }} columns={woCols} dataSource={wos} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "可见范围内没有匹配的工单建议，请调整或清空筛选" : "当前可见备货申请中没有转工单建议") : "尚未取得预演数据" }} />
         </Card>
       </Space>
       <Modal width={1080} style={{ top: 24 }} styles={{ body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>

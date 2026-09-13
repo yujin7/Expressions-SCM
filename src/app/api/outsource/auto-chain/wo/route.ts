@@ -11,19 +11,19 @@ export async function POST(req: NextRequest) {
     const user = await getFreshSessionUser();
     requireRole(user, "pmc");
     const v = z.object({ bhId: z.number().int().positive(), skuId: z.number().int().positive() }).parse(await readJson(req));
-    const { wos } = await previewAutoChain();
+    const { wos } = await previewAutoChain(undefined, user);
     const s = wos.find((w) => w.bhId === v.bhId && w.skuId === v.skuId);
     if (!s) return NextResponse.json({ error: "无此建议" }, { status: 404 });
     if (s.blockedReason) return NextResponse.json({ error: s.blockedReason }, { status: 409 });
     const wo = await createWo(user, {
       productSkuId: s.skuId,
       supplierId: s.supplierId!,
-      qty: Number(s.qty),
-      feeRatePlan: Number(s.feeRatePlan),
+      qty: s.qty,
+      feeRatePlan: s.feeRatePlan,
       bhId: s.bhId,
       remark: `预演生成（D33；来源 ${s.bhDocNo}）`,
     });
-    return NextResponse.json({ id: wo.id, docNo: wo.docNo }, { status: 201 });
+    return NextResponse.json({ id: wo.id, docNo: wo.docNo }, { status: 201, headers: { "Cache-Control": "private, no-store" } });
   } catch (e) {
     return errorResponse(e);
   }

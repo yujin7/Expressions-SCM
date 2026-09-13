@@ -9,12 +9,12 @@ export async function GET() {
   try {
     const user = await getFreshSessionUser();
     requireRole(user, "pmc");
-    const data = await previewAutoChain();
+    const data = await previewAutoChain(undefined, user);
     const flags = {
       autoWoOnBh: (await getNumParam("auto_wo_on_bh", 0)) === 1,
       autoJgOnReady: (await getNumParam("auto_jg_on_ready", 0)) === 1,
     };
-    return NextResponse.json({ ...data, flags });
+    return NextResponse.json({ ...data, flags }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (e) {
     return errorResponse(e);
   }

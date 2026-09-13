@@ -124,6 +124,13 @@ it("shortage rows paginate locally without hiding them from the searchable datas
   expect(table().scroll).toMatchObject({ x: 1265 });
 });
 
+it("BH suggestions disclose visibility limits and paginate the complete visible dataset", async () => {
+  await begin(); expect(table(1).pagination).toMatchObject({ pageSize: 20, showSizeChanger: false });
+  expect(table(1).scroll).toEqual({ x: 830 });
+  expect(JSON.stringify(all("paragraph"))).toContain("未列出不等于申请不存在");
+  expect((table(1).locale as { emptyText: string }).emptyText).toContain("可见");
+});
+
 it("renders exact large capacity and decimal suggested quantities without float conversion", async () => {
   await begin();
   const columns = table().columns as Column[];
