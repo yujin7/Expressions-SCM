@@ -455,9 +455,15 @@ async function main() {
     assert(!tokenAfterClose.second.ok); assert.equal(tokenAfterClose.second.error.status, 409);
     assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.id, tokenPo.id)))[0].confirmToken, null);
     console.log("PASS supplier-link generation waits for PO closure and refuses to issue a terminal-document token");
+    const pausedWoSource = await batchSource();
+    const pauseRace = await race(tx => tx.update(s.woDocs).set({ isPaused: true }).where(eq(s.woDocs.id, pausedWoSource.wo.id)),
+      () => createBatchJg(pmc, pausedWoSource.wo.id, other));
+    assert(!pauseRace.second.ok); assert.equal(pauseRace.second.error.status, 409);
+    assert.equal((await db.select().from(s.jgDocs).where(eq(s.jgDocs.woId, pausedWoSource.wo.id))).length, 0);
+    console.log("PASS batch creation waits for WO pause and refuses a new draft after pause commits");
     const browserFlowDraft = await workflowPo("draft"), browserFlowR1 = await workflowPo("draft", "4"), browserFlowApproved = await workflowPo("approved"), browserFlowPending = await workflowPo("pending");
     const browserClosePo = await closingPo(), browserBatch = await batchSource();
-    console.log(JSON.stringify({ passed: true, cases: 49, fixture: key, browserFlowDraft: browserFlowDraft.id, browserFlowR1: browserFlowR1.id, browserFlowApproved: browserFlowApproved.id, browserFlowPending: browserFlowPending.id, browserClosePo: browserClosePo.id, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    console.log(JSON.stringify({ passed: true, cases: 50, fixture: key, browserPausedWo: pausedWoSource.wo.id, browserFlowDraft: browserFlowDraft.id, browserFlowR1: browserFlowR1.id, browserFlowApproved: browserFlowApproved.id, browserFlowPending: browserFlowPending.id, browserClosePo: browserClosePo.id, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));

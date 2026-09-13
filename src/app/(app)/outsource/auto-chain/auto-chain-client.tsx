@@ -12,12 +12,15 @@ import { useListState } from "@/components/useListState";
 import ListToolbar from "@/components/ListToolbar";
 import SearchInput from "@/components/SearchInput";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
+import type { BatchSuggestion } from "@/server/modules/outsource/auto-chain";
 
 interface Batch {
   woId: number; woDocNo: string; productCode: string; productName: string; woQty: string;
   producible: string; alreadyBatched: string; existingBatches: number; suggestQty: string; blockedReason: string | null;
   kitDate: string | null; kitNote: string;
   kitBlockers: { materialSkuId: number; shortBy: string; readyDate: string | null }[];
+  kitBasis?: BatchSuggestion["kitBasis"];
+  kitSnapshotDate?: string | null;
   referenceKitDate: string | null;
   referenceKitNote: string;
   referenceEvidenceCount: number;
@@ -152,7 +155,7 @@ export default function AutoChainClient() {
         type={data?.flags.autoJgOnReady || data?.flags.autoWoOnBh ? "warning" : "info"}
         showIcon
         message="只生成草稿，提交与审批仍由人工完成"
-        description={<><div>BH 自动建 WO：{data ? (data.flags.autoWoOnBh ? "开" : "关") : "未知"} · 齐套自动 JG：{data ? (data.flags.autoJgOnReady ? "开" : "关") : "未知"}（运行参数页调整）。</div><div>到料可产与建议量按系统 PO 到料计算；预计齐套日为系统供给预测。旧台账仅作旁证，不改变生成资格。批次≤8、待复核成品不自动、有待批草稿先处理。</div></>}
+        description={<><div>BH 自动建 WO：{data ? (data.flags.autoWoOnBh ? "开" : "关") : "未知"} · 齐套自动 JG：{data ? (data.flags.autoJgOnReady ? "开" : "关") : "未知"}（运行参数页调整）。</div><div>到料可产按本工单 PO 已收计算，不等于实际到厂或生产放行。预计齐套日按全网在库与系统单据推演，未扣其他工单占用；点击日期核对逐料依据。旧台账不改变生成数量。暂停工单不建批，批次≤8、已有待审草稿先处理。</div></>}
       />
       <ListToolbar state={list} extra={<SearchInput aria-label="筛选自动链建议" placeholder="工单 / 备货单 / 成品 / OEM" value={searchDraft} onChange={e => setSearchDraft(e.target.value)} onSearch={value => list.setFilter({ q: value.trim() })} allowClear style={{ width: 300, maxWidth: "100%" }} />}
         primaryActions={<><a href="/matflow/sh?batchCheckPending=1">采购建批待核对</a><Button onClick={refresh} loading={loading} disabled={busy !== null}>刷新预演</Button></>} />
@@ -161,18 +164,31 @@ export default function AutoChainClient() {
         {writeError ? <Alert type="error" showIcon message="本次生成未获成功确认" description={<>{writeError}<div>先刷新预演并核对来源单据；刷新只读取，不会再次生成。</div></>} action={<Button size="small" onClick={refresh} disabled={busy !== null} loading={loading}>刷新核对</Button>} /> : null}
         {receipt ? <Alert type="success" showIcon message={`已生成草稿 ${receipt.docNo}`} description={<><div>来源：{receipt.source}。本次仅创建，尚未提交审批。</div><Link href={receipt.href}>打开 {receipt.docNo} · 检查并提交</Link></>} /> : null}
         <Card size="small" title={`齐套批次建议（${count(batches.length, data?.batches.length)}）`}>
-          <Table<Batch> rowKey="woId" size={list.tableSize} tableLayout="fixed" scroll={{ x: 1265 }} columns={batchCols} dataSource={batches} loading={loading} pagination={false} locale={{ emptyText: data ? (needle ? "没有匹配的批次建议，请调整或清空筛选" : "当前没有齐套批次建议") : "尚未取得预演数据" }} />
+          <Table<Batch> rowKey="woId" size={list.tableSize} tableLayout="fixed" scroll={{ x: 1265 }} columns={batchCols} dataSource={batches} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "没有匹配的批次建议，请调整或清空筛选" : "当前没有带物料需求的已审批或执行中工单") : "尚未取得预演数据" }} />
         </Card>
         <Card size="small" title={`备货→工单建议（${count(wos.length, data?.wos.length)}）`}>
           <Table<WoSug> rowKey={(r) => `${r.bhId}-${r.skuId}`} size={list.tableSize} tableLayout="fixed" scroll={{ x: 790 }} columns={woCols} dataSource={wos} loading={loading} pagination={false} locale={{ emptyText: data ? (needle ? "没有匹配的工单建议，请调整或清空筛选" : "当前没有备货转工单建议") : "尚未取得预演数据" }} />
         </Card>
       </Space>
-      <Modal title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>
+      <Modal width={1080} style={{ top: 24 }} styles={{ body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>
         {evidence ? <>
           <Typography.Paragraph>{evidence.productCode} · {evidence.productName || "名称未补录"}</Typography.Paragraph>
           <Typography.Title level={5}>系统供给预测</Typography.Title>
           <Typography.Paragraph>{evidence.kitNote}</Typography.Paragraph>
-          {evidence.kitBlockers.length ? <ul>{evidence.kitBlockers.map(b => <li key={b.materialSkuId}>物料 #{b.materialSkuId}：缺 {formatQty(b.shortBy)}；{b.readyDate ? `预计 ${b.readyDate}` : "视野内无可用日期"}</li>)}</ul> : null}
+          <Alert type="warning" showIcon message="预测不等于本工单可领用或生产放行" description="全网在库含各仓实时账及最新快照，未按加工厂、批次质量或其他工单占用分配。PO已收用于现行批次建议，不能再与全网在库相加。无交期供给不进日期推演；逾期未到供给仍按原规则并入今天，须催交复核。" style={{ marginBottom: 12 }} />
+          <Typography.Paragraph type="secondary">全部 {evidence.kitBasis?.length ?? "未知"} 种物料 · 数量均为各行基础单位 · 有日期未结量含视野外，日期与缺口按90天推演 · 快照最新日期：{evidence.kitSnapshotDate ?? "无快照参与"}</Typography.Paragraph>
+          {evidence.kitBasis ? <Table<BatchSuggestion["kitBasis"][number]> aria-label="逐料齐套依据" rowKey="materialSkuId" size="small" tableLayout="fixed" scroll={{ x: 1080 }} dataSource={evidence.kitBasis} pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }} columns={[
+            { title: "物料 / 查采购", key: "material", width: 200, render: (_, row) => <div><Link href={`/outsource/po?q=${encodeURIComponent(row.materialCode)}`}>{row.materialCode}</Link><div style={{ overflowWrap: "anywhere" }}>{row.materialName || "名称未补录"}</div></div> },
+            { title: "单位", dataIndex: "baseUom", width: 60 },
+            { title: "全单毛需求", dataIndex: "required", width: 100, align: "right", render: formatQty },
+            { title: "本单PO已收", dataIndex: "poReceived", width: 100, align: "right", render: formatQty },
+            { title: "全网在库", dataIndex: "networkOnHand", width: 95, align: "right", render: formatQty },
+            { title: "有日期未结", dataIndex: "datedSupply", width: 100, align: "right", render: formatQty },
+            { title: "无交期未结", dataIndex: "undatedSupply", width: 100, align: "right", render: formatQty },
+            { title: "参考层排除", dataIndex: "excludedReference", width: 100, align: "right", render: formatQty },
+            { title: "90天末缺口", dataIndex: "shortBy", width: 100, align: "right", render: formatQty },
+            { title: "预测可齐日", dataIndex: "forecastDate", width: 125, render: (value: string | null) => value ?? "视野内未可得" },
+          ]} /> : <Alert type="warning" message="未取得完整逐料依据，请刷新核对，不能仅按日期判断可生产。" />}
           <Typography.Title level={5}>旧台账旁证 · 不参与生成数量</Typography.Title>
           <Typography.Paragraph>{evidence.referenceEvidenceCount ? `${evidence.referenceKitNote}；备料池剩余 ${formatQty(evidence.referenceReservedQty)}` : "无匹配旁证，不能推断为库存为零。"}</Typography.Paragraph>
         </> : null}

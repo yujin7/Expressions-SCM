@@ -39,8 +39,14 @@ export interface BatchSuggestion {
   producible: string;
   /** E2-09 预计齐套日（YYYY-MM-DD）；null = 视野内齐不了 */
   kitDate: string | null;
-  /** 卡住齐套的物料（最多 3 个，够定位不刷屏） */
+  /** 全部短板；展示分页，不在服务端静默截断 */
   kitBlockers: KitBlocker[];
+  kitBasis: {
+    materialSkuId: number; materialCode: string; materialName: string | null; baseUom: string;
+    required: string; poReceived: string; networkOnHand: string; datedSupply: string;
+    undatedSupply: string; excludedReference: string; forecastDate: string | null; shortBy: string;
+  }[];
+  kitSnapshotDate: string | null;
   /** 齐套判定说明（含诚实降级：无物料行 ≠ 已验证齐套） */
   kitNote: string;
   /** 旧台账旁证推演；只展示，绝不改变 producible/suggestQty/blockedReason。 */
@@ -70,7 +76,7 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
   /* JG 批次建议：approved/in_progress 且有 PO 的 WO */
   const woRows: {
     id: number; docNo: string; qty: string; productSkuId: number; status: string;
-    productCode: string; productName: string; attrs: unknown; productActive: boolean; supplierStatus: string | null;
+    productCode: string; productName: string; attrs: unknown; productActive: boolean; supplierStatus: string | null; isPaused: boolean;
   }[] = await db
     .select({
       id: schema.woDocs.id,
@@ -78,6 +84,7 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
       qty: schema.woDocs.qty,
       productSkuId: schema.woDocs.productSkuId,
       status: schema.woDocs.status,
+      isPaused: schema.woDocs.isPaused,
       productCode: schema.skus.code,
       productName: schema.skus.name,
       attrs: schema.skus.attrs,
@@ -89,14 +96,24 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
     .leftJoin(schema.suppliers, eq(schema.woDocs.supplierId, schema.suppliers.id))
     .where(and(inArray(schema.woDocs.status, ["approved", "in_progress"]), woId == null ? undefined : eq(schema.woDocs.id, woId)));
 
+  // Load shared evidence once per preview, not once for every WO sharing a material.
+  const materialRows: { id: number }[] = woRows.length ? await db.selectDistinct({ id: schema.woLines.materialSkuId })
+    .from(schema.woLines).where(inArray(schema.woLines.woId, woRows.map(wo => wo.id))) : [];
+  const allMaterialIds = materialRows.map(row => row.id);
+  const [matOnHand, allSupply, allReference] = await Promise.all([
+    getOnHandBySku(db, { skuIds: allMaterialIds }),
+    getOpenSupplyLines(db, allMaterialIds),
+    allMaterialIds.length ? getMaterialReferenceLines(db, allMaterialIds) : Promise.resolve([]),
+  ]);
   const batches: BatchSuggestion[] = [];
   for (const wo of woRows) {
-    const lines: { materialSkuId: number; grossReq: string; materialCode: string }[] = await db
-      .select({ materialSkuId: schema.woLines.materialSkuId, grossReq: sql<string>`sum(${schema.woLines.grossReq})`, materialCode: schema.skus.code })
+    const lines: { materialSkuId: number; grossReq: string; materialCode: string; materialName: string | null; baseUom: string }[] = await db
+      .select({ materialSkuId: schema.woLines.materialSkuId, grossReq: sql<string>`sum(${schema.woLines.grossReq})`, materialCode: schema.skus.code, materialName: schema.skus.name, baseUom: schema.skus.baseUom })
       .from(schema.woLines)
       .innerJoin(schema.skus, eq(schema.woLines.materialSkuId, schema.skus.id))
       .where(eq(schema.woLines.woId, wo.id))
-      .groupBy(schema.woLines.materialSkuId, schema.skus.code);
+      .groupBy(schema.woLines.materialSkuId, schema.skus.code, schema.skus.name, schema.skus.baseUom)
+      .orderBy(schema.woLines.materialSkuId);
     if (lines.length === 0) continue;
     // 到料 = 本 WO 下 PO 行已收量（基础单位）
     const recv: { skuId: number; received: string }[] = await db
@@ -114,10 +131,11 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
        却零生产调用方，交付日期这个问题在系统里一直没人回答。此处接上。
        物料到货走 core/supply 唯一权威（有确认到货日的才进推演，无日期的不臆造）。 */
     const materialIds = lines.map((l) => l.materialSkuId);
-    const matOnHand = materialIds.length ? await getOnHandBySku(db, { skuIds: materialIds }) : null;
-    const matSupply = materialIds.length ? await getOpenSupplyLines(db, materialIds) : [];
+    const materialSet = new Set(materialIds);
+    const matSupply = allSupply.filter(line => materialSet.has(line.skuId));
     const arrivalsByMat = new Map<number, { date: string; qty: string }[]>();
     for (const sl of matSupply) {
+      if (sl.source !== "po" && sl.source !== "wo") continue; // Reference evidence is never system-document supply.
       if (!sl.expectDate || sl.qty <= 0) continue;
       const arr = arrivalsByMat.get(sl.skuId) ?? [];
       arr.push({ date: sl.expectDate, qty: String(sl.qty) });
@@ -141,8 +159,8 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
     /* 已关联旧包材台账只作第二条证据线：必须同时命中物料与本 WO 成品，未分配行不套用。
        pkg_stock 可能已被实时账覆盖，pkg_order 也可能与系统 PO 重叠，因此这条参考推演
        绝不能改变自动批次的可产量、建议量或阻断结果。 */
-    const matchedReference = (await getMaterialReferenceLines(db, materialIds))
-      .filter((line) => line.productSkuId === wo.productSkuId);
+    const matchedReference = allReference
+      .filter((line) => line.productSkuId === wo.productSkuId && materialSet.has(line.materialSkuId));
     const referenceByMaterial = new Map<number, typeof matchedReference>();
     for (const line of matchedReference) {
       const arr = referenceByMaterial.get(line.materialSkuId) ?? [];
@@ -198,21 +216,23 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
       && ((wo.attrs as { needsReview: unknown[] }).needsReview.length > 0);
     let blockedReason: string | null = null;
     const supplierBlock = supplierNewOrderBlock(wo.supplierStatus);
-    if (!wo.productActive) blockedReason = "成品已停用，不能生成新批次";
+    if (wo.isPaused) blockedReason = "工单已暂停，不能生成新批次；请先核对恢复条件";
+    else if (!wo.productActive) blockedReason = "成品已停用，不能生成新批次";
     else if (wo.supplierStatus == null) blockedReason = "加工厂不存在，请核对工单来源";
     else if (supplierBlock.blocked) blockedReason = supplierBlock.reason;
     else if (dCmp(suggest, "0") <= 0) blockedReason = dCmp(producible, alreadyBatched) <= 0 ? "到料尚不足新批（或已全部下批）" : "不足一个订货倍数";
     else if (!batchAllowed(jgs.length)) blockedReason = `批次已达上限 ${MAX_AUTO_BATCHES}，转人工`;
     else if (needsReview) blockedReason = "成品档案待复核（needsReview）——不自动，请人工核对后生成";
     else if (hasDraft) blockedReason = "已有待审批批次草稿——先处理再生成";
-    if (dCmp(suggest, "0") > 0 || jgs.length > 0) {
+    // Zero capacity is an actionable shortage, not an absent result.
+    {
       batches.push({
         woId: wo.id,
         woDocNo: wo.docNo,
         productCode: wo.productCode,
         productName: wo.productName,
         woQty: wo.qty,
-        receivedBasis: lines.slice(0, 6).map((l) => ({
+        receivedBasis: lines.map((l) => ({
           materialCode: l.materialCode,
           received: recvBySku.get(l.materialSkuId) ?? "0",
           perUnit: dQty(l.grossReq),
@@ -220,8 +240,20 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
         producible,
         /** E2-09：预计齐套日（null=视野内齐不了，blockers 说明卡在哪个料） */
         kitDate: kitAtp.kitDate,
-        kitBlockers: kitAtp.blockers.slice(0, 3),
+        kitBlockers: kitAtp.blockers,
         kitNote: kitAtp.note,
+        kitSnapshotDate: matOnHand.snapDate,
+        kitBasis: lines.map(line => {
+          const supply = matSupply.filter(s => s.skuId === line.materialSkuId);
+          const sum = (predicate: (s: typeof supply[number]) => boolean) => dQty(supply.filter(predicate).reduce((total, s) => dAdd(total, String(s.qty), 6), "0"));
+          const forecast = kitAtp.perMaterial.find(m => m.materialSkuId === line.materialSkuId)!;
+          return { materialSkuId: line.materialSkuId, materialCode: line.materialCode, materialName: line.materialName, baseUom: line.baseUom,
+            required: dQty(line.grossReq), poReceived: dQty(recvBySku.get(line.materialSkuId) ?? "0"), networkOnHand: dQty(matOnHand.bySku.get(line.materialSkuId) ?? "0"),
+            datedSupply: sum(s => (s.source === "po" || s.source === "wo") && s.expectDate != null),
+            undatedSupply: sum(s => (s.source === "po" || s.source === "wo") && s.expectDate == null),
+            excludedReference: sum(s => s.source !== "po" && s.source !== "wo"),
+            forecastDate: forecast.readyDate, shortBy: forecast.shortBy };
+        }),
         referenceKitDate: referenceAtp?.kitDate ?? null,
         referenceKitNote: referenceAtp
           ? `${referenceAtp.note}；仅叠加 ${matchedReference.length} 条旧流程包材旁证，可能与实时账/系统 PO 重叠，不驱动自动批次`

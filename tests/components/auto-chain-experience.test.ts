@@ -28,7 +28,9 @@ const fetchMock = vi.fn<typeof fetch>();
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); return render(); };
 const preview = () => ({ flags: { autoWoOnBh: false, autoJgOnReady: false }, batches: [
   { woId: 18, woDocNo: "WO-18", productCode: "CP-18", productName: "合成中文长名称精华", woQty: "100", producible: "50", alreadyBatched: "0", existingBatches: 0, suggestQty: "50.0000", blockedReason: null,
-    kitDate: null, kitNote: "系统供给预测说明", kitBlockers: [{ materialSkuId: 8, shortBy: "3", readyDate: null }], referenceKitDate: null, referenceKitNote: "仅旁证", referenceEvidenceCount: 1, referenceReservedQty: "2" },
+    kitDate: null, kitNote: "系统供给预测说明", kitBlockers: [{ materialSkuId: 8, shortBy: "3", readyDate: null }],
+    kitBasis: [{ materialSkuId: 8, materialCode: "PK / 中文", materialName: "物料长名称", baseUom: "个", required: "100.0000", poReceived: "50.0000", networkOnHand: "2.0000", datedSupply: "95.0000", undatedSupply: "8.0000", excludedReference: "10.0000", forecastDate: null, shortBy: "3.0000" }], kitSnapshotDate: null,
+    referenceKitDate: null, referenceKitNote: "仅旁证", referenceEvidenceCount: 1, referenceReservedQty: "2" },
 ], wos: [{ bhId: 9, bhDocNo: "BH-9", skuId: 7, skuCode: "CP-7", qty: "10", supplierName: "合成OEM", feeRatePlan: "1", blockedReason: null }] });
 type Row = ReturnType<typeof preview>["batches"][number] | ReturnType<typeof preview>["wos"][number];
 type Column = { title: string; width: number; render?: (v: unknown, row: Row) => ReactNode };
@@ -103,6 +105,23 @@ it("unmount aborts only the read, never the business mutation or a post-unmount 
 });
 it("source deep links preserve WO and BH identity", async () => {
   await begin(); expect(nodes(cell("工单"))[0].props.href).toBe("/outsource/wo?docId=18"); expect(nodes(cell("备货申请", 1))[0].props.href).toBe("/outsource/bh?docId=9");
+});
+
+it("evidence separates source quantities, preserves units, and links the material purchase search", async () => {
+  await begin(); (nodes(cell("预计齐套日"))[0].props.onClick as () => void)();
+  const basis = all("table").find(t => t.props["aria-label"] === "逐料齐套依据")!;
+  expect((basis.props.dataSource as unknown[])).toHaveLength(1);
+  const columns = basis.props.columns as Column[];
+  expect(columns.map(c => c.title)).toEqual(["物料 / 查采购", "单位", "全单毛需求", "本单PO已收", "全网在库", "有日期未结", "无交期未结", "参考层排除", "90天末缺口", "预测可齐日"]);
+  const material = (basis.props.dataSource as Row[])[0];
+  expect(nodes(columns[0].render!(null, material)).find(n => n.type === "a")!.props.href).toBe("/outsource/po?q=PK%20%2F%20%E4%B8%AD%E6%96%87");
+  expect(JSON.stringify(props("modal").children)).toContain("预测不等于本工单可领用或生产放行");
+  expect(props("modal").styles).toMatchObject({ body: { overflowY: "auto" } });
+});
+
+it("shortage rows paginate locally without hiding them from the searchable dataset", async () => {
+  await begin(); expect(table().pagination).toMatchObject({ pageSize: 20, showSizeChanger: false });
+  expect(table().scroll).toMatchObject({ x: 1265 });
 });
 
 it("renders exact large capacity and decimal suggested quantities without float conversion", async () => {
