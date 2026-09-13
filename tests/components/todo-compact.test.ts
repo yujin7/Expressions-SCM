@@ -1,6 +1,7 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ItemTable, StatsTab, TodoItemSummary, type WorkItemRow } from "@/app/(app)/todo/todo-client";
+import { loadTodoMutation } from "@/components/todo-mutation-request";
 
 // Invoke actual component callbacks with deferred requests; CSS/layout is checked separately in a browser.
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
@@ -34,7 +35,14 @@ vi.mock("antd", () => ({ App: { useApp: () => ({ message: m.message }) },
   Pagination: "pagination", Row: "row", Select: "select", Space: "space", Spin: "spin", Table: "table", Tabs: "tabs", Tag: "tag", Tooltip: "tooltip",
   DatePicker: { RangePicker: "range" }, Typography: { Text: "text", Paragraph: "paragraph", Title: "title" },
 }));
-vi.mock("@/components/fetchJson", () => ({ fetchJson: m.fetch, patchJson: m.patch }));
+vi.mock("@/components/fetchJson", () => ({ fetchJson: async (url: string, init?: RequestInit) => {
+  if (init?.method !== "PATCH") return m.fetch(url, init);
+  const body = JSON.parse(String(init.body)), row = await m.patch(url, body);
+  const snapshot = { version: body.expectedVersion + 1, status: row.status, assigneeId: row.assigneeId,
+    completedAt: row.status === "done" ? "2026-09-13T00:00:00.000Z" : null, suspicious: false };
+  return { ...row, ...snapshot, replayed: false, mutationReceipt: { eventId: 7, requestId: body.requestId,
+    originalIntent: { expectedVersion: body.expectedVersion, status: body.status ?? null, assigneeId: body.assigneeId ?? null, note: body.note }, originalResult: snapshot } };
+} }));
 vi.mock("@/components/useMe", () => ({ useMe: () => m.me }));
 vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: m.filters, page: 1, pageSize: 20, density: "small", tableSize: "small",
   setFilter: m.setFilter, paginationProps: ({ total }: { total: number }) => ({ total, current: 1, pageSize: 20, onChange: m.setPage }) }) }));
@@ -67,12 +75,14 @@ function render(fn: () => React.ReactElement): React.ReactElement {
 }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: Error) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
-const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
+const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const row: WorkItemRow = { id: 17, version: 1, title: "合成待办：核对物料", detail: "第一行\n长明细末尾证据", assigneeId: 42, assigneeName: "合成计划员", assignerId: 1,
   assignerName: "合成管理员", ownerRole: "pmc", priority: "high", dueDate: null, status: "open", sourceKind: "alert", sourceRef: "9",
   completedAt: null, createdBy: 1, createdAt: "2026-09-01T00:00:00Z", overdue: false, suspicious: false };
 const listing = { rows: [row], total: 25, today: "2026-09-07" };
 beforeEach(() => { vi.stubGlobal("React", React); vi.clearAllMocks(); m.fetch.mockReset(); m.patch.mockReset();
+  const data = new Map<string, string>(); vi.stubGlobal("localStorage", { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => data.set(k, v), removeItem: (k: string) => data.delete(k) });
+  vi.stubGlobal("window", new EventTarget()); vi.stubGlobal("navigator", { locks: { request: (_key: string, fn: () => Promise<unknown>) => fn() } });
   h.cursor = 0; h.slots = []; h.effects = []; h.cleanups.clear(); h.changed = false; m.filters = {}; m.me = { id: 42, roles: ["pmc"] }; });
 afterEach(() => { h.cleanups.forEach(fn => fn()); vi.unstubAllGlobals(); });
 
@@ -102,7 +112,7 @@ describe("compact todo facts and persistent outcomes", () => {
     let refreshKey = 0;
     const run = () => ItemTable({ view: "mine", prefix: "mine", assignees: [], refreshKey, onChanged: m.changed });
     render(run); await flush(); const button = elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!;
-    button.props.onClick!(); button.props.onClick!(); expect(m.patch).toHaveBeenCalledExactlyOnceWith("/api/todo/17", { status: "done", expectedVersion: 1, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    button.props.onClick!(); button.props.onClick!(); expect(m.patch).toHaveBeenCalledExactlyOnceWith("/api/todo/17", { status: "done", expectedVersion: 1, note: null, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
     pending.resolve({ ...row, status: "done" }); await flush(); expect(m.changed).toHaveBeenCalledOnce();
     refreshKey++; render(run); await flush(); const tree = render(run);
     const feedback = elements(tree).find(e => e.type === "alert")!;
@@ -118,6 +128,22 @@ describe("compact todo facts and persistent outcomes", () => {
     render(run); await flush(); elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!.props.onClick!();
     await flush(); const alert = elements(render(run)).find(e => e.type === "alert")!;
     expect(text(alert.props.message)).toContain("勿重复提交"); expect(m.changed).not.toHaveBeenCalled(); expect(m.patch).toHaveBeenCalledOnce();
+    expect(loadTodoMutation(localStorage, 42)).toMatchObject({ itemId: 17, expectedVersion: 1, status: "done" });
+    expect(elements(alert).some(e => e.type === "button" && text(e) === "恢复待核对操作")).toBe(true);
+  });
+  it("late success after table unmount keeps the recovery record and cannot update the departed view", async () => {
+    m.fetch.mockResolvedValue(listing); const pending = deferred<WorkItemRow>(); m.patch.mockReturnValue(pending.promise);
+    const run = () => ItemTable({ view: "mine", prefix: "mine", assignees: [], refreshKey: 0, onChanged: m.changed });
+    render(run); await flush(); elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!.props.onClick!();
+    const original = loadTodoMutation(localStorage, 42); expect(original).not.toBeNull();
+    h.cleanups.forEach(fn => fn()); pending.resolve({ ...row, status: "done" }); await flush();
+    expect(loadTodoMutation(localStorage, 42)).toEqual(original); expect(m.changed).not.toHaveBeenCalled(); expect(m.message.success).not.toHaveBeenCalled();
+  });
+  it("storage refusal prevents the actual table action from reaching PATCH", async () => {
+    m.fetch.mockResolvedValue(listing); vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => { throw Error("quota"); } });
+    const run = () => ItemTable({ view: "mine", prefix: "mine", assignees: [], refreshKey: 0, onChanged: m.changed });
+    render(run); await flush(); elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!.props.onClick!(); await flush();
+    expect(m.patch).not.toHaveBeenCalled(); expect(m.message.error).toHaveBeenCalledWith(expect.stringContaining("未发送"));
   });
   it("read-only visible items do not gain mutation buttons in the mobile layout", async () => {
     m.me = { id: 999, roles: ["ops"] }; m.fetch.mockResolvedValue(listing);
