@@ -10,6 +10,7 @@ import {
   executeFrozenPlan,
   getFrozenPlanExecution,
   getSopExecutionResult,
+  getSopCycleCreationResult,
   getSopWorkspace,
   transitionSopCycle,
 } from "@/server/modules/replenish/sop-cycle";
@@ -59,11 +60,15 @@ const actionSchema = z.discriminatedUnion("action", [
 export async function GET(req: NextRequest) {
   try {
     const params = new URL(req.url).searchParams;
-    const query = z.object({ cycleId: z.coerce.number().int().positive().max(2147483647).optional(), requestKey: z.string().uuid().optional() })
-      .refine(v => !(v.cycleId !== undefined && v.requestKey !== undefined), "周期查询与请求核对不能同时使用")
+    const query = z.object({ cycleId: z.coerce.number().int().positive().max(2147483647).optional(), requestKey: z.string().uuid().optional(), createRequestKey: z.string().uuid().optional(), workspaceCycleId: z.coerce.number().int().positive().max(2147483647).optional() }).strict()
+      .refine(v => Object.values(v).filter(value => value !== undefined).length <= 1, "只能选择一种周期或请求查询")
       .parse(Object.fromEntries(params));
-    if (params.getAll("cycleId").length > 1 || params.getAll("requestKey").length > 1) {
+    if (["cycleId", "requestKey", "createRequestKey", "workspaceCycleId"].some(key => params.getAll(key).length > 1)) {
       return NextResponse.json({ error: "查询条件不能重复" }, { status: 400 });
+    }
+    if (query.createRequestKey !== undefined) {
+      const user = await getFreshSessionUser();
+      return NextResponse.json(await getSopCycleCreationResult(user, query.createRequestKey), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (query.requestKey !== undefined) {
       const user = await getFreshSessionUser();
@@ -73,7 +78,7 @@ export async function GET(req: NextRequest) {
     if (query.cycleId !== undefined) {
       return NextResponse.json(await getFrozenPlanExecution(user, query.cycleId));
     }
-    return NextResponse.json(await getSopWorkspace(user));
+    return NextResponse.json(await getSopWorkspace(user, undefined, query.workspaceCycleId === undefined ? undefined : { id: query.workspaceCycleId, only: false }), { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return errorResponse(error);
   }
@@ -83,7 +88,12 @@ export async function POST(req: NextRequest) {
   try {
     const user = await getFreshSessionUser();
     const input = actionSchema.parse(await readJson(req));
-    if (input.action === "create") await createSopCycle(user, input);
+    if (input.action === "create") {
+      const cycle = await createSopCycle(user, input);
+      return NextResponse.json({ requestKey: input.idempotencyKey.toLowerCase(), cycle: { id: cycle.id,
+        month: cycle.month, name: cycle.name, status: cycle.status, version: cycle.version, planningVersionId: cycle.planningVersionId } },
+      { status: 201, headers: { "Cache-Control": "private, no-store" } });
+    }
     if (input.action === "change_plan") await changeSopPlan(user, input);
     if (input.action === "decide") await decideSopCycle(user, input);
     if (input.action === "transition") await transitionSopCycle(user, input);
