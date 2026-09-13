@@ -54,7 +54,7 @@ beforeEach(() => {
 afterEach(() => { unmount(); vi.unstubAllGlobals(); });
 it("opening recovery never sends automatically and exposes the original operation", () => {
   const tree = render(); expect(text(tree)).toContain("合成原操作"); expect(text(tree)).toContain("超时不代表"); expect(m.fetch).not.toHaveBeenCalled();
-  expect(all(tree).find(e => e.type === "drawer")?.props).toMatchObject({ closable: true, keyboard: true });
+  expect(all(tree).find(e => e.type === "drawer")?.props).toMatchObject({ closable: true, keyboard: true, width: "min(560px, 100vw)" });
   expect(all(tree).filter(e => e.type === "button")).toHaveLength(1);
 });
 it("found original result and later current state are both shown; only explicit acknowledgement clears", async () => {

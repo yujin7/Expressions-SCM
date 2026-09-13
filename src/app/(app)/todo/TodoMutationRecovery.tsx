@@ -75,7 +75,7 @@ export function TodoMutationRecoveryDrawer({ actorId, request, onClose, onConfir
       if (isCurrent()) { locked.current = false; setBusy(false); }
     }
   };
-  return <Drawer title={`恢复待办 #${request.itemId} 的原操作`} open width={560} onClose={onClose} closable={!busy} maskClosable={!busy} keyboard={!busy}>
+  return <Drawer title={`恢复待办 #${request.itemId} 的原操作`} open width="min(560px, 100vw)" onClose={onClose} closable={!busy} maskClosable={!busy} keyboard={!busy}>
     <div className={styles.history} ref={content} tabIndex={-1}>
       <strong>{request.title}</strong><Intent request={request} />
       {request.note ? <details><summary>查看原备注</summary><p>{request.note}</p></details> : null}
