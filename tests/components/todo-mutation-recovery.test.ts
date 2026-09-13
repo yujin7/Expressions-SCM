@@ -1,7 +1,7 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import TodoMutationRecovery, { TodoMutationRecoveryDrawer } from "@/app/(app)/todo/TodoMutationRecovery";
-import { loadTodoMutation, prepareTodoMutation, TODO_MUTATION_OPEN, type TodoMutationLookup, type TodoMutationRequest } from "@/components/todo-mutation-request";
+import { loadTodoMutation, prepareTodoMutation, TODO_MUTATION_CHANGED, TODO_MUTATION_OPEN, type TodoMutationLookup, type TodoMutationRequest } from "@/components/todo-mutation-request";
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false, unmounted: false, lateWrites: 0 }));
 const m = vi.hoisted(() => ({ fetch: vi.fn(), close: vi.fn(), confirmed: vi.fn() }));
 vi.mock("react", async original => {
@@ -107,4 +107,13 @@ it("account-scoped entry stays independent of list filters and ignores other act
   const fn = () => TodoMutationRecovery({ actorId: 1, onChanged: vi.fn() }); const tree = render(fn); expect(text(tree)).toContain("待办 #7 有原操作待确认"); expect(m.fetch).not.toHaveBeenCalled();
   window.dispatchEvent(new CustomEvent(TODO_MUTATION_OPEN, { detail: 2 })); expect(all(render(fn)).some(e => e.type === TodoMutationRecoveryDrawer)).toBe(false);
   window.dispatchEvent(new CustomEvent(TODO_MUTATION_OPEN, { detail: 1 })); expect(all(render(fn)).some(e => e.type === TodoMutationRecoveryDrawer)).toBe(true); expect(m.fetch).not.toHaveBeenCalled();
+});
+it("a new operation retires the previous confirmation banner instead of showing contradictory outcomes", () => {
+  const fn = () => TodoMutationRecovery({ actorId: 1, onChanged: vi.fn() }); render(fn);
+  window.dispatchEvent(new CustomEvent(TODO_MUTATION_OPEN, { detail: 1 }));
+  const drawer = all(render(fn)).find(e => e.type === TodoMutationRecoveryDrawer)!;
+  (drawer.props as unknown as { onConfirmed: (r: TodoMutationLookup, obsolete: boolean) => void }).onConfirmed(found(), false);
+  expect(text(render(fn))).toContain("原操作回执已确认");
+  window.dispatchEvent(new Event(TODO_MUTATION_CHANGED));
+  expect(text(render(fn))).not.toContain("原操作回执已确认");
 });

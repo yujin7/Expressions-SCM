@@ -1,7 +1,7 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ItemTable, StatsTab, TodoItemSummary, type WorkItemRow } from "@/app/(app)/todo/todo-client";
-import { loadTodoMutation } from "@/components/todo-mutation-request";
+import { clearTodoMutation, loadTodoMutation, TODO_MUTATION_CHANGED } from "@/components/todo-mutation-request";
 
 // Invoke actual component callbacks with deferred requests; CSS/layout is checked separately in a browser.
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
@@ -130,6 +130,11 @@ describe("compact todo facts and persistent outcomes", () => {
     expect(text(alert.props.message)).toContain("勿重复提交"); expect(m.changed).not.toHaveBeenCalled(); expect(m.patch).toHaveBeenCalledOnce();
     expect(loadTodoMutation(localStorage, 42)).toMatchObject({ itemId: 17, expectedVersion: 1, status: "done" });
     expect(elements(alert).some(e => e.type === "button" && text(e) === "恢复待核对操作")).toBe(true);
+    window.dispatchEvent(new Event(TODO_MUTATION_CHANGED));
+    expect(elements(render(run)).some(e => e.type === "alert")).toBe(true); // Pending still exists.
+    clearTodoMutation(localStorage, 42, loadTodoMutation(localStorage, 42)!.requestId);
+    window.dispatchEvent(new Event(TODO_MUTATION_CHANGED));
+    expect(elements(render(run)).some(e => e.type === "alert")).toBe(false);
   });
   it("late success after table unmount keeps the recovery record and cannot update the departed view", async () => {
     m.fetch.mockResolvedValue(listing); const pending = deferred<WorkItemRow>(); m.patch.mockReturnValue(pending.promise);

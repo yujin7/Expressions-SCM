@@ -121,6 +121,18 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
   useEffect(() => { const generation = ++mutationLife.current; return () => { mutationLife.current = generation + 1; }; }, []);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set());
   const [feedback, setFeedback] = useState<{ row: WorkItemRow; text: string; type: "success" | "warning" | "error"; recoverable?: boolean } | null>(null);
+  const actorId = me?.id;
+  useEffect(() => {
+    if (!actorId) return;
+    const reconciled = () => {
+      try {
+        if (!loadTodoMutation(localStorage, actorId)) setFeedback(prior => prior?.recoverable ? null : prior);
+      } catch { /* The independent recovery entry reports unreadable storage; keep the warning. */ }
+    };
+    window.addEventListener(TODO_MUTATION_CHANGED, reconciled);
+    window.addEventListener("storage", reconciled);
+    return () => { window.removeEventListener(TODO_MUTATION_CHANGED, reconciled); window.removeEventListener("storage", reconciled); };
+  }, [actorId]);
   const [historyItem, setHistoryItem] = useState<WorkItemRow | null>(null);
   const listState = useListState<Filters>({
     key: `todo-${view}`,

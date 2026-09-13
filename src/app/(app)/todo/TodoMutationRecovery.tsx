@@ -19,8 +19,14 @@ export default function TodoMutationRecovery({ actorId, onChanged }: { actorId: 
   const [confirmed, setConfirmed] = useState<{ itemId: number; text: string } | null>(null);
   useEffect(() => {
     const show = (event: Event) => { if ((event as CustomEvent).detail === actorId) { setConfirmed(null); setOpen(true); } };
+    const changed = () => {
+      try { if (loadTodoMutation(localStorage, actorId)) setConfirmed(null); }
+      catch { /* The recovery subscription shows storage errors without erasing evidence. */ }
+    };
     window.addEventListener(TODO_MUTATION_OPEN, show);
-    return () => window.removeEventListener(TODO_MUTATION_OPEN, show);
+    window.addEventListener(TODO_MUTATION_CHANGED, changed);
+    window.addEventListener("storage", changed);
+    return () => { window.removeEventListener(TODO_MUTATION_OPEN, show); window.removeEventListener(TODO_MUTATION_CHANGED, changed); window.removeEventListener("storage", changed); };
   }, [actorId]);
   return <>
     {recovery.error ? <Alert type="error" showIcon message={recovery.error} className={styles.feedback} />
