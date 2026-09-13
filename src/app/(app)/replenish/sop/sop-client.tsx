@@ -27,6 +27,7 @@ import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import CaliberNote from "@/components/CaliberNote";
 import { fetchJson, postJson } from "@/components/fetchJson";
@@ -36,6 +37,7 @@ import { useSopCycleRequest } from "@/components/useSopCycleRequest";
 import DocStatusTag from "@/components/DocStatusTag";
 import { formatQty } from "@/components/format";
 import { documentHref } from "@/lib/document-links";
+import { sopCycleHref, sopCycleTarget, sopCycleTargetPath } from "@/lib/sop-links";
 
 type SopRole = "ops" | "pmc" | "finance";
 type SopStatus = "consensus" | "frozen" | "executing" | "closed";
@@ -126,15 +128,40 @@ function formatTime(value: string | null) {
 
 export default function SopClient() {
   const me = useMe();
-  return <SopWorkspace key={`${me?.id ?? "anonymous"}:${me?.roles.join(",") ?? ""}`} me={me} />;
+  const search = useSearchParams();
+  const target = sopCycleTarget(search.toString());
+  const selectCycle = useCallback((id: number | null) => {
+    const { pathname, search, hash } = window.location;
+    const next = sopCycleTargetPath(search, id, hash);
+    if (next !== `${pathname}${search}${hash}`) window.history.pushState(null, "", next);
+  }, []);
+  return <SopAccountWorkspace key={`${me?.id ?? "anonymous"}:${me?.roles.join(",") ?? ""}`}
+    me={me} target={target} selectCycle={selectCycle} />;
 }
 
-function SopWorkspace({ me }: { me: Me | null }) {
-  const { message } = App.useApp();
+type NavigationProps = { me: Me | null; target: ReturnType<typeof sopCycleTarget>; selectCycle: (id: number | null) => void };
+
+function SopAccountWorkspace(props: NavigationProps) {
+  const canManage = Boolean(props.me?.roles.some(role => role === "admin" || role === "pmc"));
+  const createRecovery = useSopCycleRequest(props.me?.id ?? null, canManage);
+  const [refresh, setRefresh] = useState(0);
+  const recovered = useCallback(() => setRefresh(value => value + 1), []);
+  const recovery = useSopExecutionRequest(props.me?.id ?? null, canManage, recovered);
+  const confirmedId = createRecovery.result?.cycle?.id;
+  const selectCycle = props.selectCycle;
+  useEffect(() => { if (confirmedId) selectCycle(confirmedId); }, [confirmedId, selectCycle]);
+  // Dispose reads, row selections and owned dialogs on navigation, but keep account recovery intact.
+  return <SopWorkspace key={props.target.error ? "invalid" : props.target.id ?? "latest"} {...props}
+    createRecovery={createRecovery} recovery={recovery} refresh={refresh} />;
+}
+
+function SopWorkspace({ me, target, selectCycle, createRecovery, recovery, refresh }: NavigationProps & {
+  createRecovery: ReturnType<typeof useSopCycleRequest>; recovery: ReturnType<typeof useSopExecutionRequest>; refresh: number;
+}) {
+  const { message, modal } = App.useApp();
   const canManage = Boolean(me?.roles.some((role) => role === "admin" || role === "pmc"));
   const signRoles = (["ops", "pmc", "finance"] as SopRole[]).filter((role) => me?.roles.includes(role));
   const [data, setData] = useState<Workspace | null>(null);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -143,48 +170,60 @@ function SopWorkspace({ me }: { me: Me | null }) {
   const [name, setName] = useState(`${dayjs().format("YYYY年MM月")} 数量供需计划`);
   const [planId, setPlanId] = useState<number | null>(null);
   const [editCreate, setEditCreate] = useState(false);
-  const createRecovery = useSopCycleRequest(me?.id ?? null, canManage);
-  const exactCycle = useRef<number | null>(null);
+  const alive = useRef(true);
+  const writeBusy = useRef(false);
+  const dialogs = useRef(new Set<ReturnType<typeof Modal.confirm>>());
+  useEffect(() => {
+    alive.current = true;
+    const owned = dialogs.current;
+    return () => { alive.current = false; for (const dialog of owned) dialog.destroy(); owned.clear(); };
+  }, []);
+  const confirm = (options: Parameters<typeof Modal.confirm>[0]) => {
+    const dialog = modal.confirm({ ...options, afterClose: () => {
+      dialogs.current.delete(dialog);
+      options.afterClose?.();
+    }, onOk: async (...args) => {
+      if (!alive.current) throw new Error("周期已切换，请在当前周期重新核对");
+      if (await options.onOk?.(...args) === false) throw new Error("操作未完成，请核对后重试");
+    } });
+    dialogs.current.add(dialog);
+  };
 
   const beginLoadRead = useLatestRead();
-  const load = useCallback(async (targetId?: number) => {
-    if (targetId !== undefined) exactCycle.current = targetId;
+  const load = useCallback(async () => {
     const readRequest = beginLoadRead();
+    if (target.error) { setData(null); setLoading(false); setLoadError(target.error); return; }
     setLoading(true);
     setLoadError(null);
     try {
-      const next = await fetchJson<Workspace>(`/api/replenish/sop${exactCycle.current ? `?workspaceCycleId=${exactCycle.current}` : ""}`, { signal: readRequest.signal });
+      const next = await fetchJson<Workspace>(`/api/replenish/sop${target.id ? `?workspaceCycleId=${target.id}` : ""}`, { signal: readRequest.signal, cache: "no-store" });
       if (!readRequest.isCurrent()) return;
+      if (target.id && !next.cycles.some(cycle => cycle.id === target.id)) throw new Error("响应未包含目标周期，请重试读取；不会自动切换到其他周期");
       setData(next);
-      setSelectedId((current) => targetId && next.cycles.some(cycle => cycle.id === targetId) ? targetId :
-        current && next.cycles.some((cycle) => cycle.id === current)
-          ? current
-          : next.cycles[0]?.id ?? null);
       setPlanId((current) => current ?? next.versions[0]?.id ?? null);
     } catch (error) {
       if (!readRequest.isCurrent()) return;
       const text = error instanceof Error ? error.message : "S&OP 工作区加载失败";
       setData(null);
-      setSelectedId(null);
       setLoadError(text);
       message.error(text);
     } finally {
       if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [beginLoadRead, message]);
+  }, [beginLoadRead, message, target.id, target.error]);
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refresh]);
 
   const confirmedCycleId = createRecovery.result?.cycle?.id;
   useEffect(() => {
     if (!confirmedCycleId) return;
     setCreateOpen(false);
     setEditCreate(false);
-    void load(confirmedCycleId);
-  }, [confirmedCycleId, load]);
+  }, [confirmedCycleId]);
 
+  const selectedId = target.error ? null : target.id ?? data?.cycles[0]?.id ?? null;
   const cycle = data?.cycles.find((item) => item.id === selectedId) ?? null;
   const currentAgreements = cycle
     ? (["ops", "pmc", "finance"] as SopRole[]).filter(
@@ -193,17 +232,22 @@ function SopWorkspace({ me }: { me: Me | null }) {
     : 0;
 
   const mutate = async (payload: Record<string, unknown>, success: string) => {
+    if (!alive.current || writeBusy.current) return false;
+    writeBusy.current = true;
+    const readRequest = beginLoadRead(); // A pending pre-write refresh must not overwrite its result.
     setSaving(true);
     try {
       const next = await postJson<Workspace>("/api/replenish/sop", payload);
+      if (!alive.current || !readRequest.isCurrent()) return false;
       setData(next);
       message.success(success);
       return true;
     } catch (error) {
-      message.error((error as Error).message);
+      if (alive.current) message.error((error as Error).message);
       return false;
     } finally {
-      setSaving(false);
+      writeBusy.current = false;
+      if (alive.current) { setSaving(false); setLoading(false); }
     }
   };
 
@@ -229,7 +273,7 @@ function SopWorkspace({ me }: { me: Me | null }) {
       return;
     }
     let note = "";
-    Modal.confirm({
+    confirm({
       title: `${ROLE_META[role].label}拒绝共识`,
       content: <Input.TextArea rows={3} placeholder="说明差距、责任人或需要调整的事实（至少 5 个字符）" onChange={(event) => { note = event.target.value; }} />,
       okText: "确认拒绝",
@@ -239,7 +283,7 @@ function SopWorkspace({ me }: { me: Me | null }) {
           message.error("拒绝原因至少 5 个字符");
           return Promise.reject();
         }
-        await mutate({
+        return mutate({
           action: "decide",
           cycleId: cycle.id,
           version: cycle.version,
@@ -253,7 +297,7 @@ function SopWorkspace({ me }: { me: Me | null }) {
 
   const changePlan = (nextPlanId: number) => {
     if (!cycle || nextPlanId === cycle.planningVersionId) return;
-    Modal.confirm({
+    confirm({
       title: "开启新一轮共识？",
       content: "更换不可变源计划会把共识轮次加一；旧签认完整保留，但不再满足本轮冻结条件。",
       okText: "更换并重开共识",
@@ -269,7 +313,7 @@ function SopWorkspace({ me }: { me: Me | null }) {
   const transition = (target: "frozen" | "executing" | "closed") => {
     if (!cycle) return;
     const labels = { frozen: "冻结计划", executing: "开始执行", closed: "关闭周期" };
-    Modal.confirm({
+    confirm({
       title: labels[target],
       content: target === "frozen"
         ? "冻结后，当月实时补货建议只能查看，不能据此生成草稿；执行依据保持为当前不可变计划版本。"
@@ -294,7 +338,6 @@ function SopWorkspace({ me }: { me: Me | null }) {
   const [execError, setExecError] = useState<string | null>(null);
   const [pickedSkus, setPickedSkus] = useState<number[]>([]);
   const [includeSuppressed, setIncludeSuppressed] = useState(false);
-  const recovery = useSopExecutionRequest(me?.id ?? null, canManage, () => { void load(); });
 
   const beginLoadExecutionRead = useLatestRead();
   const loadExecution = useCallback(async (cycleId: number) => {
@@ -391,6 +434,8 @@ function SopWorkspace({ me }: { me: Me | null }) {
         </div>
         <Space wrap>
           <Select
+            aria-label="选择计划周期"
+            disabled={loading || saving}
             style={{ width: "min(100%, 320px)", minWidth: 0, flex: "1 1 230px" }}
             value={selectedId}
             placeholder="选择周期"
@@ -398,9 +443,16 @@ function SopWorkspace({ me }: { me: Me | null }) {
               value: item.id,
               label: `${item.month} · ${item.name}`,
             }))}
-            onChange={setSelectedId}
+            onChange={selectCycle}
           />
-          <Button loading={loading} onClick={() => void load()}>刷新</Button>
+          <Button loading={loading} disabled={saving} onClick={() => void load()}>刷新</Button>
+          <Button disabled={!cycle || loading || saving} onClick={async () => {
+            if (!cycle) return;
+            try {
+              await navigator.clipboard.writeText(new URL(sopCycleHref(cycle.id)!, window.location.origin).href);
+              message.success("已复制准确周期链接；接收人仍需登录并具备访问权限");
+            } catch { message.error("无法复制，请先选择该周期，再复制浏览器地址"); }
+          }}>复制周期链接</Button>
           {canManage ? <Button type="primary" disabled={!data?.versions.length || !createRecovery.ready || createRecovery.busy || Boolean(createRecovery.request)} onClick={() => { setEditCreate(false); setCreateOpen(true); }}>新建周期</Button> : null}
         </Space>
       </Flex>
@@ -420,7 +472,7 @@ function SopWorkspace({ me }: { me: Me | null }) {
             <Space wrap size={[8, 8]}>
               <Button loading={createRecovery.busy} onClick={() => void createRecovery.lookup()}>核对周期结果</Button>
               {!createRecovery.result?.cycle ? <Button disabled={createRecovery.busy} onClick={() => void createRecovery.submit()}>重试原创建请求</Button> : <>
-                <Button disabled={loading || createRecovery.busy} onClick={() => void load(createRecovery.result!.cycle!.id)}>查看原周期</Button>
+                <Button disabled={loading || createRecovery.busy} onClick={() => selectCycle(createRecovery.result!.cycle!.id)}>查看原周期</Button>
                 <Button disabled={createRecovery.busy} onClick={() => void createRecovery.acknowledge()}>已核对，完成创建恢复</Button>
               </>}
               {createRecovery.result?.cycle === null ? <Button disabled={createRecovery.busy} onClick={() => {
@@ -452,7 +504,7 @@ function SopWorkspace({ me }: { me: Me | null }) {
             {recovery.request ? <Space wrap size={[8, 8]}>
               <Button loading={recovery.busy} onClick={() => void recovery.lookup()}>核对开单结果</Button>
               {!recovery.result?.document ? <Button disabled={recovery.busy} onClick={() => void recovery.submit()}>重试原开单请求</Button> : null}
-              {recovery.result?.document === null && canStartRequest && draftPayload ? <Button disabled={recovery.busy} onClick={() => Modal.confirm({
+              {recovery.result?.document === null && canStartRequest && draftPayload ? <Button disabled={recovery.busy} onClick={() => confirm({
                 title: "用当前选择修正原请求？", content: "仍保留原请求编号；若原单已生成，只找回原单，不会再次开单。", okText: "修正并重试",
                 onOk: () => recovery.submit(draftPayload, true),
               })}>按当前选择修正原请求</Button> : null}
@@ -471,7 +523,8 @@ function SopWorkspace({ me }: { me: Me | null }) {
           showIcon
           message="S&OP 工作区加载失败"
           description={loadError}
-          action={<Button size="small" icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>}
+          action={<Space wrap><Button size="small" icon={<ReloadOutlined />} disabled={saving} onClick={() => void load()}>重试</Button>
+            {(target.id || target.error) ? <Button size="small" onClick={() => selectCycle(null)}>返回最近周期</Button> : null}</Space>}
           style={{ marginBottom: 16 }}
         />
       ) : null}
@@ -498,6 +551,8 @@ function SopWorkspace({ me }: { me: Me | null }) {
               </div>
               {cycle.status === "consensus" && canManage ? (
                 <Select
+                  aria-label="更换源计划"
+                  disabled={loading || saving}
                   style={{ width: "min(100%, 420px)", minWidth: 0, flex: "1 1 260px" }}
                   value={cycle.planningVersionId}
                   options={data?.versions.map((version) => ({

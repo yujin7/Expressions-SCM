@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getFreshSessionUser } from "@/server/core/dto";
-import { errorResponse, guardRead, readJson } from "@/server/modules/master/common";
+import { errorResponse, readJson } from "@/server/modules/master/common";
 import {
   changeSopPlan,
   createSopCycle,
@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
       const user = await getFreshSessionUser();
       return NextResponse.json(await getSopExecutionResult(user, query.requestKey), { headers: { "Cache-Control": "private, no-store" } });
     }
-    const user = await guardRead();
+    const user = await getFreshSessionUser();
     if (query.cycleId !== undefined) {
       return NextResponse.json(await getFrozenPlanExecution(user, query.cycleId));
     }
@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
       // Do not turn a committed document into a 500 if an unrelated workspace refresh fails.
       return NextResponse.json({ requestKey: input.idempotencyKey.toLowerCase(), draft }, { status: 201 });
     }
-    return NextResponse.json(await getSopWorkspace(user));
+    return NextResponse.json(await getSopWorkspace(user, undefined, { id: input.cycleId, only: false }), { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return errorResponse(error);
   }

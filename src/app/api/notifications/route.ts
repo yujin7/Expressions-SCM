@@ -11,7 +11,7 @@ import {
   notifyUnreadWhere,
   notifyVisibleWhere,
 } from "@/server/core/notify-audience";
-import { alertIdOfNotification } from "@/lib/notify-links";
+import { alertIdOfNotification, notificationActionHref } from "@/lib/notify-links";
 
 /**
  * #8/func#12 站内通知：按收件人过滤（本人/广播 且 角色匹配）；支持标记已读。
@@ -76,6 +76,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       rows: rows.map((r) => ({
         ...r.notification,
+        href: notificationActionHref(r.notification.href, r.notification.dedupeKey),
         readAt: r.myReadAt,
         alertId: alertIdOfNotification(r.notification.dedupeKey),
       })),

@@ -11,6 +11,7 @@ import { currentWriteActor } from "@/server/core/current-write-actor";
 import { loadUserScopes } from "@/server/core/data-scope";
 import { bhReadScope } from "@/server/core/bh-read-scope";
 import { dCmp } from "@/server/core/decimal";
+import { sopCycleHref } from "@/lib/sop-links";
 
 export const SOP_ROLES = ["ops", "pmc", "finance"] as const;
 export type SopRole = (typeof SOP_ROLES)[number];
@@ -155,7 +156,7 @@ async function notifySop(db: AnyDb, items: NotifyItem[]): Promise<void> {
         channel: "in_app",
         title: n.title,
         body: n.body,
-        href: "/replenish/sop",
+        href: sopCycleHref(n.cycleId),
         severity: n.severity,
         dedupeKey: n.dedupeKey,
         userId: n.userId ?? null,
@@ -168,6 +169,7 @@ async function notifySop(db: AnyDb, items: NotifyItem[]): Promise<void> {
 }
 
 interface NotifyItem {
+  cycleId: number;
   title: string;
   body: string;
   severity: "info" | "high";
@@ -227,6 +229,7 @@ function describeDuplicateSigners(dups: { name: string | null; roles: SopRole[] 
 
 function awaitingItems(cycle: { id: number; name: string; month: string; version: number }, roles: SopRole[]): NotifyItem[] {
   return roles.map((role) => ({
+    cycleId: cycle.id,
     title: `【S&OP 待签认】${cycle.name}`,
     body: `${cycle.month} 计划周期第 ${cycle.version} 轮共识等待「${SOP_ROLE_LABELS[role]}」签认。未签认前不能冻结，冻结后当月实时建议转为只读。`,
     severity: "info" as const,
@@ -338,12 +341,20 @@ export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb, cycleSel
     cycleRows.push(exact);
   }
   const versionById = new Map(versions.map((version) => [version.id, version]));
-  const cycles: SopCycle[] = [];
-  for (const row of cycleRows) {
-    const plan = versionById.get(row.planningVersionId) ?? await getVersion(row.planningVersionId, db);
-    const decisionRows = await db
+  const missingPlanIds = [...new Set(cycleRows.map(row => row.planningVersionId).filter(id => !versionById.has(id)))];
+  if (missingPlanIds.length) {
+    const extraPlans = await db.select({ id: schema.planningVersions.id, name: schema.planningVersions.name,
+      weekStart: schema.planningVersions.weekStart, digest: schema.planningVersions.digest,
+      lineCount: schema.planningVersions.lineCount, suggestedCount: schema.planningVersions.suggestedCount,
+      suppressedCount: schema.planningVersions.suppressedCount, createdAt: schema.planningVersions.createdAt,
+    }).from(schema.planningVersions).where(inArray(schema.planningVersions.id, missingPlanIds));
+    for (const plan of extraPlans) versionById.set(plan.id, plan);
+  }
+  // Batch evidence for the bounded preview + exact target; never one read per cycle.
+  const allDecisions = cycleRows.length ? await db
       .select({
         id: schema.sopDecisions.id,
+        cycleId: schema.sopDecisions.cycleId,
         cycleVersion: schema.sopDecisions.cycleVersion,
         role: schema.sopDecisions.role,
         decision: schema.sopDecisions.decision,
@@ -355,8 +366,19 @@ export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb, cycleSel
       })
       .from(schema.sopDecisions)
       .leftJoin(schema.users, eq(schema.sopDecisions.decidedBy, schema.users.id))
-      .where(eq(schema.sopDecisions.cycleId, row.id))
-      .orderBy(desc(schema.sopDecisions.id));
+      .where(inArray(schema.sopDecisions.cycleId, cycleRows.map(row => row.id)))
+      .orderBy(desc(schema.sopDecisions.id)) : [];
+  const decisionsByCycle = new Map<number, typeof allDecisions>();
+  for (const decision of allDecisions) {
+    const group = decisionsByCycle.get(decision.cycleId) ?? [];
+    group.push(decision);
+    decisionsByCycle.set(decision.cycleId, group);
+  }
+  const cycles: SopCycle[] = [];
+  for (const row of cycleRows) {
+    const plan = versionById.get(row.planningVersionId);
+    if (!plan) throw new ApiError(404, "不可变计划版本不存在");
+    const decisionRows = decisionsByCycle.get(row.id) ?? [];
     const latest: Partial<Record<SopRole, SopDecision>> = {};
     const decisions: SopDecision[] = decisionRows.map((decision) => {
       const role = decision.role as SopRole;
@@ -381,6 +403,9 @@ export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb, cycleSel
       consensusReady,
     });
   }
+  // An older selected plan still needs its real label in the plan selector.
+  const selectedPlan = cycles.find(cycle => cycle.id === cycleSelection?.id)?.plan;
+  if (selectedPlan && !versions.some(plan => plan.id === selectedPlan.id)) versions.push(selectedPlan);
   return {
     cycles,
     versions,
@@ -624,6 +649,7 @@ export async function decideSopCycle(
     const meta = { id: cycle.id, name: cycle.name, month: cycle.month, version: cycle.version };
     if (value.decision === "reject") {
       notify = [{
+        cycleId: cycle.id,
         title: `【S&OP 共识被驳回】${cycle.name}`,
         body: `${SOP_ROLE_LABELS[value.role]}（${actor.name}）驳回了 ${cycle.month} 第 ${cycle.version} 轮共识：${note ?? "（无原因）"}。请更换源计划或与该角色对齐后重开一轮。`,
         severity: "high",
@@ -725,6 +751,7 @@ export async function transitionSopCycle(
        所以三个角色都要收到，并且要直接告诉他们替代路径在哪——否则冻结只会让人以为系统坏了。 */
     if (value.target === "frozen") {
       notify = SOP_ROLES.map((role) => ({
+        cycleId: cycle.id,
         title: `【S&OP 计划已冻结】${cycle.name}`,
         body: `${cycle.month} 第 ${cycle.version} 轮三方共识达成，计划已冻结（版本 #${cycle.planningVersionId}）。当月实时补货建议转为只读；需要下单请在「S&OP 计划周期」页用「按冻结计划开单」生成 BH 草稿（仍走正常审批）。`,
         severity: "high" as const,
