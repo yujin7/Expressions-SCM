@@ -582,7 +582,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
         okText="创建"
         cancelText="取消"
         confirmLoading={createLoading}
-        okButtonProps={{ disabled: !recovery.ready || recovery.busy || (!editingRequestKey && !!recovery.request) || !!sourceMismatch || !poValid || createLines.length === 0 || warehouseId == null }}
+        okButtonProps={{ disabled: !recovery.ready || recovery.busy || !!recovery.result?.cancelled || (!editingRequestKey && !!recovery.request) || !!sourceMismatch || !poValid || createLines.length === 0 || warehouseId == null }}
         cancelButtonProps={{ disabled: createLoading }}
         closable={!createLoading}
         maskClosable={!createLoading}
@@ -591,7 +591,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
-          <CtCreateRecovery recovery={recovery} onEdit={editCreateRequest} />
+          <CtCreateRecovery recovery={recovery} onEdit={editCreateRequest} onAcknowledged={openCreate} />
           {sourceMismatch && <Alert type="error" showIcon message="原请求采购行缺失或物料身份已变，未丢弃原恢复记录。请明确重新选择采购来源并核对全部实物行，再修正同一请求。" />}
           <div>
             <div style={{ marginBottom: 4 }}>采购订单</div>

@@ -5,9 +5,10 @@ import { NextRequest } from "next/server";
 import * as s from "@/db/schema";
 import * as audit from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
-import { createCtRequest, getCtCreateResult } from "@/server/modules/matflow/ct-create-request";
+import { createCtRequest, getCtCreateResult, cancelCtCreateRequest } from "@/server/modules/matflow/ct-create-request";
 import { POST } from "@/app/api/matflow/ct/route";
 import { GET } from "@/app/api/matflow/ct/create-result/route";
+import { POST as CANCEL } from "@/app/api/matflow/ct/cancel-create/route";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 let db: TestDb, close: () => Promise<void>, actor: SessionUser, peer: SessionUser, skuId: number, warehouseId: number;
@@ -100,6 +101,60 @@ it("database enforces immutable and unique receipts", async () => {
   await expect(db.delete(s.ctCreateRequests).where(eq(s.ctCreateRequests.id, r.id))).rejects.toThrow();
   await expect(db.execute(sql`TRUNCATE ct_create_requests`)).rejects.toThrow();
   await expect(db.insert(s.ctCreateRequests).values({ requestedBy: r.requestedBy, requestKey: r.requestKey, ctDocId: r.ctDocId, requestHash: r.requestHash })).rejects.toThrow();
+});
+it("cancellation fences the account/key without numbering, source reads, documents or inventory", async () => {
+  const body = input(), before = await snapshot();
+  await db.update(s.warehouses).set({ active: false }).where(eq(s.warehouses.id, warehouseId));
+  const result = await cancelCtCreateRequest(actor, { requestKey: body.requestKey.toUpperCase() }, db);
+  expect(result).toEqual({ requestKey: body.requestKey, document: null, cancelled: true });
+  const after = await snapshot();
+  for (const key of ["docs", "lines", "counters", "ledger"] as const) expect(after[key]).toEqual(before[key]);
+  expect(after.receipt).toHaveLength(before.receipt.length + 1); expect(after.audits).toHaveLength(before.audits.length + 1);
+  expect(after.receipt.at(-1)).toMatchObject({ cancelled: true, requestHash: null, ctDocId: null });
+  expect(after.audits.at(-1)).toMatchObject({ userId: actor.id, entity: "ct_create_request", action: "cancel", after: { requestKey: body.requestKey, cancelled: true, documentId: null } });
+  expect(await cancelCtCreateRequest(actor, { requestKey: body.requestKey }, db)).toEqual(result);
+  expect(await getCtCreateResult(actor, body.requestKey, db)).toEqual(result);
+  await expect(createCtRequest(actor, body, db)).rejects.toMatchObject({ status: 409 });
+  await expect(createCtRequest(actor, { ...body, remark: "different intent" }, db)).rejects.toMatchObject({ status: 409 });
+  expect(await snapshot()).toEqual(after);
+});
+it("cancelling after creation returns the original document without cancelling it or adding audit", async () => {
+  const body = input(), created = await createCtRequest(actor, body, db), before = await snapshot();
+  expect(await cancelCtCreateRequest(actor, { requestKey: body.requestKey }, db)).toEqual(created);
+  expect(await snapshot()).toEqual(before);
+});
+it("cancellation audit failure rolls back the fence and a later create is still possible", async () => {
+  const body = input(), before = await snapshot(); vi.spyOn(audit, "writeAudit").mockRejectedValueOnce(Error("cancel audit fault"));
+  await expect(cancelCtCreateRequest(actor, { requestKey: body.requestKey }, db)).rejects.toThrow("cancel audit fault");
+  expect(await snapshot()).toEqual(before); expect((await getCtCreateResult(actor, body.requestKey, db)).document).toBeNull();
+  expect((await createCtRequest(actor, body, db)).document.status).toBe("draft");
+});
+it("cancellation and lookup are account scoped; a peer does not cancel this actor's request", async () => {
+  const body = input(); await cancelCtCreateRequest(peer, { requestKey: body.requestKey }, db);
+  expect(await getCtCreateResult(actor, body.requestKey, db)).toEqual({ requestKey: body.requestKey, document: null });
+  expect((await createCtRequest(actor, body, db)).document.status).toBe("draft");
+});
+it.each(["disabled", "role", "session"])("%s cannot cancel new or existing requests", async reason => {
+  const body = input(); await cancelCtCreateRequest(actor, { requestKey: body.requestKey }, db);
+  await db.update(s.users).set(reason === "disabled" ? { active: false } : reason === "role" ? { roles: ["ops"] } : { sessionVersion: actor.sessionVersion! + 1 }).where(eq(s.users.id, actor.id));
+  const before = await snapshot();
+  for (const key of [body.requestKey, randomUUID()]) await expect(cancelCtCreateRequest(actor, { requestKey: key }, db)).rejects.toMatchObject({ status: reason === "session" ? 401 : 403 });
+  expect(await snapshot()).toEqual(before);
+});
+it("database rejects mixed or empty creation outcomes and keeps cancellation immutable", async () => {
+  const body = input(); await cancelCtCreateRequest(actor, { requestKey: body.requestKey }, db);
+  const [r] = await db.select().from(s.ctCreateRequests).where(eq(s.ctCreateRequests.requestKey, body.requestKey));
+  await expect(db.update(s.ctCreateRequests).set({ cancelled: false }).where(eq(s.ctCreateRequests.id, r.id))).rejects.toThrow();
+  await expect(db.delete(s.ctCreateRequests).where(eq(s.ctCreateRequests.id, r.id))).rejects.toThrow();
+  for (const invalid of [{}, { cancelled: true, requestHash: "a".repeat(64) }, { cancelled: false, requestHash: "a".repeat(64) }])
+    await expect(db.insert(s.ctCreateRequests).values({ requestedBy: actor.id, requestKey: randomUUID(), ...invalid })).rejects.toThrow();
+});
+it("cancel HTTP authenticates first, rejects extra input and returns a no-store terminal result", async () => {
+  const post = (body: unknown) => CANCEL(new NextRequest("http://localhost/api/matflow/ct/cancel-create", { method: "POST", body: JSON.stringify(body) }));
+  expect((await post({})).status).toBe(401); token = actor;
+  const body = { requestKey: randomUUID() }; expect((await post({ ...body, actorId: peer.id })).status).toBe(400);
+  const r = await post(body); expect(r.status).toBe(200); expect(r.headers.get("cache-control")).toBe("no-store");
+  expect(await r.json()).toEqual({ ...body, document: null, cancelled: true });
 });
 it("HTTP requires a key and lookup rejects ambiguous parameters, returns no-store and current account only", async () => {
   token = actor; const body = input();

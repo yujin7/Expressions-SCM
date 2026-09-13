@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ctCreateRequests, ctDocs } from "@/db/schema";
 import { currentWriteActor } from "@/server/core/current-write-actor";
+import { writeAudit } from "@/server/core/audit";
 import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { resolveDb, type AnyDb } from "@/server/core/svc";
@@ -43,6 +44,8 @@ export async function createCtRequest(user: SessionUser, input: unknown, dbArg?:
     await lock(tx, actor.id, requestKey);
     const [receipt] = await tx.select().from(ctCreateRequests).where(and(eq(ctCreateRequests.requestedBy, actor.id), eq(ctCreateRequests.requestKey, requestKey)));
     if (receipt) {
+      if (receipt.cancelled) throw new ApiError(409, "原建单请求已取消，不会再生成退货单；请核对取消结果后准备下一笔");
+      if (receipt.ctDocId == null) throw new ApiError(409, "原建单回执不完整，请联系管理员核对");
       if (receipt.requestHash !== requestHash) throw new ApiError(409, "原请求已创建不同内容的采购退货单，请先找回原单，不要改换内容重试");
       return { requestKey, document: await currentDocument(tx, actor.id, receipt.ctDocId) };
     }
@@ -59,6 +62,28 @@ export async function getCtCreateResult(user: SessionUser, requestKey: string, d
     const actor = await currentActor(tx, user);
     await lock(tx, actor.id, key);
     const [receipt] = await tx.select().from(ctCreateRequests).where(and(eq(ctCreateRequests.requestedBy, actor.id), eq(ctCreateRequests.requestKey, key)));
-    return { requestKey: key, document: receipt ? await currentDocument(tx, actor.id, receipt.ctDocId) : null };
+    if (receipt?.cancelled) return { requestKey: key, document: null, cancelled: true as const };
+    if (receipt && receipt.ctDocId == null) throw new ApiError(409, "原建单回执不完整，请联系管理员核对");
+    return { requestKey: key, document: receipt ? await currentDocument(tx, actor.id, receipt.ctDocId!) : null };
+  });
+}
+
+/** One immutable outcome per account/key: cancellation fences all delayed creation, never voids a CT. */
+export async function cancelCtCreateRequest(user: SessionUser, input: unknown, dbArg?: AnyDb) {
+  const { requestKey: key } = z.object({ requestKey: ctRequestKeySchema }).strict().parse(input);
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentActor(tx, user);
+    await lock(tx, actor.id, key);
+    const [receipt] = await tx.select().from(ctCreateRequests).where(and(eq(ctCreateRequests.requestedBy, actor.id), eq(ctCreateRequests.requestKey, key)));
+    if (receipt) {
+      if (receipt.cancelled) return { requestKey: key, document: null, cancelled: true as const };
+      if (receipt.ctDocId == null) throw new ApiError(409, "原建单回执不完整，请联系管理员核对");
+      return { requestKey: key, document: await currentDocument(tx, actor.id, receipt.ctDocId) };
+    }
+    const [saved] = await tx.insert(ctCreateRequests).values({ requestedBy: actor.id, requestKey: key, cancelled: true }).returning({ id: ctCreateRequests.id });
+    await writeAudit(tx, { userId: actor.id, entity: "ct_create_request", entityId: saved.id, action: "cancel",
+      after: { requestKey: key, cancelled: true, documentId: null } });
+    return { requestKey: key, document: null, cancelled: true as const };
   });
 }
