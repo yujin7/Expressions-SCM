@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Button, Descriptions, Drawer, Form, Input, Select, Skeleton, Space, Switch, Table, Tag, Typography } from "antd";
+import { Alert, Button, Descriptions, Drawer, Form, Input, Select, Skeleton, Space, Switch, Table, Tag, Typography } from "antd";
 import CrudTable from "@/components/CrudTable";
 import { useDocumentRead } from "@/components/useDocumentRead";
 import { useListState } from "@/components/useListState";
@@ -22,6 +22,8 @@ interface WarehouseRow {
   supplierName: string | null;
   parentId: number | null;
   active: boolean;
+  /** Detail-only evidence, never inferred from a partial list row or a zero balance. */
+  identityUsage?: string[];
 }
 
 const KIND_COLORS: Record<string, string> = {
@@ -211,8 +213,16 @@ export default function WarehouseClient() {
             render: (v: boolean) => (v ? <Tag color="success">启用</Tag> : <Tag>停用</Tag>),
           },
         ]}
-        formItems={(editing) => (
+        formItems={(editing) => {
+          const identityKnown = Array.isArray(editing?.identityUsage);
+          const identityLocked = editing != null && (!identityKnown || editing.identityUsage!.length > 0);
+          return (
           <>
+            {identityLocked && <Alert type="info" showIcon style={{ marginBottom: 16 }}
+              message={identityKnown ? "仓库类型与加工厂归属已受保护" : "仓库身份依据未完整返回"}
+              description={identityKnown
+                ? `已有${editing!.identityUsage!.join("、")}。名称、层级、区域及启停仍可维护；改厂或改类型请新建正确仓库，再核对原单或正式调拨，不可用改主档转移历史库存。`
+                : "请关闭后重试读取；当前不能修改类型或加工厂归属。"} />}
             <Form.Item name="code" label="编码" rules={[{ required: true, message: "编码必填" }]}>
               <Input maxLength={30} placeholder="如 WH-CP" />
             </Form.Item>
@@ -220,7 +230,7 @@ export default function WarehouseClient() {
               <Input maxLength={50} />
             </Form.Item>
             <Form.Item name="kind" label="类型" rules={[{ required: true, message: "必须选择仓库类型" }]}>
-              <Select options={toOptions(WAREHOUSE_KIND_LABELS)} placeholder="选择仓库类型" />
+              <Select disabled={identityLocked} options={toOptions(WAREHOUSE_KIND_LABELS)} placeholder="选择仓库类型" />
             </Form.Item>
             <Form.Item
               name="regionCode"
@@ -245,6 +255,7 @@ export default function WarehouseClient() {
                     rules={[{ required: true, message: "委外仓必须指定供应商" }]}
                   >
                     <RemoteSelect
+                      disabled={identityLocked}
                       api="/api/master/supplier"
                       getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
                       filterRow={(r) => Array.isArray(r.kinds) && (r.kinds as string[]).includes("processor")}
@@ -271,7 +282,8 @@ export default function WarehouseClient() {
               <Switch checkedChildren="启用" unCheckedChildren="停用" />
             </Form.Item>
           </>
-        )}
+          );
+        }}
       />
       <WarehousePanoramaDrawer id={panoId} onClose={() => setPanoId(null)} />
     </div>
