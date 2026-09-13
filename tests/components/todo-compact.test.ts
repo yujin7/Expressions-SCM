@@ -45,6 +45,8 @@ vi.mock("@/components/fetchJson", () => ({ fetchJson: async (url: string, init?:
     originalIntent: { expectedVersion: body.expectedVersion, status: body.status ?? null, assigneeId: body.assigneeId ?? null, note: body.note }, originalResult: snapshot } };
 } }));
 vi.mock("@/components/useMe", () => ({ useMe: () => m.me }));
+// DOM focus lifecycle is verified by dedicated hook tests and actual browser scenarios.
+vi.mock("@/components/useDialogReturnFocus", () => ({ useDialogReturnFocus: () => ({ scopeRef: { current: null }, remember: vi.fn() }) }));
 vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: m.filters, page: 1, pageSize: 20, density: "small", tableSize: "small",
   setFilter: m.setFilter, paginationProps: ({ total }: { total: number }) => ({ total, current: 1, pageSize: 20, onChange: m.setPage }) }) }));
 vi.mock("@/components/ListToolbar", () => ({ default: "toolbar" }));

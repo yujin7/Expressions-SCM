@@ -29,6 +29,7 @@ import TodoHistoryDrawer from "./TodoHistoryDrawer";
 import TodoNoteRecovery from "./TodoNoteRecovery";
 import TodoMutationRecovery from "./TodoMutationRecovery";
 import TodoAssignDrawer from "./TodoAssignDrawer";
+import { useDialogReturnFocus } from "@/components/useDialogReturnFocus";
 import styles from "./todo-client.module.css";
 
 export interface WorkItemRow {
@@ -127,6 +128,7 @@ export function ItemTable({ view, prefix, refreshKey, onChanged }: { view: "mine
   }, [actorId]);
   const [historyItem, setHistoryItem] = useState<WorkItemRow | null>(null);
   const [assignRow, setAssignRow] = useState<WorkItemRow | null>(null);
+  const focus = useDialogReturnFocus(!!historyItem || !!assignRow);
   const listState = useListState<Filters>({
     key: `todo-${view}`,
     defaults: { q: "", status: view === "mine" ? "active" : "", ownerRole: "", overdue: "", sortBy: "", sortOrder: "" },
@@ -232,7 +234,7 @@ export function ItemTable({ view, prefix, refreshKey, onChanged }: { view: "mine
         const source = workItemSourceAction(r);
         return (
           <Space size={4} wrap>
-            <Button size="small" disabled={disabled} onClick={() => setHistoryItem(r)}>跟进记录</Button>
+            <Button size="small" disabled={disabled} data-dialog-return={`history:${r.id}`} onClick={event => { focus.remember(event.currentTarget, `history:${r.id}`); setHistoryItem(r); }}>跟进记录</Button>
             {r.status === "open" ? <Button size="small" disabled={disabled} onClick={() => act(r, { status: "in_progress" })}>开始</Button> : null}
             {active ? <Tooltip title={source?.completionHint}><Button size="small" type="primary" disabled={disabled} loading={busy} onClick={() => act(r, { status: "done" })}>完成待办</Button></Tooltip> : null}
             {!active ? <Button size="small" disabled={disabled} onClick={() => act(r, { status: "open" })}>重新打开</Button> : null}
@@ -245,7 +247,7 @@ export function ItemTable({ view, prefix, refreshKey, onChanged }: { view: "mine
                   { type: "divider" },
                   { key: "cancel", label: "取消待办", danger: true, onClick: () => void act(r, { status: "cancelled" }) },
                 ] }}
-              ><Button size="small" disabled={disabled} aria-label={`待办 ${r.id} 的更多操作`}>更多</Button></Dropdown>
+              ><Button size="small" disabled={disabled} data-dialog-return={`assign:${r.id}`} onClick={event => focus.remember(event.currentTarget, `assign:${r.id}`)} aria-label={`待办 ${r.id} 的更多操作`}>更多</Button></Dropdown>
             ) : null}
           </Space>
         );
@@ -254,7 +256,7 @@ export function ItemTable({ view, prefix, refreshKey, onChanged }: { view: "mine
   const feedbackSource = feedback ? workItemSourceAction(feedback.row) : null;
 
   return (
-    <section className={styles.list} aria-label={view === "mine" ? "我的待办列表" : "全部待办列表"}>
+    <section className={styles.list} ref={focus.scopeRef} tabIndex={-1} aria-label={view === "mine" ? "我的待办列表" : "全部待办列表"}>
       <ListToolbar
         state={listState}
         extra={(
@@ -498,7 +500,7 @@ export default function TodoClient() {
   ], [tick, bump, actorKey]);
 
   return (
-    <div>
+    <section data-dialog-fallback tabIndex={-1} aria-label="待办任务工作区">
       {me ? <TodoCreation key={`${me.id}:${me.roles.join(",")}`} actorId={me.id} defaultAssigneeId={me.id}
         roleOptions={ROLE_OPTIONS} priorityOptions={Object.entries(PRIORITY_LABEL).map(([value, label]) => ({ value, label }))} onChanged={bump} /> : null}
       <CaliberNote
@@ -514,6 +516,6 @@ export default function TodoClient() {
         destroyOnHidden={false}
         items={items}
       />
-    </div>
+    </section>
   );
 }

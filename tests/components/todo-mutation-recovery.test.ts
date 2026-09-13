@@ -1,6 +1,8 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import TodoMutationRecovery, { TodoMutationRecoveryDrawer } from "@/app/(app)/todo/TodoMutationRecovery";
+// DOM focus lifecycle is verified by dedicated hook tests and actual browser scenarios.
+vi.mock("@/components/useDialogReturnFocus", () => ({ useDialogReturnFocus: () => ({ scopeRef: { current: null }, remember: vi.fn() }) }));
 import { loadTodoMutation, prepareTodoMutation, TODO_MUTATION_CHANGED, TODO_MUTATION_OPEN, type TodoMutationLookup, type TodoMutationRequest } from "@/components/todo-mutation-request";
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false, unmounted: false, lateWrites: 0 }));
 const m = vi.hoisted(() => ({ fetch: vi.fn(), close: vi.fn(), confirmed: vi.fn() }));
