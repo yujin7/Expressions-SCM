@@ -10,7 +10,7 @@ import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
 import { checkBatchAfterPoReceipt, createBatchJg } from "@/server/modules/outsource/auto-chain";
-import { approveWo, createWo, generateDocs, submitWo } from "@/server/modules/outsource/wo";
+import { approveWo, createWo, generateDocs, submitWo, transitionWO, withdrawWO } from "@/server/modules/outsource/wo";
 import { getReceiptBatchReview } from "@/server/modules/matflow/receipt-batch-status";
 import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
@@ -349,8 +349,31 @@ async function main() {
     assert.equal((await db.select().from(s.woLines).where(eq(s.woLines.woId, upWo.id))).length, 1);
     assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "wo"), eq(s.auditLogs.entityId, upWo.id), eq(s.auditLogs.action, "snapshot")))).length, 1);
     console.log("PASS simultaneous WO approval returns the committed replay with exactly one snapshot");
+    const withdrawing = await createWo(pmc, upstreamInput, db);
+    const withdrawalPending = await submitWo(pmc, withdrawing.id, withdrawing.version, db);
+    const withdrawRace = await race(tx => withdrawWO(pmc, withdrawing.id, { version: withdrawalPending.version }, tx),
+      () => approveWo(upChecker, withdrawing.id, { action: "approve", version: withdrawalPending.version }, other));
+    assert(!withdrawRace.second.ok); assert.equal(withdrawRace.second.error.status, 409);
+    assert.equal((await db.select().from(s.woDocs).where(eq(s.woDocs.id, withdrawing.id)))[0].status, "draft");
+    assert.equal((await db.select().from(s.woLines).where(eq(s.woLines.woId, withdrawing.id))).length, 0);
+    console.log("PASS WO approval waits for withdrawal and cannot freeze a withdrawn draft");
+    const disabledWithdrawalOwner = await actor(["pmc"]);
+    const disabledWithdrawal = await createWo(disabledWithdrawalOwner, upstreamInput, db);
+    const disabledPending = await submitWo(disabledWithdrawalOwner, disabledWithdrawal.id, disabledWithdrawal.version, db);
+    const withdrawDisabled = await race(tx => tx.update(s.users).set({ active: false }).where(eq(s.users.id, disabledWithdrawalOwner.id)),
+      () => withdrawWO(disabledWithdrawalOwner, disabledWithdrawal.id, { version: disabledPending.version }, other));
+    assert(!withdrawDisabled.second.ok); assert.equal(withdrawDisabled.second.error.status, 403);
+    assert.equal((await db.select().from(s.woDocs).where(eq(s.woDocs.id, disabledWithdrawal.id)))[0].status, "pending");
+    console.log("PASS WO withdrawal waits for account disabling and rejects stale ownership credentials");
+    const closureManager = await actor(["pmc"]);
+    const approvedWo = (await db.select().from(s.woDocs).where(eq(s.woDocs.id, upWo.id)))[0];
+    const closeRevoked = await race(tx => tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, closureManager.id)),
+      () => transitionWO(closureManager, upWo.id, { action: "short_close", version: approvedWo.version, reason: "合成并发资格核验" }, other));
+    assert(!closeRevoked.second.ok); assert.equal(closeRevoked.second.error.status, 403);
+    assert.equal((await db.select().from(s.woDocs).where(eq(s.woDocs.id, upWo.id)))[0].status, "approved");
+    console.log("PASS WO closure waits for management-role revocation and preserves approved state");
     const browserBatch = await batchSource();
-    console.log(JSON.stringify({ passed: true, cases: 36, fixture: key, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    console.log(JSON.stringify({ passed: true, cases: 39, fixture: key, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));

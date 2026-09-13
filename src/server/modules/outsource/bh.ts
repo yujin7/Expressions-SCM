@@ -13,6 +13,7 @@ import { approveDocSchema, createBhSchema, transitionDocSchema, updateBhSchema, 
 import { createdWithinShanghaiDays, skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
 import { getBhOrigin } from "./bh-origin";
+import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
 /** 备货申请单 BH（《02》§3：运营发起，PMC 审批） */
 
@@ -240,7 +241,7 @@ export type BhListUser = BhReadUser;
  */
 export async function listBhs(
   q: string,
-  opts: { status?: string; from?: string; to?: string; page: number; pageSize: number },
+  opts: { status?: string; from?: string; to?: string; page: number; pageSize: number; selectedValues?: SelectedOptionValue[] },
   dbArg?: AnyDb,
   user?: BhListUser,
 ): Promise<{ rows: unknown[]; total: number }> {
@@ -252,6 +253,8 @@ export async function listBhs(
   conds.push(...createdWithinShanghaiDays(bhDocs.createdAt, opts.from, opts.to));
   const scope = bhReadScope(db, user);
   if (scope) conds.push(scope);
+  const selected = selectedOptionsPredicate(opts.selectedValues, { id: bhDocs.id, text: [bhDocs.docNo] });
+  if (selected) conds.push(selected);
   const where = conds.length ? and(...conds) : undefined;
 
   const lineAgg = db
@@ -279,8 +282,8 @@ export async function listBhs(
       .leftJoin(users, eq(bhDocs.createdBy, users.id))
       .where(where)
       .orderBy(desc(bhDocs.createdAt), desc(bhDocs.id))
-      .limit(opts.pageSize)
-      .offset((opts.page - 1) * opts.pageSize),
+      .limit(opts.selectedValues === undefined ? opts.pageSize : SELECTED_OPTIONS_LIMIT)
+      .offset(opts.selectedValues === undefined ? (opts.page - 1) * opts.pageSize : 0),
     db.select({ total: sql<number>`count(*)::int` }).from(bhDocs).where(where),
   ]);
   return { rows, total };

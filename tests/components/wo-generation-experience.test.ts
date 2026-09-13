@@ -1,16 +1,17 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import WoClient from "@/app/(app)/outsource/wo/wo-client";
+import WoClient, { WoActions } from "@/app/(app)/outsource/wo/wo-client";
+import type { WoTaskActions } from "@/server/modules/outsource/wo-task-actions";
 
 // Lifecycle/callback proof, not AntD rendering. Layout is checked in the isolated browser.
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false, id: 18, permitted: true,
-  formIndex: 0, values: {} as Record<string, unknown>, validate: vi.fn(), post: vi.fn(), retry: vi.fn(), success: vi.fn(), error: vi.fn(), destroy: vi.fn(),
+  formIndex: 0, values: {} as Record<string, unknown>, setField: vi.fn(), validate: vi.fn(), post: vi.fn(), retry: vi.fn(), success: vi.fn(), error: vi.fn(), destroy: vi.fn(),
   generated: { phase: "success", data: { rows: [] as { docNo: string }[] } },
 }));
 vi.mock("antd", () => ({ App: { useApp: () => ({ message: { error: h.error, success: vi.fn() }, modal: { success: h.success } }) },
   Alert: "alert", Button: "button", Modal: "modal", Space: "space", Table: "table", Tabs: "tabs", Tag: "tag", Tooltip: "tooltip", Divider: "divider", Popconfirm: "popconfirm", Select: "select", DatePicker: "date", InputNumber: "number",
   Input: Object.assign("input", { TextArea: "textarea" }), Descriptions: Object.assign("descriptions", { Item: "description" }), Typography: { Title: "title", Paragraph: "paragraph", Text: "text", Link: "link" },
-  Form: Object.assign(() => null, { Item: "form-item", List: "form-list", useForm: () => [{ resetFields: vi.fn(), setFieldsValue: (v: Record<string, unknown>) => { h.values = v; }, validateFields: h.validate }] }),
+  Form: Object.assign(() => null, { Item: "form-item", List: "form-list", useForm: () => [{ resetFields: vi.fn(), setFieldValue: h.setField, setFieldsValue: (v: Record<string, unknown>) => { h.values = v; }, validateFields: h.validate }] }),
 }));
 vi.mock("next/link", () => ({ default: "a" }));
 vi.mock("@/components/useMe", () => ({ useMe: () => ({}), hasAnyRole: () => h.permitted }));
@@ -28,7 +29,7 @@ vi.mock("@/components/fetchJson", () => ({ fetchJson: async () => ({ rows: [], t
 vi.mock("@/components/useLatestRead", () => ({ useLatestRead: () => () => ({ signal: undefined, isCurrent: () => true }) }));
 vi.mock("@/components/useDocumentTarget", () => ({ useDocumentTarget: () => ({ id: h.id, present: true, setId: (id: number) => { h.id = id; } }) }));
 vi.mock("@/components/useDocumentRead", () => ({ useDocumentRead: (url: string) => url?.includes("/jg?") ? { ...h.generated, retry: h.retry } : ({ phase: "success", retry: h.retry, data: {
-  id: h.id, docNo: `WO-${h.id}`, status: "approved", qty: "100.0000", supplierId: 7, approvals: [], lines: [{ id: 1, materialSkuId: 9, skuCode: "MAT9", skuName: "物料", suggestedQty: "0.0000", grossReq: "100.0000" }],
+  id: h.id, docNo: `WO-${h.id}`, status: "approved", qty: "100.0000", supplierId: 7, taskActions: { generate: h.permitted, reason: "核对后生成" }, approvals: [], lines: [{ id: 1, materialSkuId: 9, skuCode: "MAT9", skuName: "物料", suggestedQty: "0.0000", grossReq: "100.0000" }],
 } }) }));
 vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: "", status: "", from: "", to: "" }, page: 1, pageSize: 20, tableSize: "small", paginationProps: () => ({}) }) }));
 vi.mock("react", async original => ({ ...await original<typeof import("react")>(),
@@ -69,6 +70,13 @@ it("role and existing-generation checks gate the button; zero suggestion opens w
   open(); expect(h.values.poGroups).toEqual([]); expect(h.values.jgQty).toBe("100.0000");
   expect(dialog().props.zIndex).toBe(1100); // sibling drawer defaults to 1000, so portal creation order cannot cover the form
 });
+it("BH source uses bounded shared remote selection and clears stale manual type for authoritative inheritance", () => {
+  const source = nodes(render()).find(n => n.type === "remote" && n.props.api === "/api/outsource/bh?status=approved")!;
+  expect(source).toBeDefined();
+  expect((source.props.getLabel as (r: Record<string, unknown>) => string)({ docNo: "BH-001", orderType: null })).toBe("BH-001");
+  (source.props.onChange as () => void)();
+  expect(h.setField).toHaveBeenLastCalledWith("orderType", undefined);
+});
 it("same-tick double submit is blocked before asynchronous form validation", async () => {
   open(); const validation = Promise.withResolvers<Record<string, unknown>>(), write = Promise.withResolvers<unknown>(); h.validate.mockReturnValue(validation.promise); h.post.mockReturnValue(write.promise);
   submit(); submit(); expect(h.validate).toHaveBeenCalledTimes(1); expect(dialog().props.closable).toBe(false);
@@ -98,4 +106,36 @@ it("unmount during write cannot publish a receipt or refresh another screen", as
   open(); const write = Promise.withResolvers<unknown>(); h.post.mockReturnValue(write.promise); submit(); await flush();
   for (const fn of h.cleanups.values()) fn(); h.cleanups.clear();
   write.resolve({ pos: [], jg: { id: 42, docNo: "JG-42" } }); await flush(); expect(h.success).not.toHaveBeenCalled(); expect(h.retry).not.toHaveBeenCalled();
+});
+
+const hints: WoTaskActions = { submit: false, approve: false, reject: false, withdraw: false, generate: false, manage: false, reason: "测试资格" };
+function actions(taskActions: WoTaskActions | null, opts: { status?: string; blocked?: boolean; onError?: (s: string) => void; onChanged?: () => void } = {}) {
+  h.cursor = 0;
+  const tree = WoActions({ doc: { id: 18, version: 2, status: opts.status ?? "pending", taskActions }, blocked: opts.blocked ?? false, onError: opts.onError ?? h.error, onChanged: opts.onChanged ?? h.retry });
+  for (const fn of h.effects.splice(0)) fn();
+  return nodes(tree);
+}
+it("WO actions follow server hints: maker only withdraws, checker can independently reject, unknown/read-only shows no write", () => {
+  expect(actions(null)).toEqual([]);
+  expect(actions({ ...hints, withdraw: true }).filter(n => n.type === "button").map(n => n.props.children)).toEqual(["撤回"]);
+  const checker = actions({ ...hints, reject: true });
+  expect(checker.filter(n => n.type === "button").map(n => n.props.children)).toEqual(["驳回"]);
+  expect(checker.find(n => n.type === "modal")?.props.zIndex).toBe(1100);
+  expect(actions({ ...hints, submit: true }, { status: "draft", blocked: true })).toEqual([]);
+  expect(actions({ ...hints }, { status: "approved" })).toEqual([]);
+});
+it("WO action guards same-tick repeated confirms and keeps unconfirmed results blocked pending GET", async () => {
+  const wait = Promise.withResolvers<unknown>(); h.post.mockReturnValue(wait.promise);
+  const confirm = actions({ ...hints, submit: true }, { status: "draft" }).find(n => n.type === "popconfirm")!.props.onConfirm as () => void;
+  confirm(); confirm(); expect(h.post).toHaveBeenCalledTimes(1);
+  wait.reject(Error("connection interrupted")); for (let i = 0; i < 15; i++) await Promise.resolve();
+  expect(h.error).toHaveBeenCalledWith(expect.stringContaining("先刷新核对"));
+  confirm(); expect(h.post).toHaveBeenCalledTimes(1); expect(h.retry).not.toHaveBeenCalled();
+});
+it("WO action completion after unmount cannot refresh or report against another document", async () => {
+  const wait = Promise.withResolvers<unknown>(); h.post.mockReturnValue(wait.promise);
+  const confirm = actions({ ...hints, withdraw: true }).find(n => n.type === "popconfirm")!.props.onConfirm as () => void;
+  confirm(); for (const fn of h.cleanups.values()) fn(); h.cleanups.clear();
+  wait.resolve({ status: "draft" }); for (let i = 0; i < 15; i++) await Promise.resolve();
+  expect(h.retry).not.toHaveBeenCalled(); expect(h.error).not.toHaveBeenCalled();
 });

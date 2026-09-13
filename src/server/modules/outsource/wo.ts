@@ -8,6 +8,7 @@ import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { currentWriteActor } from "@/server/core/current-write-actor";
 import { loadUserScopes } from "@/server/core/data-scope";
+import { loadWoTaskActions } from "./wo-task-actions";
 import { bhReadScope } from "@/server/core/bh-read-scope";
 import {
   BomCycleError,
@@ -480,7 +481,7 @@ export async function generateDocs(
 
 // ---------- 查询 ----------
 
-export async function getWo(id: number, dbArg?: AnyDb) {
+export async function getWo(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const [doc] = await db
     .select({
@@ -532,7 +533,7 @@ export async function getWo(id: number, dbArg?: AnyDb) {
 
   const approvalRows = await loadApprovalHistory(db, "wo", id);
 
-  return { ...doc, lines, approvals: approvalRows };
+  return { ...doc, lines, approvals: approvalRows, taskActions: await loadWoTaskActions(db, doc, user) };
 }
 
 export async function listWos(
@@ -587,15 +588,18 @@ export async function withdrawWO(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      const [doc] = await tx.select({ id: woDocs.id }).from(woDocs).where(eq(woDocs.id, id)).for("update");
+      if (!doc) throw new ApiError(404, "单据不存在");
       const r = await withdrawDoc(tx, {
         docType: "wo",
         table: woDocs,
         docId: id,
-        user: { id: user.id, roles: user.roles },
+        user: actor,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
-      await writeAudit(tx, { userId: user.id, entity: "wo", entityId: id, action: "withdraw" });
+      await writeAudit(tx, { userId: actor.id, entity: "wo", entityId: id, action: "withdraw" });
       return r;
     });
   } catch (e) {
@@ -615,22 +619,25 @@ export async function transitionWO(
   dbArg?: AnyDb,
 ): Promise<{ status: string; idempotent: boolean }> {
   const v = transitionDocSchema.parse(input);
-  if (v.action !== "void" && v.action !== "reopen") requireAnyRole(user, "pmc", "ops");
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      if (v.action !== "void" && v.action !== "reopen") requireAnyRole(actor, "pmc", "ops");
+      const [doc] = await tx.select({ id: woDocs.id }).from(woDocs).where(eq(woDocs.id, id)).for("update");
+      if (!doc) throw new ApiError(404, "单据不存在");
       const r = await transitionDoc(tx, {
         docType: "wo",
         table: woDocs,
         docId: id,
-        user: { id: user.id, roles: user.roles },
+        user: actor,
         action: v.action,
         reason: v.reason,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
       await writeAudit(tx, {
-        userId: user.id, entity: "wo", entityId: id, action: v.action,
+        userId: actor.id, entity: "wo", entityId: id, action: v.action,
         after: { status: r.status, reason: v.reason ?? null },
       });
       return r;

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import * as s from "@/db/schema";
 import * as audit from "@/server/core/audit";
-import { approveWo, createWo, submitWo } from "@/server/modules/outsource/wo";
+import { approveWo, createWo, getWo, submitWo, transitionWO, withdrawWO } from "@/server/modules/outsource/wo";
 import { createWoSchema } from "@/server/modules/outsource/schemas";
 import type { SessionUser } from "@/server/core/dto";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -151,4 +151,47 @@ it("submit rejects malformed IDs and versions before querying", async () => {
     await expect(submitWo(f.actor, invalid, 1, db)).rejects.toMatchObject({ status: 400 });
     await expect(submitWo(f.actor, 1, invalid, db)).rejects.toMatchObject({ status: 400 });
   }
+});
+it("detail hints follow current actor/configuration, not caller claims, and retain separate rejection and withdrawal", async () => {
+  const f = await fixture(), wo = await createWo(f.actor, f.input, db);
+  const read = (user?: SessionUser) => getWo(wo.id, db, user);
+  expect((await read()).taskActions).toBeNull();
+  expect((await read(f.actor)).taskActions).toMatchObject({ submit: true, approve: false });
+  expect((await read({ ...f.other, roles: ["admin"] })).taskActions).toMatchObject({ submit: false });
+  await submitWo(f.actor, wo.id, wo.version, db);
+  expect((await read(f.actor)).taskActions).toMatchObject({ approve: false, reject: false, withdraw: true });
+  expect((await read(f.checker)).taskActions).toMatchObject({ approve: true, reject: true, withdraw: false });
+  await db.update(s.approvalConfigs).set({ approverRole: "quality" }).where(eq(s.approvalConfigs.docType, "wo"));
+  try { expect((await read(f.checker)).taskActions).toMatchObject({ approve: false, reject: false }); }
+  finally { await db.update(s.approvalConfigs).set({ approverRole: "pmc" }).where(eq(s.approvalConfigs.docType, "wo")); }
+  await db.update(s.users).set({ active: false }).where(eq(s.users.id, f.checker.id));
+  expect((await read(f.checker)).taskActions).toBeNull();
+  expect((await read({ ...f.actor, sessionVersion: 999 })).taskActions).toBeNull();
+});
+it("withdraw rechecks current owner/admin, rolls audit failure back, and legal replay adds no second event", async () => {
+  const f = await fixture(), wo = await createWo(f.actor, f.input, db), pending = await submitWo(f.actor, wo.id, wo.version, db);
+  const before = await state();
+  await expect(withdrawWO({ ...f.other, roles: ["admin"] }, wo.id, { version: pending.version }, db)).rejects.toMatchObject({ status: 403 });
+  const spy = vi.spyOn(audit, "writeAudit").mockRejectedValueOnce(Error("withdraw audit failure"));
+  try { await expect(withdrawWO(f.actor, wo.id, { version: pending.version }, db)).rejects.toThrow("withdraw audit failure"); }
+  finally { spy.mockRestore(); }
+  expect(await state()).toEqual(before);
+  await withdrawWO(f.actor, wo.id, { version: pending.version }, db);
+  expect(await withdrawWO(f.actor, wo.id, { version: pending.version }, db)).toMatchObject({ idempotent: true });
+  expect(await events(wo.id, "withdraw")).toHaveLength(1);
+});
+it("manual closure cannot use revoked PMC/admin claims, including after successful closure", async () => {
+  const f = await fixture(), wo = await createWo(f.actor, f.input, db);
+  await db.update(s.woDocs).set({ status: "approved" }).where(eq(s.woDocs.id, wo.id));
+  const input = { action: "short_close", version: wo.version, reason: "合成停单核对" };
+  await expect(transitionWO({ ...f.other, roles: ["pmc"] }, wo.id, input, db)).rejects.toMatchObject({ status: 403 });
+  const spy = vi.spyOn(audit, "writeAudit").mockRejectedValueOnce(Error("close audit failure"));
+  try { await expect(transitionWO(f.actor, wo.id, input, db)).rejects.toThrow("close audit failure"); }
+  finally { spy.mockRestore(); }
+  expect((await getWo(wo.id, db, f.actor)).taskActions).toMatchObject({ manage: true, generate: true });
+  await transitionWO(f.actor, wo.id, input, db);
+  expect((await getWo(wo.id, db, f.actor)).taskActions).toMatchObject({ manage: false, generate: false });
+  await db.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, f.actor.id));
+  await expect(transitionWO(f.actor, wo.id, input, db)).rejects.toMatchObject({ status: 403 });
+  expect(await events(wo.id, "short_close")).toHaveLength(1);
 });

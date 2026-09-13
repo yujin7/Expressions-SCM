@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { createBh, listBhs } from "@/server/modules/outsource/bh";
+import { parseSelectedValues } from "@/server/core/selected-options";
 
 export async function GET(req: NextRequest) {
   try {
@@ -16,6 +17,7 @@ export async function GET(req: NextRequest) {
         to: searchParams.get("to") ?? undefined,
         page,
         pageSize,
+        selectedValues: parseSelectedValues(searchParams),
       }, undefined, user),
     );
   } catch (e) {

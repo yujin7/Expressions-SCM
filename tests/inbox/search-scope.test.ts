@@ -107,6 +107,42 @@ describe("BH navigation uses the same visibility as its list", () => {
     expect(detail.status).toBe(404);
     expect(JSON.stringify(await detail.json())).not.toContain("BH-SCOPE-HIDDEN");
   });
+  it("BH selected-option hydration intersects visibility, status and search instead of bypassing them", async () => {
+    const query = new URLSearchParams({ selectedValues: JSON.stringify([ownId, hiddenId]), status: "pending", page: "99", pageSize: "1" });
+    const response = await listRoute(new NextRequest(`http://localhost/api/outsource/bh?${query}`));
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.total).toBe(1);
+    expect(data.rows.map((r: { id: number }) => r.id)).toEqual([ownId]);
+    for (const filter of [{ status: "approved" }, { q: "BH-SCOPE-HIDDEN" }, { selectedValues: "[]" }]) {
+      const params = new URLSearchParams(query);
+      for (const [key, value] of Object.entries(filter)) params.set(key, value);
+      const result = await listRoute(new NextRequest(`http://localhost/api/outsource/bh?${params}`));
+      expect(await result.json()).toEqual({ rows: [], total: 0 });
+    }
+    query.set("selectedValues", JSON.stringify(["BH-SCOPE-OWN"]));
+    expect((await (await listRoute(new NextRequest(`http://localhost/api/outsource/bh?${query}`))).json()).total).toBe(1);
+  });
+  it("BH selector pages beyond fifty and hydrates an older exact selection without scanning", async () => {
+    const inserted = await db.insert(bhDocs).values(Array.from({ length: 61 }, (_, i) => ({
+      docNo: `BH-OPTIONS-${String(i).padStart(3, "0")}`, createdBy: viewer.id, status: "approved" as const,
+    }))).returning({ id: bhDocs.id });
+    const query = new URLSearchParams({ q: "BH-OPTIONS", status: "approved", pageSize: "50", page: "1" });
+    const first = await (await listRoute(new NextRequest(`http://localhost/api/outsource/bh?${query}`))).json();
+    query.set("page", "2");
+    const second = await (await listRoute(new NextRequest(`http://localhost/api/outsource/bh?${query}`))).json();
+    expect([first.total, second.total, first.rows.length, second.rows.length]).toEqual([61, 61, 50, 11]);
+    expect(new Set([...first.rows, ...second.rows].map((r: { id: number }) => r.id)).size).toBe(61);
+    expect(first.rows.some((r: { id: number }) => r.id === inserted[0].id)).toBe(false);
+    query.set("selectedValues", JSON.stringify([inserted[0].id]));
+    const hydrated = await (await listRoute(new NextRequest(`http://localhost/api/outsource/bh?${query}`))).json();
+    expect(hydrated.total).toBe(1);
+    expect(hydrated.rows.map((r: { id: number }) => r.id)).toEqual([inserted[0].id]);
+  });
+  it.each(["no-json", "[-1]", JSON.stringify(Array.from({ length: 51 }, (_, i) => i + 1))])("BH selector rejects malformed selection %s", async selectedValues => {
+    const query = new URLSearchParams({ selectedValues });
+    expect((await listRoute(new NextRequest(`http://localhost/api/outsource/bh?${query}`))).status).toBe(400);
+  });
   it("scoped approvers receive only shared-channel pending BH, keeping maker-checker separation", async () => {
     const inbox = await getInbox({ ...viewer, roles: ["pmc"], isApprover: true }, db);
     expect(inbox.pending.map(i => i.docNo)).toEqual(["BH-SCOPE-PEER"]);
