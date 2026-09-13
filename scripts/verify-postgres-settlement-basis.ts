@@ -11,6 +11,7 @@ import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
 import { checkBatchAfterPoReceipt, createBatchJg } from "@/server/modules/outsource/auto-chain";
 import { approveWo, createWo, generateDocs, getWoCreateResult, submitWo, transitionWO, withdrawWO } from "@/server/modules/outsource/wo";
+import { transitionPO } from "@/server/modules/outsource/po";
 import { getReceiptBatchReview } from "@/server/modules/matflow/receipt-batch-status";
 import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
@@ -393,8 +394,30 @@ async function main() {
     assert(!revokedReceipt.second.ok); assert.equal(revokedReceipt.second.error.status, 403);
     assert.equal((await db.select().from(s.woDocs).where(eq(s.woDocs.id, ownerDoc.id)))[0].status, "draft");
     console.log("PASS WO receipt lookup waits for role revocation and refuses stale authority without changing the original draft");
-    const browserBatch = await batchSource();
-    console.log(JSON.stringify({ passed: true, cases: 42, fixture: key, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    const closingPo = async () => {
+      const [po] = await db.insert(s.poDocs).values({ docNo: `PO-CLOSE-${key}-${++seq}`, status: "in_progress", supplierId: sup.id, createdBy: pmc.id }).returning();
+      await db.insert(s.poLines).values({ poId: po.id, skuId: material.id, lineType: "raw", purchaseUom: "个", uomFactor: "1", qty: "100", price: "2", receivedQty: "70" });
+      return po;
+    };
+    const closeOwner = await actor(["ops"]), revokePo = await closingPo();
+    const poRevoked = await race(tx => tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, closeOwner.id)),
+      () => transitionPO(closeOwner, revokePo.id, { action: "short_close", version: revokePo.version, reason: "合成撤权竞争" }, other));
+    assert(!poRevoked.second.ok); assert.equal(poRevoked.second.error.status, 403);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.id, revokePo.id)))[0].status, "in_progress");
+    console.log("PASS PO closure waits for current role revocation, leaving document and audit unchanged");
+    const competingPo = await closingPo();
+    const poCompetition = await race(tx => transitionPO(pmc, competingPo.id, { action: "complete", version: competingPo.version }, tx),
+      () => transitionPO(pmc, competingPo.id, { action: "short_close", version: competingPo.version, reason: "合成冲突收口" }, other));
+    assert(!poCompetition.second.ok); assert.equal(poCompetition.second.error.status, 409);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.id, competingPo.id)))[0].version, competingPo.version + 1);
+    console.log("PASS competing PO complete and short-close serialize; only one transition commits");
+    const replayPo = await closingPo(), closeInput = { action: "short_close", version: replayPo.version, reason: "合成原始停单原因" };
+    const poReplay = await race(tx => transitionPO(pmc, replayPo.id, closeInput, tx), () => transitionPO(pmc, replayPo.id, closeInput, other));
+    assert(poReplay.second.ok); assert.equal(poReplay.second.value.idempotent, true);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "po"), eq(s.auditLogs.entityId, replayPo.id), eq(s.auditLogs.action, "short_close")))).length, 1);
+    console.log("PASS simultaneous PO short-close replay keeps one audit and the original reason");
+    const browserClosePo = await closingPo(), browserBatch = await batchSource();
+    console.log(JSON.stringify({ passed: true, cases: 45, fixture: key, browserClosePo: browserClosePo.id, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));

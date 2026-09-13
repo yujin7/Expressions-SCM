@@ -9,11 +9,13 @@
  * 补货算式据此认为"货在路上"，从而**压制本该发出的补货建议**。
  * 也就是说：缺短关 = 会少订货。这条测试钉住短关确实把它从在途里摘掉。
  */
-import { describe, expect, it } from "vitest";
-import { poDocs, poLines, skus, spus, suppliers, users } from "@/db/schema";
+import { describe, expect, it, vi } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { auditLogs, poDocs, poLines, skus, spus, suppliers, users } from "@/db/schema";
+import * as audit from "@/server/core/audit";
 import { createTestDb } from "../helpers/db";
 import { getOpenSupplyLines } from "@/server/core/supply";
-import { transitionPO } from "@/server/modules/outsource/po";
+import { getPo, transitionPO } from "@/server/modules/outsource/po";
 
 async function setup() {
   const { db } = await createTestDb();
@@ -65,9 +67,48 @@ describe("短关与在途供给", () => {
     await transitionPO(
       actor, po.id, { action: "short_close", reason: "先关掉", version: 1 }, db,
     );
+    await db.update(users).set({ roles: ["admin"] }).where(eq(users.id, actor.id));
     await transitionPO(admin, po.id, { action: "reopen", version: 2 }, db);
     const lines = await getOpenSupplyLines(db, [skuId]);
     const total = lines.reduce((a, l) => a + Number(l.qty ?? 0), 0);
     expect(total).toBe(30);
+  });
+});
+
+describe("采购收口当前权限与原子性", () => {
+  it("revoked/forged roles cannot close, complete or reopen using a stale actor", async () => {
+    const {db,actor,po}=await setup();
+    await db.update(users).set({roles:["warehouse"]}).where(eq(users.id,actor.id));
+    for(const action of ["complete","short_close","reopen"]) {
+      await expect(transitionPO({...actor,roles:["admin"]},po.id,{action,reason:"不能借旧权限",version:1},db)).rejects.toMatchObject({status:403});
+    }
+    expect((await getPo(po.id,db)).status).toBe("in_progress");
+  });
+  it("disabled account and invalidated session cannot mutate or replay",async()=>{
+    const {db,actor,po}=await setup();
+    await expect(transitionPO({...actor,sessionVersion:999},po.id,{action:"complete",version:1},db)).rejects.toMatchObject({status:401});
+    await transitionPO(actor,po.id,{action:"complete",version:1},db);
+    await db.update(users).set({active:false}).where(eq(users.id,actor.id));
+    await expect(transitionPO(actor,po.id,{action:"complete",version:1},db)).rejects.toMatchObject({status:403});
+  });
+  it("audit failure rolls back status, reason, version and supply",async()=>{
+    const {db,actor,po,skuId}=await setup();const before=await getPo(po.id,db), supplyBefore=await getOpenSupplyLines(db,[skuId]);
+    const spy=vi.spyOn(audit,"writeAudit").mockRejectedValueOnce(Error("close audit failure"));
+    try{await expect(transitionPO(actor,po.id,{action:"short_close",reason:"本应回滚",version:1},db)).rejects.toThrow("close audit failure");}finally{spy.mockRestore();}
+    const after=await getPo(po.id,db);expect(after).toMatchObject({status:before.status,version:before.version,closedReason:null});
+    expect(await getOpenSupplyLines(db,[skuId])).toEqual(supplyBefore);
+  });
+  it("exact current terminal status replay preserves original closure reason and a single audit",async()=>{
+    const {db,actor,po}=await setup();
+    await transitionPO(actor,po.id,{action:"short_close",reason:"原始停单原因",version:1},db);
+    await expect(transitionPO(actor,po.id,{action:"short_close",reason:"不能覆盖原始原因",version:1},db)).resolves.toMatchObject({status:"closed",idempotent:true});
+    expect(await getPo(po.id,db)).toMatchObject({status:"closed",version:2,closedReason:"原始停单原因"});
+    expect(await db.select().from(auditLogs).where(and(eq(auditLogs.entity,"po"),eq(auditLogs.entityId,po.id),eq(auditLogs.action,"short_close")))).toHaveLength(1);
+  });
+  it("concurrent complete and short-close do not both change the document",async()=>{
+    const {db,actor,po}=await setup();
+    const result=await Promise.allSettled([transitionPO(actor,po.id,{action:"complete",version:1},db),transitionPO(actor,po.id,{action:"short_close",reason:"并发停单",version:1},db)]);
+    expect(result.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+    expect((await getPo(po.id,db)).version).toBe(2);
   });
 });

@@ -79,6 +79,7 @@ interface WoDetail {
   docNo: string;
   status: string;
   remark: string | null;
+  closedReason: string | null;
   version: number;
   bhId: number | null;
   productSkuId: number;
@@ -172,20 +173,8 @@ export function WoActions({
     );
   }
 
-  // 已审批之后没有任何「收口」动作时，工单永远停在半路（在办量只增不减）——补手工完成/短关
-  if (doc.taskActions.manage) {
-    return (
-      <DocTransitionActions
-        docType="wo"
-        doc={doc}
-        onChanged={onChanged}
-        labels={{
-          completeHint: "标记本工单已完工：加工通知单与收货已按实际收口，后续不再产生新的收货。",
-          shortCloseHint: "短关＝加工厂不再继续做这张工单的剩余数量（少做/终止/换厂）。已发生的加工与收货保持不变，仅停止后续执行。",
-        }}
-      />
-    );
-  }
+  // Closure lives in the drawer body so terminal documents retain recovery feedback.
+  if (doc.taskActions.manage) return null;
 
   if (doc.status === "pending") {
     return (
@@ -547,6 +536,11 @@ function WoInner() {
         {detail ? (
           <div>
             <ChainStrip docType="wo" id={detail.id} />
+            <DocTransitionActions docType="wo" doc={detail} allowed={Boolean(detail.taskActions?.manage)}
+              onChanged={() => { loadDetail(); void load(); }} labels={{
+                completeHint: "请先核对实际完工。本操作只更新本工单状态，不自动关闭关联采购单、加工通知单或补记收货；关联单据须分别核对。",
+                shortCloseHint: "少做、终止或换厂时记录本工单停止继续生产的决定。已发生的加工、收货及库存不变；关联采购单与加工通知单不会自动短关。",
+              }} />
             <Alert type={actionError?.id === detail.id ? "error" : detail.taskActions ? "info" : "warning"} showIcon style={{ marginBottom: 12 }}
               message={actionError?.id === detail.id ? "处理结果需要核对" : "当前操作资格"}
               description={actionError?.id === detail.id ? actionError.message : detail.taskActions?.reason ?? "当前无法确认操作资格，请刷新后核对；暂不显示写入按钮。"}
@@ -587,6 +581,7 @@ function WoInner() {
               <Descriptions.Item label="备注" span={{ xs: 1, sm: 2 }}>
                 {detail.remark ?? "—"}
               </Descriptions.Item>
+              {detail.closedReason ? <Descriptions.Item label="短关原因" span={{ xs: 1, sm: 2 }}>{detail.closedReason}</Descriptions.Item> : null}
             </Descriptions>
             <Typography.Title level={5}>需求表（wo_line 快照）</Typography.Title>
             {detail.lines.length > 0 ? (

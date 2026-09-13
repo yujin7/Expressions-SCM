@@ -524,6 +524,7 @@ export async function getWo(id: number, dbArg?: AnyDb, user?: SessionUser) {
       docNo: woDocs.docNo,
       status: woDocs.status,
       remark: woDocs.remark,
+      closedReason: woDocs.closedReason,
       version: woDocs.version,
       bhId: woDocs.bhId,
       productSkuId: woDocs.productSkuId,
