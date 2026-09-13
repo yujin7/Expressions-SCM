@@ -70,13 +70,6 @@ it("role and existing-generation checks gate the button; zero suggestion opens w
   open(); expect(h.values.poGroups).toEqual([]); expect(h.values.jgQty).toBe("100.0000");
   expect(dialog().props.zIndex).toBe(1100); // sibling drawer defaults to 1000, so portal creation order cannot cover the form
 });
-it("BH source uses bounded shared remote selection and clears stale manual type for authoritative inheritance", () => {
-  const source = nodes(render()).find(n => n.type === "remote" && n.props.api === "/api/outsource/bh?status=approved")!;
-  expect(source).toBeDefined();
-  expect((source.props.getLabel as (r: Record<string, unknown>) => string)({ docNo: "BH-001", orderType: null })).toBe("BH-001");
-  (source.props.onChange as () => void)();
-  expect(h.setField).toHaveBeenLastCalledWith("orderType", undefined);
-});
 it("same-tick double submit is blocked before asynchronous form validation", async () => {
   open(); const validation = Promise.withResolvers<Record<string, unknown>>(), write = Promise.withResolvers<unknown>(); h.validate.mockReturnValue(validation.promise); h.post.mockReturnValue(write.promise);
   submit(); submit(); expect(h.validate).toHaveBeenCalledTimes(1); expect(dialog().props.closable).toBe(false);

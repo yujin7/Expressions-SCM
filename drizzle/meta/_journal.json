@@ -463,6 +463,13 @@
       "when": 1789082974867,
       "tag": "0065_sh_purchase_line_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1789259346682,
+      "tag": "0066_wo_create_receipt",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,8 @@
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import {
    bhDocs, bhLines, bomLines, boms, jgDocs, jgFeeSegments, poDocs, poLines,
-  skus, stockBalances, suppliers, uomConvs, users, warehouses, woDocs, woLines,
+  skus, stockBalances, suppliers, uomConvs, users, warehouses, woDocs, woLines, woCreateRequests,
 } from "@/db/schema";
 import { dAdd, dCmp, dDiv, dMoney, dMul, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -22,7 +23,7 @@ import { nextDocNo } from "@/server/docflow/doc-no";
 import type { DocStatus } from "@/server/docflow/state";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb, rethrowApproval } from "./common";
-import { approveDocSchema, createWoSchema, generateDocsSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
+import { approveDocSchema, createWoSchema, createWoRequestSchema, generateDocsSchema, transitionDocSchema, withdrawDocSchema } from "./schemas";
 import { createdWithinShanghaiDays, skuHeaderMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
 import {
@@ -41,10 +42,27 @@ type JgRow = typeof jgDocs.$inferSelect;
 export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<WoRow> {
   const v = createWoSchema.parse(input);
   const db = await resolveDb(dbArg);
+  // Hash the normalized user intent, not mutable inherited master data or key order in JSON.
+  const requestHash = createHash("sha256").update(JSON.stringify({
+    bhId: v.bhId ?? null, productSkuId: v.productSkuId, qty: dQty(v.qty), supplierId: v.supplierId,
+    feeRatePlan: dMoney(v.feeRatePlan), dueDate: v.dueDate ?? null, orderType: v.orderType || null, remark: v.remark || null,
+  })).digest("hex");
 
   return db.transaction(async (tx: AnyDb) => {
     const actor = await currentWriteActor(tx, user);
     requireAnyRole(actor, "pmc");
+    if (v.requestKey) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('wo-create'), hashtext(${`${actor.id}:${v.requestKey}`}))`);
+      const [receipt] = await tx.select().from(woCreateRequests).where(and(
+        eq(woCreateRequests.requestedBy, actor.id), eq(woCreateRequests.requestKey, v.requestKey),
+      ));
+      if (receipt) {
+        if (receipt.requestHash !== requestHash) throw new ApiError(409, "此请求编号已创建不同内容；请先找回原工单，不要改写原请求后重试");
+        const [existing]: WoRow[] = await tx.select().from(woDocs).where(eq(woDocs.id, receipt.woId));
+        if (!existing) throw new ApiError(409, "原工单关联异常，请联系管理员核对创建记录");
+        return existing; // No revalidation of changed factory/BOM and no repeated audit/numbering.
+      }
+    }
     // Hold creation eligibility through insert/audit; no inventory or approval effects.
     const [product] = await tx.select().from(skus).where(eq(skus.id, v.productSkuId)).for("share");
     if (!product || !product.active) throw new ApiError(400, `成品 SKU 不存在或已停用: #${v.productSkuId}`);
@@ -103,7 +121,24 @@ export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb)
       after: { docNo: doc.docNo, productSkuId: v.productSkuId, qty: doc.qty, bomId: activeBom.id,
         bhId: v.bhId ?? null, orderType, orderTypeSource: sourceOrderType ? "bh" : v.orderType ? "manual" : "unclassified" },
     });
+    if (v.requestKey) await tx.insert(woCreateRequests).values({
+      requestedBy: actor.id, requestKey: v.requestKey, requestHash, woId: doc.id,
+    });
     return doc;
+  });
+}
+
+/** Read a current user's durable receipt; absence is not permission to automatically issue a new key. */
+export async function getWoCreateResult(user: SessionUser, requestKey: string, dbArg?: AnyDb) {
+  const key = createWoRequestSchema.shape.requestKey.parse(requestKey);
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    const [doc] = await tx.select({ id: woDocs.id, docNo: woDocs.docNo, status: woDocs.status })
+      .from(woCreateRequests).innerJoin(woDocs, eq(woDocs.id, woCreateRequests.woId))
+      .where(and(eq(woCreateRequests.requestedBy, actor.id), eq(woCreateRequests.requestKey, key)));
+    return { requestKey: key, document: doc ?? null };
   });
 }
 

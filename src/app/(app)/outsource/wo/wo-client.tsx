@@ -14,7 +14,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { hasAnyRole, useMe } from "@/components/useMe";
 import { initialWoPurchaseGroups, isWoGenerationReceipt } from "@/lib/wo-generation";
-import { App, Alert, Button, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { App, Alert, Button, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   DeleteOutlined,
@@ -33,7 +33,8 @@ import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
-import { ORDER_TYPE_LABELS, formatOrderType, toOptions } from "@/components/labels";
+import { formatOrderType } from "@/components/labels";
+import WoCreateDialog from "./wo-create-dialog";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import type { WoTaskActions } from "@/server/modules/outsource/wo-task-actions";
 
@@ -95,17 +96,6 @@ interface WoDetail {
   createdByName: string | null;
   lines: WoLine[];
   approvals: DocApproval[];
-}
-
-interface CreateFormValues {
-  bhId?: number;
-  productSkuId: number;
-  qty: number;
-  supplierId: number;
-  feeRatePlan: number;
-  dueDate?: Dayjs;
-  orderType?: string;
-  remark?: string;
 }
 
 interface GenerateFormValues {
@@ -268,8 +258,8 @@ export function WoActions({
 
 function WoInner() {
   const { message, modal } = App.useApp();
-  const canGenerate = hasAnyRole(useMe(), "pmc");
-  const [form] = Form.useForm<CreateFormValues>();
+  const me = useMe();
+  const canGenerate = hasAnyRole(me, "pmc");
   const [genForm] = Form.useForm<GenerateFormValues>();
   const [rows, setRows] = useState<WoRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -284,7 +274,6 @@ function WoInner() {
   const to = filters.to;
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
@@ -334,34 +323,6 @@ function WoInner() {
   useEffect(() => {
     void load();
   }, [load]);
-
-
-
-  const handleCreate = async () => {
-    try {
-      const values = await form.validateFields();
-      setSaving(true);
-      await postJson<{ id: number }>("/api/outsource/wo", {
-        bhId: values.bhId ?? undefined,
-        productSkuId: values.productSkuId,
-        qty: String(values.qty),
-        supplierId: values.supplierId,
-        feeRatePlan: String(values.feeRatePlan),
-        dueDate: values.dueDate ? values.dueDate.format("YYYY-MM-DD") : undefined,
-        orderType: values.orderType || undefined,
-        remark: values.remark?.trim() || undefined,
-      });
-      message.success("委外工单已创建（草稿）");
-      setCreateOpen(false);
-      form.resetFields();
-      void load();
-    } catch (e) {
-      if (e instanceof Error && e.message) message.error(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const openGenerate = () => {
     if (!detail || !canGenerate || generatingRef.current || !generatedKnown || existingJgNo) return;
     setGenerationError(null);
@@ -510,7 +471,6 @@ function WoInner() {
               icon={<PlusOutlined />}
               disabled={!canGenerate}
               onClick={() => {
-                form.resetFields();
                 setCreateOpen(true);
               }}
             >
@@ -532,6 +492,8 @@ function WoInner() {
           </>
         }
       />
+      <WoCreateDialog key={me?.id ?? "no-actor"} actorId={me?.id ?? null} allowed={canGenerate} open={createOpen}
+        onClose={() => setCreateOpen(false)} onResume={() => setCreateOpen(true)} onCreated={() => { void load(); }} />
       <Table<WoRow>
         rowKey="id"
         size={listState.tableSize}
@@ -541,72 +503,6 @@ function WoInner() {
         scroll={{ x: "max-content" }}
         pagination={listState.paginationProps({ total: total })}
       />
-
-      <Modal
-        title="新建委外工单"
-        open={createOpen}
-        onOk={() => void handleCreate()}
-        onCancel={() => setCreateOpen(false)}
-        confirmLoading={saving}
-        width={640}
-        forceRender
-        maskClosable={false}
-        okText="保存草稿"
-        cancelText="取消"
-      >
-        <Form form={form} layout="vertical">
-          <Form.Item name="bhId" label="关联备货申请（可选，仅已审批）">
-            <RemoteSelect
-              api="/api/outsource/bh?status=approved"
-              getLabel={(r) => `${String(r.docNo)}${r.orderType ? `（${formatOrderType(String(r.orderType))}）` : ""}`}
-              placeholder="搜索已审批备货单号 / SKU"
-              onChange={() => form.setFieldValue("orderType", undefined)}
-            />
-          </Form.Item>
-          <Form.Item
-            name="productSkuId"
-            label="成品 SKU"
-            rules={[{ required: true, message: "必须选择成品 SKU" }]}
-          >
-            <RemoteSelect
-              api="/api/master/sku?type=finished"
-              getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
-              placeholder="选择成品（须有生效 BOM）"
-            />
-          </Form.Item>
-          <Form.Item name="qty" label="数量" rules={[{ required: true, message: "数量必填" }]}>
-            <InputNumber min={0.0001} precision={4} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item
-            name="supplierId"
-            label="加工厂"
-            rules={[{ required: true, message: "必须选择加工厂" }]}
-          >
-            <RemoteSelect
-              api="/api/master/supplier"
-              getLabel={(r) => `${String(r.code)} ${String(r.name)}`}
-              filterRow={(r) => Array.isArray(r.kinds) && (r.kinds as string[]).includes("processor")}
-              placeholder="选择加工厂"
-            />
-          </Form.Item>
-          <Form.Item
-            name="feeRatePlan"
-            label="加工费计划单价（元）"
-            rules={[{ required: true, message: "加工费计划单价必填" }]}
-          >
-            <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item name="dueDate" label="交期">
-            <DatePicker style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item name="orderType" label="订单类型" extra="关联申请已有类型时必须继承；未分类或无来源时可人工明确。成品返单的10–20天是目标，不能用首批收货代表全量交付。">
-            <Select allowClear options={toOptions(ORDER_TYPE_LABELS)} placeholder="选择类型；关联申请留空时继承来源" />
-          </Form.Item>
-          <Form.Item name="remark" label="备注">
-            <Input.TextArea rows={2} maxLength={500} />
-          </Form.Item>
-        </Form>
-      </Modal>
 
       <DocumentDrawer
         key={detailId ?? "invalid-document"}
