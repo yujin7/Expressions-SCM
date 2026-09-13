@@ -39,7 +39,7 @@ export async function getKitFactoryEvidence(user: SessionUser, woId: number, dbA
     factory as (select w.id,w.code,w.name,w.active from warehouses w join target t on t.supplier_id=w.supplier_id
       where w.kind='outsource' and w.accounting_mode='realtime'),
     stocks as (select b.sku_id,b.warehouse_id,sum(b.qty)::text on_hand,
-      coalesce(sum(greatest(b.qty,0)) filter(where lot.sku_id=b.sku_id and lot.expiry_date<${day}::date),0)::text expired,
+      coalesce(sum(greatest(b.qty,0)) filter(where lot.sku_id=b.sku_id and lot.expiry_date<=${day}::date),0)::text expired,
       coalesce(sum(greatest(b.qty,0)) filter(where lot.id is null or lot.sku_id<>b.sku_id),0)::text unidentified,
       coalesce(sum(greatest(b.qty,0)) filter(where lot.sku_id=b.sku_id and lot.expiry_date is null),0)::text undated
       from stock_balances b join factory f on f.id=b.warehouse_id join materials m on m.sku_id=b.sku_id

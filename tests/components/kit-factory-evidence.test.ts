@@ -9,7 +9,7 @@ vi.mock("@/components/useDocumentRead", () => ({ useDocumentRead: h.read }));
 type Node = React.ReactElement<Record<string, unknown> & { children?: ReactNode }>;
 const nodes = (v: ReactNode): Node[] => Array.isArray(v) ? v.flatMap(nodes) : isValidElement<Node["props"]>(v) ? [v, ...nodes(v.props.children)] : [];
 const render = () => nodes(KitFactoryEvidence({ woId: 18 }));
-const evidence = () => ({ woId: 18, woDocNo: "WO-18", woVersion: 2, observedAt: "2026-09-13T12:00:00Z", supplierName: "合成加工厂", allocationStatus: "unverified", warehouses: [], materials: [{ skuId: 2, code: "PK-2", name: "合成包材", unit: "个", required: "100", factoryOnHand: null, warehouses: [], peers: [] }] });
+const evidence = () => ({ woId: 18, woDocNo: "WO-18", woVersion: 2, observedAt: "2026-09-13T12:00:00Z", businessDate: "2026-09-13", supplierName: "合成加工厂", allocationStatus: "unverified", warehouses: [], materials: [{ skuId: 2, code: "PK-2", name: "合成包材", unit: "个", required: "100", factoryOnHand: null, warehouses: [], peers: [] }] });
 beforeEach(() => { h.data = null; h.phase = "loading"; h.error = null; h.retry.mockClear(); h.read.mockReset().mockImplementation(() => h); vi.stubGlobal("React", React); });
 it("loading and failure are not presented as zero stock or verified allocation", () => {
   expect(render().some(n => n.type === "table")).toBe(false);
@@ -20,7 +20,7 @@ it("loading and failure are not presented as zero stock or verified allocation",
 });
 it("wrong identity or allocation semantics never renders as valid evidence", () => {
   h.phase = "success";
-  for (const data of [{ ...evidence(), woId: 19 }, { ...evidence(), allocationStatus: "verified" }]) {
+  for (const data of [{ ...evidence(), woId: 19 }, { ...evidence(), allocationStatus: "verified" }, { ...evidence(), businessDate: undefined }]) {
     h.data = data; expect(render().some(n => n.type === "table")).toBe(false);
     expect(render().find(n => n.type === "error")?.props.error).toContain("身份不符");
   }
@@ -32,7 +32,10 @@ it("unknown stays unknown, narrow tables scroll internally, retry is a read", ()
   const cols = table.props.columns as { dataIndex?: string; render?: (v: unknown) => ReactNode }[];
   expect(cols.find(c => c.dataIndex === "factoryOnHand")!.render!(null)).toBe("未知");
   expect(JSON.stringify(tree)).toContain("本单可领用量尚未确认");
+  expect(JSON.stringify(tree)).toContain("2026-09-13");
   const expanded = (table.props.expandable as { expandedRowRender: (row: unknown) => ReactNode }).expandedRowRender(evidence().materials[0]);
   expect(nodes(expanded)[0].props.style).toMatchObject({ maxWidth: "calc(100vw - 128px)", minWidth: 0 });
+  expect(JSON.stringify(nodes(expanded))).toContain("已到期正库存含效期基准当天到期的货");
+  expect(JSON.stringify(nodes(expanded))).toContain("未标效期既不算已到期，也不代表已验证可用");
   (tree.find(n => n.type === "button")!.props.onClick as () => void)(); expect(h.retry).toHaveBeenCalledTimes(1);
 });

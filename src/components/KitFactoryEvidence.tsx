@@ -11,6 +11,7 @@ import LoadErrorAlert from "./LoadErrorAlert";
 export default function KitFactoryEvidence({ woId }: { woId: number }) {
   const read = useDocumentRead<Evidence>(`/api/outsource/auto-chain/evidence?woId=${woId}`);
   const data = read.data?.woId === woId && read.data.allocationStatus === "unverified"
+    && typeof read.data.businessDate === "string"
     && Array.isArray(read.data.materials) && Array.isArray(read.data.warehouses) ? read.data : null;
   const error = read.error ?? (read.phase === "success" && !data ? "工单依据不完整或身份不符，请重新核对" : null);
   return <section aria-label="加工厂库存与占用核对">
@@ -22,7 +23,7 @@ export default function KitFactoryEvidence({ woId }: { woId: number }) {
     {read.phase === "loading" ? <Typography.Paragraph role="status">正在读取当前工单的加工厂、物料与库存记录…</Typography.Paragraph> : null}
     {data ? <>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-        {data.supplierName} · 工单版本 {data.woVersion} · 读取 {new Date(data.observedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
+        {data.supplierName} · 工单版本 {data.woVersion} · 效期基准 {data.businessDate}（上海） · 读取 {new Date(data.observedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
       </Typography.Paragraph>
       <Alert type="warning" showIcon message="本单可领用量尚未确认" style={{ marginBottom: 12 }}
         description="以下为加工厂关联委外仓的账面观察，不是库存预留。展开物料核对隔离、效期和同厂工单；各风险数量可能重叠，不能相加后扣减。在厂余额也不是本工单净发料，不与历史发退料相加。" />
@@ -36,13 +37,13 @@ export default function KitFactoryEvidence({ woId }: { woId: number }) {
           { title: "同厂其他工单", key: "peers", width: 120, align: "right", render: (_, row) => row.peers.length },
         ]}
         expandable={{ expandedRowRender: row => <Space direction="vertical" size={12} style={{ width: "100%", maxWidth: "calc(100vw - 128px)", minWidth: 0 }}>
-          <Typography.Text type="secondary">在厂账面含停用委外仓余额及负余额。隔离量含停用隔离位；未记录隔离不等于质量已放行。未标效期不等于过期。</Typography.Text>
+          <Typography.Text type="secondary">在厂账面含停用委外仓余额及负余额。隔离量含停用隔离位；未记录隔离不等于质量已放行。已到期正库存含效期基准当天到期的货，不能正常领用；未标效期既不算已到期，也不代表已验证可用。跨日请刷新依据。</Typography.Text>
           <Table<Evidence["materials"][number]["warehouses"][number]> aria-label={`${row.code} 分仓风险依据`} rowKey="warehouseId" size="small" tableLayout="fixed" scroll={{ x: 790 }}
             dataSource={row.warehouses} pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: "未关联委外仓" }} columns={[
               { title: "委外仓", key: "warehouse", width: 220, render: (_, balance) => { const warehouse = data.warehouses.find(w => w.id === balance.warehouseId); return <div style={{ overflowWrap: "anywhere" }}>{warehouse?.code} · {warehouse?.name}{warehouse && !warehouse.active ? <Tag>已停用</Tag> : null}</div>; } },
               { title: "账面", dataIndex: "onHand", width: 100, align: "right", render: formatQty },
               { title: "隔离位记录", dataIndex: "quarantine", width: 110, align: "right", render: formatQty },
-              { title: "已过期正库存", dataIndex: "expired", width: 120, align: "right", render: formatQty },
+              { title: "已到期正库存", dataIndex: "expired", width: 120, align: "right", render: formatQty },
               { title: "未辨识批次", dataIndex: "unidentifiedBatch", width: 120, align: "right", render: formatQty },
               { title: "批次未标效期", dataIndex: "undatedBatch", width: 120, align: "right", render: formatQty },
             ]} />
