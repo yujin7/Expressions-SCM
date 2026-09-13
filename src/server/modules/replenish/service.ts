@@ -33,6 +33,8 @@ import { backtest } from "@/server/rules/backtest";
 import { classifyAbc } from "@/server/rules/abc";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
+import { currentWriteActor } from "@/server/core/current-write-actor";
+import { shanghaiMonthOf } from "@/server/core/business-day";
 import { createDerivedBh } from "@/server/modules/outsource/bh";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { todayShanghai } from "@/server/modules/master/common";
@@ -1287,25 +1289,30 @@ export async function createReplenishDraft(
   input: unknown,
   dbArg?: AnyDb,
 ): Promise<{ id: number; docNo: string }> {
-  requireAnyRole(user, "pmc");
   const v = createReplenishDraftSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const { assertLiveSuggestionsWritable } = await import("./sop-cycle");
-  await assertLiveSuggestionsWritable(db);
-
-  const doc = await createDerivedBh(
-    user, "replenish",
-    {
-      remark: v.remark?.trim() ? v.remark.trim() : "由补货建议页生成（R11，人工确认）",
-      lines: v.items.map((i) => ({ skuId: i.skuId, qty: i.qty })),
-    },
-    db,
-    { inTx: async (tx, created) => {
-      await writeAudit(tx, {
-        userId: user.id, entity: "replenish", entityId: created.id, action: "draft_bh",
-        after: { docNo: created.docNo, lineCount: v.items.length, source: "replenish_suggestion" },
-      });
-    } },
-  );
-  return { id: doc.id, docNo: doc.docNo };
+  const { assertLiveSuggestionsWritable, lockSopMonth } = await import("./sop-cycle");
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    // Capture the server business month once. Hold its mode through BH + both audits.
+    const businessTime = new Date();
+    await lockSopMonth(tx, shanghaiMonthOf(businessTime));
+    await assertLiveSuggestionsWritable(tx, businessTime);
+    const doc = await createDerivedBh(
+      actor, "replenish",
+      {
+        remark: v.remark?.trim() ? v.remark.trim() : "由补货建议页生成（R11，人工确认）",
+        lines: v.items.map((i) => ({ skuId: i.skuId, qty: i.qty })),
+      },
+      tx,
+      { inTx: async (inner, created) => {
+        await writeAudit(inner, {
+          userId: actor.id, entity: "replenish", entityId: created.id, action: "draft_bh",
+          after: { docNo: created.docNo, lineCount: v.items.length, source: "replenish_suggestion" },
+        });
+      } },
+    );
+    return { id: doc.id, docNo: doc.docNo };
+  });
 }
