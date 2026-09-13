@@ -33,6 +33,8 @@ import { currentFefoPreviewKey, fefoPreviewKey, useFefoPreview } from "@/compone
 import { compareDecimalValues } from "@/lib/decimal-sort";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import type { StockDocActionHints } from "@/lib/stock-doc-actions";
+import { expiryReferenceKey, useExpiryReference } from "@/components/useExpiryReference";
+import ExpiryReferenceNotice from "@/components/ExpiryReferenceNotice";
 
 interface DocRow {
   id: number;
@@ -85,17 +87,6 @@ interface DocDetail {
   approvalBasis?: { label: string; href: string | null; sourceDocNo: string | null; verified: boolean; note: string | null };
   createdByName: string;
   createdAt: string;
-}
-
-/** R15 临期检查响应行（/api/inventory/expiry-check） */
-interface ExpiryCheckItem {
-  skuId: number;
-  skuCode: string;
-  thresholdDays: number;
-  nearQty: number;
-  nearBatches: number;
-  expiredQty: number;
-  minDaysLeft: number | null;
 }
 
 interface CreateFormValues {
@@ -224,34 +215,10 @@ function DocsInner({ me }: { me: Me | null }) {
     if (!createOpen) { setFefoPreviewOpen(false); setFefoTarget(null); }
   }, [createOpen, currentFefoKey]);
 
-  // R15 临期禁售拦截 v1：sales_out/transfer 明细选定 SKU 后，防抖调用 expiry-check，仅告警不阻断
-  const [expiryAlerts, setExpiryAlerts] = useState<ExpiryCheckItem[]>([]);
-  useEffect(() => {
-    const applicable = createOpen && (createSubtype === "sales_out" || createSubtype === "transfer");
-    const skuIds = applicable
-      ? [
-          ...new Set(
-            ((createLines ?? []) as { skuId?: number }[])
-              .map((l) => l?.skuId)
-              .filter((v): v is number => typeof v === "number" && v > 0),
-          ),
-        ]
-      : [];
-    if (skuIds.length === 0 || !createWarehouseId) {
-      setExpiryAlerts([]);
-      return;
-    }
-    const timer = setTimeout(() => {
-      const params = new URLSearchParams({
-        skuIds: skuIds.join(","),
-        warehouseId: String(createWarehouseId),
-      });
-      fetchJson<{ items: ExpiryCheckItem[] }>(`/api/inventory/expiry-check?${params.toString()}`)
-        .then((res) => setExpiryAlerts(res.items.filter((i) => i.nearBatches > 0)))
-        .catch(() => setExpiryAlerts([])); // 提示尽力而为，不阻断建单
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [createOpen, createSubtype, createWarehouseId, createLines]);
+  // R15 只读盘点参考；失败保持未知，不改变现行审批/过账规则。
+  const expiryRead = useExpiryReference(expiryReferenceKey(
+    createOpen && (createSubtype === "sales_out" || createSubtype === "transfer"), createWarehouseId, createLines,
+  ));
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
@@ -601,25 +568,7 @@ function DocsInner({ me }: { me: Me | null }) {
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} maxLength={200} />
           </Form.Item>
-          {expiryAlerts.length > 0 ? (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 8 }}
-              message="⚠ 临期/过期批次提示（R15，v1 仅提示不拦截）"
-              description={
-                <ul style={{ margin: 0, paddingLeft: 18 }}>
-                  {expiryAlerts.map((a) => (
-                    <li key={a.skuId}>
-                      编码{a.skuCode} 近效期 {a.nearQty} 件
-                      {a.expiredQty > 0 ? `（含已过期 ${a.expiredQty} 件）` : ""}
-                      （最短剩余 {a.minDaysLeft ?? "—"} 天，阈值 {a.thresholdDays} 天）——请核对批次后再出库
-                    </li>
-                  ))}
-                </ul>
-              }
-            />
-          ) : null}
+          <ExpiryReferenceNotice read={expiryRead} />
           <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 8 }} wrap>
             <Typography.Text strong>明细行</Typography.Text>
             {batchPostingEnabled && BATCH_OUTBOUND_SUBTYPES.has(createSubtype) ? (

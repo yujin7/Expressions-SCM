@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { batchStocks, skus, spus, warehouses } from "@/db/schema";
 import { todayShanghai } from "@/server/modules/master/common";
-import { expiryCheck } from "@/server/modules/replenish/expiry";
+import { expiryCheck, loadExpiryBatches } from "@/server/modules/replenish/expiry";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 /**
@@ -71,6 +71,9 @@ describe("R15 临期/过期批次检查", () => {
     expect(a.nearBatches).toBe(2);
     expect(a.expiredQty).toBe(2);
     expect(a.minDaysLeft).toBe(-3);
+    expect(res.source).toBe("batch_stock_reference");
+    expect(a).toMatchObject({ skuKnown: true, baseUom: "盒", referenceRows: 5, undatedPositiveRows: 1,
+      stocktakeDates: [today], stocktakeAgeDays: 0, nearQtyExact: "7.0000", expiredQtyExact: "2.0000" });
 
     const b = res.items.find((i) => i.skuId === skuB)!;
     expect(b.thresholdDays).toBe(30); // 逐 SKU 覆盖：40/90 天批次均不算近效
@@ -93,11 +96,22 @@ describe("R15 临期/过期批次检查", () => {
     expect(unknown.nearQty).toBe(0);
     expect(unknown.nearBatches).toBe(0);
     expect(unknown.minDaysLeft).toBeNull();
+    expect(unknown).toMatchObject({ skuKnown: false, baseUom: null, referenceRows: 0, stocktakeDates: [], stocktakeAgeDays: null });
   });
 
   it("空 skuIds 直接返回空 items", async () => {
     const res = await expiryCheck({ skuIds: [] }, db);
     expect(res.items).toEqual([]);
+  });
+  it("shared netting loader still excludes undated and zero rows", async () => {
+    const rows = await loadExpiryBatches(db, [skuA], { warehouseId: w1, today });
+    expect(rows).toHaveLength(3);
+    expect(rows.every(r => r.qty > 0 && r.expiryDate && r.stocktakeAgeDays === 0)).toBe(true);
+  });
+  it("internal oversized or invalid scopes are rejected, not silently broadened/truncated", async () => {
+    await expect(expiryCheck({ skuIds: Array.from({ length: 201 }, (_, i) => i + 1) }, db)).rejects.toMatchObject({ status: 400 });
+    await expect(expiryCheck({ skuIds: [skuA, NaN] }, db)).rejects.toMatchObject({ status: 400 });
+    await expect(expiryCheck({ skuIds: [skuA], warehouseId: 0 }, db)).rejects.toMatchObject({ status: 400 });
   });
 });
 
@@ -135,5 +149,24 @@ describe("R15 临期检查：最新盘点期按整表取，不受本批 SKU 影�
     // 该仓最新期是 newPeriod，target 在该期没有批次 → 不应报出旧期的 50
     expect(item?.nearQty ?? 0).toBe(0);
     expect(item?.nearBatches ?? 0).toBe(0);
+    expect(item).toMatchObject({ skuKnown: true, referenceRows: 0, stocktakeDates: [], stocktakeAgeDays: null });
   });
+});
+
+it("reference dates, raw-material units and exact decimal totals survive aggregation", async () => {
+  const { db } = await createTestDb();
+  const [spu] = await db.insert(spus).values({ code: "EXP-DEC", nameCn: "精度参考" }).returning();
+  const [sku] = await db.insert(skus).values({ code: "EXP-DEC", spuId: spu.id, skuType: "raw", baseUom: "kg" }).returning();
+  const wh = await db.insert(warehouses).values([{ code: "EXP-OLD", name: "旧参考", kind: "raw" }, { code: "EXP-FUTURE", name: "未来参考", kind: "raw" }]).returning();
+  await db.insert(batchStocks).values([
+    { skuId: sku.id, warehouseId: wh[0].id, batchNo: "A", expiryDate: "2000-01-01", qty: "0.1", stocktakeDate: "2020-01-01" },
+    { skuId: sku.id, warehouseId: wh[0].id, batchNo: "B", expiryDate: "2000-01-01", qty: "0.2", stocktakeDate: "2020-01-01" },
+    { skuId: sku.id, warehouseId: wh[1].id, batchNo: "C", expiryDate: null, qty: "1", stocktakeDate: "2999-01-01" },
+  ]);
+  const old = (await expiryCheck({ skuIds: [sku.id], warehouseId: wh[0].id }, db)).items[0];
+  expect(old).toMatchObject({ baseUom: "kg", nearQty: 0.3, expiredQty: 0.3, nearQtyExact: "0.3000", expiredQtyExact: "0.3000", stocktakeDates: ["2020-01-01"] });
+  expect(old.stocktakeAgeDays).toBeGreaterThan(0);
+  const future = (await expiryCheck({ skuIds: [sku.id], warehouseId: wh[1].id }, db)).items[0];
+  expect(future).toMatchObject({ referenceRows: 1, undatedPositiveRows: 1, nearQtyExact: "0.0000", stocktakeDates: ["2999-01-01"] });
+  expect(future.stocktakeAgeDays).toBeLessThan(0);
 });

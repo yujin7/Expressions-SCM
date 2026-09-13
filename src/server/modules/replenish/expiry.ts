@@ -12,10 +12,11 @@
  * - 日界 Asia/Shanghai（todayShanghai）。
  * 无金额字段，免脱敏；只读，不写库。
  */
-import { and, eq, gt, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDbAsync } from "@/db";
 import { batchStocks, skus } from "@/db/schema";
-import { todayShanghai } from "@/server/modules/master/common";
+import { ApiError, todayShanghai } from "@/server/modules/master/common";
+import { dAdd } from "@/server/core/decimal";
 import { daysLeftOf, latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
@@ -35,9 +36,20 @@ export interface ExpiryCheckItem {
   expiredQty: number;
   /** 命中批次最短剩余天数（可为负=已过期天数）；无命中 null */
   minDaysLeft: number | null;
+  skuKnown: boolean;
+  baseUom: string | null;
+  /** 当前盘点期是否观察到该 SKU；缺行不能解释为零库存。 */
+  referenceRows: number;
+  undatedPositiveRows: number;
+  stocktakeDates: string[];
+  /** 保留有符号年龄，未来盘点日期不得伪装成今天。 */
+  stocktakeAgeDays: number | null;
+  nearQtyExact: string;
+  expiredQtyExact: string;
 }
 
 export interface ExpiryCheckResult {
+  source: "batch_stock_reference";
   today: string;
   warehouseId: number | null;
   items: ExpiryCheckItem[];
@@ -70,18 +82,20 @@ export interface ExpiryBatchRow {
   stocktakeAgeDays: number;
 }
 
-export async function loadExpiryBatches(
+interface ExpiryObservation {
+  skuId: number; warehouseId: number; stocktakeDate: string; expiryDate: string | null; qty: string;
+}
+
+async function loadExpiryObservations(
   db: AnyDb,
   skuIds: number[],
-  opts?: { warehouseId?: number | null; today?: string },
-): Promise<ExpiryBatchRow[]> {
+  warehouseId: number | null,
+): Promise<ExpiryObservation[]> {
   const ids = [...new Set(skuIds)].filter((n) => Number.isInteger(n) && n > 0);
   if (ids.length === 0) return [];
-  const warehouseId = opts?.warehouseId ?? null;
-  const today = opts?.today ?? todayShanghai();
-  const conds = [inArray(batchStocks.skuId, ids), isNotNull(batchStocks.expiryDate), gt(batchStocks.qty, "0")];
+  const conds = [inArray(batchStocks.skuId, ids)];
   if (warehouseId != null) conds.push(eq(batchStocks.warehouseId, warehouseId));
-  const allPeriodRows: { skuId: number; warehouseId: number; stocktakeDate: string; expiryDate: string | null; qty: string }[] = await db
+  const allPeriodRows: ExpiryObservation[] = await db
     .select({
       skuId: batchStocks.skuId,
       warehouseId: batchStocks.warehouseId,
@@ -94,7 +108,16 @@ export async function loadExpiryBatches(
   // 多个盘点期间并存是 batch_stocks 的正常状态（唯一键含 stocktake_date）：不收口就按期数翻倍
   // 本函数按 SKU 分批被调用（inventory-alerts 每 200 个一批），所以最新盘点期必须整表取，
   // 不能从本批 rows 推断——否则该仓最新期里没有本批 SKU 时会退到旧期，各批次还会各认一个期。
-  const rows = latestStocktakeRows(allPeriodRows, await loadLatestStocktakeDates(db));
+  return latestStocktakeRows(allPeriodRows, await loadLatestStocktakeDates(db));
+}
+
+export async function loadExpiryBatches(
+  db: AnyDb,
+  skuIds: number[],
+  opts?: { warehouseId?: number | null; today?: string },
+): Promise<ExpiryBatchRow[]> {
+  const today = opts?.today ?? todayShanghai();
+  const rows = await loadExpiryObservations(db, skuIds, opts?.warehouseId ?? null);
   const out: ExpiryBatchRow[] = [];
   for (const r of rows) {
     if (!r.expiryDate) continue;
@@ -117,31 +140,45 @@ export async function expiryCheck(
   dbArg?: AnyDb,
 ): Promise<ExpiryCheckResult> {
   const db: AnyDb = dbArg ?? (await getDbAsync());
-  const skuIds = [...new Set(input.skuIds)].filter((n) => Number.isInteger(n) && n > 0).slice(0, 200);
+  const skuIds = [...new Set(input.skuIds)];
+  if (skuIds.length > 200 || skuIds.some(n => !Number.isInteger(n) || n <= 0 || n > 2147483647)) {
+    throw new ApiError(400, "效期检查每批最多 200 个有效 SKU，请分批查询");
+  }
   const warehouseId = input.warehouseId ?? null;
+  if (warehouseId !== null && (!Number.isInteger(warehouseId) || warehouseId <= 0 || warehouseId > 2147483647)) {
+    throw new ApiError(400, "仓库编号无效，请重新选择仓库");
+  }
   const today = todayShanghai();
-  if (skuIds.length === 0) return { today, warehouseId, items: [] };
+  const source = "batch_stock_reference" as const;
+  if (skuIds.length === 0) return { source, today, warehouseId, items: [] };
 
-  const skuRows: { id: number; code: string; nearExpiryDays: number | null }[] = await db
-    .select({ id: skus.id, code: skus.code, nearExpiryDays: skus.nearExpiryDays })
+  const skuRows: { id: number; code: string; baseUom: string; nearExpiryDays: number | null }[] = await db
+    .select({ id: skus.id, code: skus.code, baseUom: skus.baseUom, nearExpiryDays: skus.nearExpiryDays })
     .from(skus)
     .where(inArray(skus.id, skuIds));
   const skuById = new Map(skuRows.map((s) => [s.id, s]));
 
-  const rows = await loadExpiryBatches(db, skuIds, { warehouseId, today });
+  const rows = await loadExpiryObservations(db, skuIds, warehouseId);
+  const observations = new Map<number, ExpiryObservation[]>();
+  for (const row of rows) {
+    const group = observations.get(row.skuId) ?? [];
+    group.push(row);
+    observations.set(row.skuId, group);
+  }
 
-  const agg = new Map<number, { nearQty: number; nearBatches: number; expiredQty: number; minDaysLeft: number | null }>();
+  const agg = new Map<number, { nearQty: string; nearBatches: number; expiredQty: string; minDaysLeft: number | null }>();
   for (const r of rows) {
+    if (!r.expiryDate || !(Number(r.qty) > 0)) continue;
     const sku = skuById.get(r.skuId);
     if (!sku) continue;
     const threshold = sku.nearExpiryDays ?? DEFAULT_NEAR_EXPIRY_DAYS;
-    const daysLeft = r.daysLeft;
+    const daysLeft = daysLeftOf(today, r.expiryDate);
     if (daysLeft > threshold) continue; // 新鲜批次
     const q = r.qty;
-    const e = agg.get(r.skuId) ?? { nearQty: 0, nearBatches: 0, expiredQty: 0, minDaysLeft: null };
-    e.nearQty += q;
+    const e = agg.get(r.skuId) ?? { nearQty: "0.0000", nearBatches: 0, expiredQty: "0.0000", minDaysLeft: null };
+    e.nearQty = dAdd(e.nearQty, q);
     e.nearBatches += 1;
-    if (daysLeft <= 0) e.expiredQty += q; // 与驾驶舱「已到期」段位边界一致
+    if (daysLeft <= 0) e.expiredQty = dAdd(e.expiredQty, q); // 与驾驶舱「已到期」段位边界一致
     e.minDaysLeft = e.minDaysLeft == null ? daysLeft : Math.min(e.minDaysLeft, daysLeft);
     agg.set(r.skuId, e);
   }
@@ -149,15 +186,25 @@ export async function expiryCheck(
   const items: ExpiryCheckItem[] = skuIds.map((id) => {
     const sku = skuById.get(id);
     const e = agg.get(id);
+    const observed = observations.get(id) ?? [];
+    const stocktakeDates = [...new Set(observed.map(r => r.stocktakeDate))].sort();
     return {
       skuId: id,
       skuCode: sku?.code ?? `#${id}`,
       thresholdDays: sku?.nearExpiryDays ?? DEFAULT_NEAR_EXPIRY_DAYS,
-      nearQty: e?.nearQty ?? 0,
+      nearQty: Number(e?.nearQty ?? 0),
       nearBatches: e?.nearBatches ?? 0,
-      expiredQty: e?.expiredQty ?? 0,
+      expiredQty: Number(e?.expiredQty ?? 0),
       minDaysLeft: e?.minDaysLeft ?? null,
+      skuKnown: Boolean(sku),
+      baseUom: sku?.baseUom ?? null,
+      referenceRows: observed.length,
+      undatedPositiveRows: observed.filter(r => !r.expiryDate && Number(r.qty) > 0).length,
+      stocktakeDates,
+      stocktakeAgeDays: stocktakeDates.length ? daysLeftOf(stocktakeDates[0], today) : null,
+      nearQtyExact: e?.nearQty ?? "0.0000",
+      expiredQtyExact: e?.expiredQty ?? "0.0000",
     };
   });
-  return { today, warehouseId, items };
+  return { source, today, warehouseId, items };
 }
