@@ -20,8 +20,9 @@ import { postJson } from "@/components/fetchJson";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
-import { hasAnyRole, useMe } from "@/components/useMe";
+import { hasAnyRole, useMe, type Me } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
+import CtDraftEditor from "./ct-draft-editor";
 
 // ---------- 客户端十进制比较（仅提交前过滤/预警用；非负字符串，禁 float） ----------
 
@@ -87,6 +88,7 @@ interface CtDetail {
   createdByName: string | null;
   lines: CtLine[];
   approvals: DocApproval[];
+  actions?: { submit: boolean; approve: boolean; reject: boolean; edit: boolean; reason: string };
 }
 
 interface PoDetailLine {
@@ -122,11 +124,13 @@ const STATUS_TABS = [
 ];
 
 export default function CtClient() {
-  const { message } = App.useApp();
   const me = useMe();
+  return <CtWorkspace key={me ? `${me.id}:${me.roles.join(",")}:${me.isApprover}` : "anonymous"} me={me} />;
+}
+
+function CtWorkspace({ me }: { me: Me | null }) {
+  const { message } = App.useApp();
   const canWrite = hasAnyRole(me, "warehouse");
-  const canApprove =
-    me != null && (me.roles.includes("admin") || (me.isApprover && me.roles.includes("warehouse")));
 
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
   const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS, key: "ct", defaults: { q: "", status: "" }, defaultPageSize: 20 });
@@ -146,7 +150,8 @@ export default function CtClient() {
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
-  useEffect(() => { setRejectOpen(false); }, [detailId]);
+  useEffect(() => { setRejectOpen(false); setEditingDraft(null); }, [detailId]);
+  const [editingDraft, setEditingDraft] = useState<CtDetail | null>(null);
   const detailRead = useDocumentRead<CtDetail>(detailId == null ? null : `/api/matflow/ct/${detailId}`);
   const detail = detailRead.data;
   const detailLoading = detailRead.phase === "loading";
@@ -383,15 +388,16 @@ export default function CtClient() {
   ];
 
   const actions = detail ? (
-    <Space>
-      {detail.status === "draft" && canWrite ? (
+    <Space wrap>
+      {detail.actions?.edit && <Button disabled={actionLoading} onClick={() => setEditingDraft(detail)}>修改原草稿</Button>}
+      {detail.actions?.submit ? (
         <Popconfirm title="确认提交审批？" okText="提交" cancelText="取消" onConfirm={() => void handleSubmit()}>
           <Button type="primary" loading={actionLoading}>
             提交
           </Button>
         </Popconfirm>
       ) : null}
-      {detail.status === "pending" && canApprove && Number.isSafeInteger(detail.createdBy) && detail.createdBy !== me?.id ? (
+      {detail.actions?.reject ? (
         <>
           <Popconfirm
             title="确认审批通过？通过即过账退货出库并回冲 PO 已收数。"
@@ -399,7 +405,7 @@ export default function CtClient() {
             cancelText="取消"
             onConfirm={() => void handleApprove("approve")}
           >
-            <Button type="primary" loading={actionLoading}>
+            <Button type="primary" loading={actionLoading} disabled={!detail.actions.approve}>
               审批通过
             </Button>
           </Popconfirm>
@@ -485,6 +491,7 @@ export default function CtClient() {
         {detail ? (
           <div>
             <ChainStrip docType="ct" id={detail.id} />
+            <Alert type="info" showIcon style={{ marginBottom: 12 }} message={detail.actions?.reason ?? "当前操作资格尚未确认，请重新读取原单；不凭旧页面提交或审批。"} />
             {overAlert ? (
               <Alert
                 type="warning"
@@ -527,6 +534,10 @@ export default function CtClient() {
           </div>
         ) : null}
       </DocumentDrawer>
+
+      {editingDraft && <CtDraftEditor key={`${me?.id}:${me?.roles.join(",")}:${editingDraft.id}:${editingDraft.version}`} doc={editingDraft}
+        onClose={() => setEditingDraft(null)} onReload={() => { setEditingDraft(null); refresh(); }}
+        onSaved={() => { setEditingDraft(null); message.success("原退货草稿已更新，未提交或过账"); refresh(); }} />}
 
       <Modal
         title="新建采购退货单"
