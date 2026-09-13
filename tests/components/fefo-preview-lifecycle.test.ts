@@ -81,3 +81,8 @@ it("successful complete preview can be acknowledged without posting from modal",
   const confirm = vi.fn(); const tree = FefoPreviewModal({ open: true, loading: false, error: null, groups: [group()], onCancel: vi.fn(), onConfirm: confirm, onRetry: vi.fn() });
   expect(tree.props.okButtonProps.disabled).toBe(false); tree.props.onOk(); expect(confirm).toHaveBeenCalledOnce(); expect(fetcher).not.toHaveBeenCalled();
 });
+it("pending read keeps cancellation independent of the loading confirmation button", () => {
+  const cancel = vi.fn(); const tree = FefoPreviewModal({ open: true, loading: true, error: null, groups: null, onCancel: cancel, onConfirm: vi.fn(), onRetry: vi.fn() });
+  expect(tree.props).not.toHaveProperty("confirmLoading"); expect(tree.props.okButtonProps.loading).toBe(true);
+  tree.props.onCancel(); expect(cancel).toHaveBeenCalledOnce();
+});

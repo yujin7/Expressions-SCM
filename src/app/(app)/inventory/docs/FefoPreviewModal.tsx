@@ -96,8 +96,8 @@ export function FefoPreviewModal({
       width="min(860px, calc(100vw - 24px))"
       okText="确认按此规则建单"
       cancelText="返回修改"
-      okButtonProps={{ disabled: loading || !!error || current.length === 0 || hasShortage }}
-      confirmLoading={loading}
+      // AntD Modal.confirmLoading also blocks cancel; this is a cancellable GET, not a write.
+      okButtonProps={{ loading, disabled: loading || !!error || current.length === 0 || hasShortage }}
       onOk={() => { if (!loading && !error && current.length > 0 && !hasShortage) onConfirm(); }}
       onCancel={onCancel}
       destroyOnHidden
