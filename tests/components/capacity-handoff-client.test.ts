@@ -82,6 +82,7 @@ it("read-only recovery after refresh finds original record, then explicit acknow
   // Supply a fresh Response body for the second independent confirmation GET.
   fetchMock.mockResolvedValueOnce(Response.json({ itemId: 7, eventId: 47, requestId: old.requestId }));
   click("确认记录，准备下一笔"); await flush(); expect(stored.size).toBe(0);
+  expect(nodes(render()).find(n => n.type === "alert")?.props.message).toBe("当前没有待核对的产能保存请求");
 });
 it("corrupt storage or unsupported cross-tab lock blocks sending", async () => {
   stored.set("scm:capacity-handoff:v1:1", "{"); render(); fill(); expect(find("button").props.disabled).toBe(true);

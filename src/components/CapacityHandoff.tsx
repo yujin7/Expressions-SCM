@@ -87,7 +87,7 @@ export function CapacityHandoffForm({ check, onBusyChange, actorId }: {
       message={result?.eventId ? `产能依据已保存 · 记录 #${result.eventId}` : "有一笔产能保存请求待核对"}
       description={<Space direction="vertical" style={{ width: "100%" }}>
         <span>原待办 #{request.workItemId} · SKU #{request.skuId}。同账号、同浏览器站点保留原请求；刷新或关页不会自动重发。</span>
-        <details><summary>查看原提交的情景与备注</summary><p>来源告警 #{request.alertId}；加工厂 #{request.supplierId}；拟新增 {request.candidateQty}；拟交付 {request.dueDate}；负责人 #{request.assigneeId}。</p><p>{request.note}</p><p>请求编号：{request.requestId}</p></details>
+        <details><summary>查看本机保留的情景与备注</summary><p>本机请求供核对，实际保存内容以原待办历史为准；找回回执不代表当前情景仍有效。</p><p>来源告警 #{request.alertId}；加工厂 #{request.supplierId}；拟新增 {request.candidateQty}（原SKU基础单位）；拟交付 {request.dueDate}；负责人 #{request.assigneeId}。</p><p>{request.note}</p><p>请求编号：{request.requestId}</p></details>
         {result && !result.eventId && <span>服务器暂未找到原记录。可重试同一请求；如依据已变化，重新核对原SKU情景、选择原待办后修正原请求，不另换编号。</span>}
         <Space wrap>
           <Button disabled={busy} onClick={() => void lookup()}>核对原保存结果</Button>
@@ -111,5 +111,6 @@ export function CapacityHandoffForm({ check, onBusyChange, actorId }: {
       </> : <Alert type="warning" showIcon message="没有可见且负责人有效的未结承接待办" description="请在待办中核对该来源的派工或状态；这里不会猜负责人、重复建任务或重开已关闭事项。" />}
     </>}
     {error && <Alert showIcon type="error" message="请核对产能保存结果" description={error} />}
+    {ready && !request && !check && !error && <Alert showIcon type="info" message="当前没有待核对的产能保存请求" description="可关闭此面板返回预警；需要保存下一笔时，从对应SKU重新核对情景。已保存记录仍在原待办历史中。" />}
   </div>;
 }
