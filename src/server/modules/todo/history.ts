@@ -8,7 +8,8 @@ import type { AnyDb } from "@/server/core/svc";
 import { ApiError } from "@/server/modules/master/common";
 import { isWorkItemVisible } from "./service";
 import { capacitySource } from "@/server/modules/outsource/capacity-source";
-import { resolveChannelScope } from "@/server/core/data-scope";
+import { loadUserScopes, resolveChannelScope } from "@/server/core/data-scope";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 
 export const workItemNoteSchema = z.object({
   note: z.string().trim().min(5, "请记录至少5个字的跟进或结果依据").max(1000),
@@ -44,10 +45,12 @@ function eventDto(row: typeof auditLogs.$inferSelect & { actorName?: string | nu
   };
 }
 
-export async function listWorkItemHistory(id: number, query: unknown, actor: SessionUser, dbArg?: AnyDb): Promise<WorkItemHistoryPage> {
+export async function listWorkItemHistory(id: number, query: unknown, user: SessionUser, dbArg?: AnyDb): Promise<WorkItemHistoryPage> {
   const { before } = workItemHistoryQuery.parse(query);
   const db = dbArg ?? await getDbAsync();
   return db.transaction(async (tx: AnyDb) => {
+    const current = await currentWriteActor(tx, user);
+    const actor: SessionUser = { ...current, ...await loadUserScopes(tx, current.id) };
     // Share lock binds visibility to the same item version while selecting its history.
     const [item] = await tx.select().from(workItems).where(eq(workItems.id, id)).for("share");
     if (!item || !isWorkItemVisible(item, actor)) throw new ApiError(404, "待办不存在");
@@ -91,10 +94,12 @@ export async function listWorkItemHistory(id: number, query: unknown, actor: Ses
 }
 
 /** One append-only writer. The item row lock serializes request-ID lookup + append, including replay. */
-export async function appendWorkItemNote(id: number, raw: z.input<typeof workItemNoteSchema>, actor: SessionUser, dbArg?: AnyDb): Promise<{ eventId: number; replayed: boolean }> {
+export async function appendWorkItemNote(id: number, raw: z.input<typeof workItemNoteSchema>, user: SessionUser, dbArg?: AnyDb): Promise<{ eventId: number; replayed: boolean }> {
   const input = workItemNoteSchema.parse(raw);
   const db = dbArg ?? await getDbAsync();
   return db.transaction(async (tx: AnyDb) => {
+    const current = await currentWriteActor(tx, user);
+    const actor: SessionUser = { ...current, ...await loadUserScopes(tx, current.id) };
     const [item] = await tx.select().from(workItems).where(eq(workItems.id, id)).for("update");
     if (!item || !isWorkItemVisible(item, actor)) throw new ApiError(404, "待办不存在");
     const identity = and(eq(auditLogs.entity, "work_item"), eq(auditLogs.entityId, id), eq(auditLogs.action, "follow_up"), sql`${auditLogs.after}->>'requestId' = ${input.requestId}`);

@@ -20,7 +20,8 @@ import { getDbAsync } from "@/db";
 import { users, workItems } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { ROLES, type Role } from "@/server/core/constants";
-import { resolveDeptScope } from "@/server/core/data-scope";
+import { loadUserScopes, resolveDeptScope } from "@/server/core/data-scope";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 import type { SessionUser } from "@/server/core/dto";
 import { log } from "@/server/core/logger";
 import { enqueueNotification, isFeishuAppConfigured } from "@/jobs/notify";
@@ -220,7 +221,7 @@ async function enqueueAssigneeNotification(
  */
 export async function createWorkItem(
   raw: WorkItemCreateInput,
-  actor: SessionUser,
+  user: SessionUser,
   dbArg?: AnyDb,
   opts?: { now?: Date },
 ): Promise<CreateWorkItemResult> {
@@ -230,6 +231,9 @@ export async function createWorkItem(
   const today = dayShanghai(now);
   const fingerprinted = input.sourceKind !== "manual" && !!input.sourceRef;
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    // HTTP normalization is not authority: the earlier admin may have been revoked.
+    if (input.sourceKind !== "manual" && !actor.roles.includes("admin")) throw new ApiError(403, "只有当前管理员可创建系统来源待办");
     const assignee = await requireActiveUser(tx, input.assigneeId);
     if (fingerprinted) {
       const [existing]: (typeof workItems.$inferSelect)[] = await tx
@@ -316,7 +320,7 @@ export async function createWorkItem(
 export async function patchWorkItem(
   id: number,
   raw: z.input<typeof workItemPatchSchema>,
-  actor: SessionUser,
+  user: SessionUser,
   dbArg?: AnyDb,
   opts?: { now?: Date },
 ): Promise<WorkItemRow> {
@@ -324,6 +328,8 @@ export async function patchWorkItem(
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
   return db.transaction(async (tx: AnyDb) => {
+    const current = await currentWriteActor(tx, user);
+    const actor: SessionUser = { ...current, ...await loadUserScopes(tx, current.id) };
     // Lock the base row, not loadRow's nullable user join (PostgreSQL forbids that lock).
     const [existing]: RawRow[] = await tx.select().from(workItems).where(eq(workItems.id, id)).for("update");
     if (!existing) throw new ApiError(404, "待办不存在");

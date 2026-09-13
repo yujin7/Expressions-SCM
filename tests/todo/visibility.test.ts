@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { users, workItems } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { createWorkItem, isWorkItemVisible, listWorkItems, resolveTodoVisibility } from "@/server/modules/todo/service";
@@ -32,7 +33,9 @@ describe("todo 可见性：list / stats / 第 4 屏三处共用 resolveTodoVisib
     };
     // 全部 alert 来源（进 stats 分母）、无截止日、状态 open（进第 4 屏 open）
     await add("assignedToMe", { title: "指派给我", assigneeId: me.id, sourceKind: "alert", sourceRef: "v1" }, admin);
-    await add("assignedByMe", { title: "我指派", assigneeId: other.id, sourceKind: "alert", sourceRef: "v2" }, me);
+    await add("assignedByMe", { title: "我指派", assigneeId: other.id, sourceKind: "alert", sourceRef: "v2" }, admin);
+    // Read-only visibility fixture models a historical assigner; new non-admin creates cannot claim system source.
+    await db.update(workItems).set({ assignerId: me.id }).where(eq(workItems.id, ids.assignedByMe));
     await add("rolePmc", { title: "pmc 责任项", assigneeId: other.id, ownerRole: "pmc", sourceKind: "alert", sourceRef: "v3" }, admin);
     await add("roleOps", { title: "ops 责任项（deptScope 裁掉）", assigneeId: other.id, ownerRole: "ops", sourceKind: "alert", sourceRef: "v4" }, admin);
     await add("unrelated", { title: "无关", assigneeId: other.id, sourceKind: "alert", sourceRef: "v5" }, admin);
