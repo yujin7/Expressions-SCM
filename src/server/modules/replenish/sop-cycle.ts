@@ -7,6 +7,10 @@ import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
 import { shanghaiMonthOf } from "@/server/core/business-day";
+import { currentWriteActor } from "@/server/core/current-write-actor";
+import { loadUserScopes } from "@/server/core/data-scope";
+import { bhReadScope } from "@/server/core/bh-read-scope";
+import { dCmp } from "@/server/core/decimal";
 
 export const SOP_ROLES = ["ops", "pmc", "finance"] as const;
 export type SopRole = (typeof SOP_ROLES)[number];
@@ -53,7 +57,7 @@ export const transitionSopCycleSchema = z.object({
 export const executeFrozenPlanSchema = z.object({
   cycleId: z.number().int().positive(),
   /** 幂等键：双击「按冻结计划开单」只应产生一张草稿（与 createSopCycleSchema 同型） */
-  idempotencyKey: z.string().uuid(),
+  idempotencyKey: z.string().uuid().transform(key => key.toLowerCase()),
   /** 冻结版本里的行（planning_version_lines.sku_id）；缺省 = 全部有建议量的行 */
   skuIds: z.array(z.number().int().positive()).max(200, "一次最多 200 项").optional(),
   /** 是否连被抑制的行一起开（默认否——抑制的量要人工核实过才放行） */
@@ -834,43 +838,53 @@ export async function executeFrozenPlan(
   requireAnyRole(user, "pmc");
   const value = executeFrozenPlanSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const replay = await findExecutionDraft(db, value.idempotencyKey);
-  if (replay) return replay;
-  const [cycle] = await db.select().from(schema.sopCycles).where(eq(schema.sopCycles.id, value.cycleId));
-  if (!cycle) throw new ApiError(404, "S&OP 周期不存在");
-  if (cycle.status !== "frozen" && cycle.status !== "executing") {
-    throw new ApiError(409, `只有已冻结/执行中的周期可以按计划开单（当前 ${cycle.status}）`);
-  }
-  const plan = await getVersion(cycle.planningVersionId, db);
-  if (plan.digest !== cycle.planDigest) {
-    throw new ApiError(409, "冻结版本摘要与周期记录不一致，拒绝据此开单");
-  }
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    const scopedActor = { ...actor, ...await loadUserScopes(tx, actor.id) };
+    // Existing keys are globally unique. Serialize that same boundary before any source read/write.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('sop-execute'), hashtext(${value.idempotencyKey}))`);
+    const db = tx;
+    const requestIntent = {
+      v: 1 as const, cycleId: value.cycleId,
+      skuIds: value.skuIds?.length ? [...new Set(value.skuIds)].sort((a, b) => a - b) : null,
+      includeSuppressed: Boolean(value.includeSuppressed), remark: value.remark?.trim() || null,
+    };
+    const replay = await findExecutionDraft(db, scopedActor, value.idempotencyKey, requestIntent);
+    if (replay) return replay;
+    const [cycle] = await db.select().from(schema.sopCycles).where(eq(schema.sopCycles.id, value.cycleId)).for("update");
+    if (!cycle) throw new ApiError(404, "S&OP 周期不存在");
+    if (cycle.status !== "frozen" && cycle.status !== "executing") {
+      throw new ApiError(409, `只有已冻结/执行中的周期可以按计划开单（当前 ${cycle.status}）`);
+    }
+    const plan = await getVersion(cycle.planningVersionId, db);
+    if (plan.digest !== cycle.planDigest) {
+      throw new ApiError(409, "冻结版本摘要与周期记录不一致，拒绝据此开单");
+    }
 
-  const wanted = value.skuIds?.length ? new Set(value.skuIds) : null;
-  const lines: { skuId: number; skuCode: string; suggestedQty: string; suppressed: boolean }[] = await db
-    .select({
-      skuId: schema.planningVersionLines.skuId,
-      skuCode: schema.planningVersionLines.skuCode,
-      suggestedQty: schema.planningVersionLines.suggestedQty,
-      suppressed: schema.planningVersionLines.suppressed,
-    })
-    .from(schema.planningVersionLines)
-    .where(eq(schema.planningVersionLines.versionId, cycle.planningVersionId));
-  const picked = lines
-    .filter((l) => (wanted ? wanted.has(l.skuId) : true))
-    .filter((l) => (value.includeSuppressed ? true : !l.suppressed))
-    .filter((l) => Number(l.suggestedQty) > 0);
-  if (picked.length === 0) {
-    throw new ApiError(400, wanted ? "所选行在冻结版本里没有可开单的数量（被抑制的行需显式放行）" : "冻结版本里没有可开单的行");
-  }
-  if (picked.length > 200) throw new ApiError(400, "一次最多 200 项，请分批开单");
+    const wanted = value.skuIds?.length ? new Set(value.skuIds) : null;
+    const lines: { skuId: number; skuCode: string; suggestedQty: string; suppressed: boolean }[] = await db
+      .select({
+        skuId: schema.planningVersionLines.skuId,
+        skuCode: schema.planningVersionLines.skuCode,
+        suggestedQty: schema.planningVersionLines.suggestedQty,
+        suppressed: schema.planningVersionLines.suppressed,
+      })
+      .from(schema.planningVersionLines)
+      .where(eq(schema.planningVersionLines.versionId, cycle.planningVersionId));
+    const picked = lines
+      .filter((l) => (wanted ? wanted.has(l.skuId) : true))
+      .filter((l) => (value.includeSuppressed ? true : !l.suppressed))
+      .filter((l) => dCmp(l.suggestedQty, "0") > 0);
+    if (picked.length === 0) {
+      throw new ApiError(400, wanted ? "所选行在冻结版本里没有可开单的数量（被抑制的行需显式放行）" : "冻结版本里没有可开单的行");
+    }
+    if (picked.length > 200) throw new ApiError(400, "一次最多 200 项，请分批开单");
 
-  const { createDerivedBh } = await import("@/server/modules/outsource/bh");
-  const skuIds = picked.map((l) => l.skuId);
-  let doc: { id: number; docNo: string };
-  try {
-    doc = await createDerivedBh(
-      user, "sop",
+    const { createDerivedBh } = await import("@/server/modules/outsource/bh");
+    const skuIds = picked.map((l) => l.skuId);
+    const doc = await createDerivedBh(
+      scopedActor, "sop",
       {
         remark: value.remark?.trim() || `按冻结 S&OP 计划开单（${cycle.name}／版本 #${plan.id}，人工确认）`,
         lines: picked.map((l) => ({ skuId: l.skuId, qty: l.suggestedQty })),
@@ -889,6 +903,7 @@ export async function executeFrozenPlan(
             planDigest: cycle.planDigest,
             skuIds,
             includeSuppressed: Boolean(value.includeSuppressed),
+            requestIntent,
             idempotencyKey: value.idempotencyKey,
             createdBy: user.id,
           });
@@ -911,28 +926,36 @@ export async function executeFrozenPlan(
         },
       },
     );
-  } catch (error) {
-    if (databaseErrorCode(error) === "23505") {
-      const replayed = await findExecutionDraft(db, value.idempotencyKey);
-      if (replayed) return replayed;
-    }
-    throw error;
-  }
-  return { id: doc.id, docNo: doc.docNo, lineCount: picked.length };
+    return { id: doc.id, docNo: doc.docNo, lineCount: picked.length };
+  });
 }
 
 /** 幂等重放：同一个幂等键只对应一张 BH 草稿（并发下唯一键是最终仲裁者） */
 async function findExecutionDraft(
   db: AnyDb,
+  user: SessionUser,
   idempotencyKey: string,
+  requestIntent: NonNullable<typeof schema.sopExecutionDrafts.$inferSelect.requestIntent>,
 ): Promise<{ id: number; docNo: string; lineCount: number } | null> {
-  const [row]: { bhId: number; docNo: string; skuIds: number[] }[] = await db
-    .select({
-      bhId: schema.sopExecutionDrafts.bhId,
-      docNo: schema.sopExecutionDrafts.docNo,
-      skuIds: schema.sopExecutionDrafts.skuIds,
-    })
+  // Older callers could store uppercase UUIDs. Never miss their receipt after normalization.
+  const rows: (typeof schema.sopExecutionDrafts.$inferSelect)[] = await db
+    .select()
     .from(schema.sopExecutionDrafts)
-    .where(eq(schema.sopExecutionDrafts.idempotencyKey, idempotencyKey));
-  return row ? { id: row.bhId, docNo: row.docNo, lineCount: (row.skuIds ?? []).length } : null;
+    .where(sql`lower(${schema.sopExecutionDrafts.idempotencyKey}) = ${idempotencyKey}`)
+    .limit(2);
+  if (rows.length > 1) throw new ApiError(409, "历史请求标识存在大小写冲突，请联系负责人核对原开单记录，不要重复开单");
+  const [row] = rows;
+  if (!row) return null;
+  if (row.createdBy !== user.id) throw new ApiError(403, "请求标识不属于当前账号，请核对自己的开单记录");
+  const [doc] = await db.select({ id: schema.bhDocs.id, docNo: schema.bhDocs.docNo }).from(schema.bhDocs)
+    .where(and(eq(schema.bhDocs.id, row.bhId), bhReadScope(db, user)));
+  if (!doc) throw new ApiError(403, "原备货申请不在当前可读范围，请联系负责人核对");
+  if (!row.requestIntent) throw new ApiError(409, `历史回执未保存完整请求内容，请在备货申请中核对 ${doc.docNo}；不要换请求标识重复开单`);
+  const original = row.requestIntent;
+  if (original.v !== 1 || original.cycleId !== requestIntent.cycleId
+    || original.includeSuppressed !== requestIntent.includeSuppressed || original.remark !== requestIntent.remark
+    || JSON.stringify(original.skuIds) !== JSON.stringify(requestIntent.skuIds)) {
+    throw new ApiError(409, "请求标识已用于不同周期、选择或备注，请核对原备货申请，不要修改原请求重试");
+  }
+  return { id: doc.id, docNo: doc.docNo, lineCount: (row.skuIds ?? []).length };
 }

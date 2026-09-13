@@ -107,6 +107,19 @@ describe("NPD写入：日期、版本、关闭边界及首单请求重放", () =
     await createNpdFirstOrder(actor, firstOrder(), fixture.db);
     await expect(createNpdFirstOrder({ ...actor, roles: ["warehouse"] }, firstOrder(), fixture.db)).rejects.toMatchObject({ status: 403 });
   });
+  it.each(["role", "inactive", "session"])("current database %s revocation rejects NPD replay and new requests", async mode => {
+    const [current] = await fixture.db.select().from(schema.users).where(eq(schema.users.id, actor.id));
+    const session = { ...actor, sessionVersion: current.sessionVersion };
+    await createNpdFirstOrder(session, firstOrder(), fixture.db);
+    await fixture.db.update(schema.users).set(mode === "role" ? { roles: ["warehouse"] }
+      : mode === "inactive" ? { active: false } : { sessionVersion: current.sessionVersion + 1 })
+      .where(eq(schema.users.id, actor.id));
+    for (const request of [firstOrder(), firstOrder({ requestKey: crypto.randomUUID(), version: 2 })]) {
+      await expect(createNpdFirstOrder(session, request, fixture.db)).rejects.toMatchObject({ status: mode === "session" ? 401 : 403 });
+    }
+    expect(await fixture.db.select().from(schema.bhDocs)).toHaveLength(1);
+    expect(await fixture.db.select().from(schema.npdFirstOrders)).toHaveLength(1);
+  });
   it("over-precision quantity fails before creating a BH", async () => {
     await expect(createNpdFirstOrder(actor, firstOrder({ qty: "0.00001" }), fixture.db)).rejects.toThrow();
     expect(await fixture.db.select().from(schema.bhDocs)).toHaveLength(0);
