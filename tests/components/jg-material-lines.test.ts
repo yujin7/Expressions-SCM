@@ -17,8 +17,8 @@ vi.mock("react", () => ({
 vi.mock("@/components/fetchJson", () => ({ fetchJson: h.fetchJson }));
 const onLoaded = vi.fn<(lines: JgMaterialLine[]) => void>();
 const line: JgMaterialLine = { materialSkuId: 72, skuCode: "MAT-B", skuName: "当前物料", baseUom: "件", grossReq: "15.0000",
-  issuedQty: "5", returnedQty: "2", draftIssueQty: "0", pendingIssueQty: "0", draftReturnQty: "0", pendingReturnQty: "0", suggestedIssueQty: "10" };
-const basis = (id = 7) => ({ jgId: id, woId: 9, supplierId: id + 100, lines: [line], openDocuments: [], observedAt: "2026-09-13" });
+  issuedQty: "5", returnedQty: "2", draftIssueQty: "0", pendingIssueQty: "0", draftReturnQty: "0", pendingReturnQty: "0", suggestedIssueQty: "10", woIssuedQty: "5", woDraftIssueQty: "0", woPendingIssueQty: "0" };
+const basis = (id = 7) => ({ jgId: id, woId: 9, supplierId: id + 100, lines: [line], openDocuments: [], woOpenIssues: [], observedAt: "2026-09-13" });
 function MaterialReadHarness() { h.cursor = 0; return useJgMaterialLines(onLoaded); }
 beforeEach(() => { h.cursor = 0; h.slots = []; h.cleanups = []; h.fetchJson.mockReset(); onLoaded.mockReset(); });
 afterEach(() => { h.cleanups.forEach(fn => fn()); });
@@ -48,6 +48,15 @@ describe("JG material snapshot read isolation", () => {
     h.fetchJson.mockResolvedValueOnce(basis(8)); await MaterialReadHarness().load(7);
     expect(MaterialReadHarness()).toMatchObject({ loading: false, basis: null, supplierId: null, error: expect.stringContaining("不符") });
     expect(onLoaded.mock.calls).toEqual([[[]]]);
+  });
+  it.each(["woOpenIssues", "woIssuedQty", "woDraftIssueQty", "woPendingIssueQty"])("refuses a stale response missing %s instead of reusing a single-JG allowance", async field => {
+    const stale = basis();
+    if (field === "woOpenIssues") Reflect.deleteProperty(stale, field);
+    else stale.lines = [{ ...line }].map(row => { Reflect.deleteProperty(row, field); return row; });
+    h.fetchJson.mockResolvedValueOnce(basis()).mockResolvedValueOnce(stale);
+    await MaterialReadHarness().load(7); await MaterialReadHarness().load(7);
+    expect(MaterialReadHarness()).toMatchObject({ loading: false, basis: null, supplierId: null, error: expect.stringContaining("跨批次发料依据不完整") });
+    expect(onLoaded).toHaveBeenLastCalledWith([]);
   });
   it("failure after a successful load removes evidence and retry supplies new facts", async () => {
     h.fetchJson.mockResolvedValueOnce(basis()).mockRejectedValueOnce(Error("读取失败")).mockResolvedValueOnce(basis());

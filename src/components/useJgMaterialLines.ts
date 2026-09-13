@@ -34,6 +34,10 @@ export function useJgMaterialLines(onLoaded: (lines: JgMaterialLine[]) => void) 
       const current = await fetchJson<JgMaterialBasis>(`/api/outsource/jg/${id}?materialBasis=1`, { signal: request.signal, cache: "no-store" });
       if (!request.isCurrent()) return;
       if (current.jgId !== id) throw new Error("物料依据与当前加工单不符，请重试");
+      if (!Array.isArray(current.woOpenIssues) || !Array.isArray(current.lines)
+        || current.lines.some(line => [line.woIssuedQty, line.woDraftIssueQty, line.woPendingIssueQty].some(value => typeof value !== "string"))) {
+        throw new Error("工单跨批次发料依据不完整，请刷新后重试；未沿用旧额度");
+      }
       onLoaded(current.lines);
       setSupplierId(current.supplierId);
       setBasis(current);

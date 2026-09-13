@@ -189,7 +189,7 @@ describe("物料流转 W4：FL 发料 / TL 退料", () => {
 
     await expect(
       approveFl(whApprover, fl2, { action: "approve", version: pending.version }, db),
-    ).rejects.toMatchObject({ status: 403, message: "超发需管理员审批" });
+    ).rejects.toMatchObject({ status: 403, message: "同工单跨加工批次累计超发需管理员审批，请核对其他批次已发量" });
 
     // 校验失败整个事务回滚：单据仍待审批、无过账
     const [doc] = await db.select().from(flDocs).where(eq(flDocs.id, fl2));

@@ -29,18 +29,30 @@ export async function getJgMaterialBasis(user: SessionUser, jgId: number, dbArg?
       coalesce(sum(qty) filter(where kind='tl' and status='draft'),0) draft_return,
       coalesce(sum(qty) filter(where kind='tl' and status='pending'),0) pending_return
       from movements where status in (${active},'draft','pending') group by sku_id),
+    wo_issues as (select d.id,d.doc_no,d.status,d.jg_id,j.doc_no jg_doc_no from fl_docs d
+      join jg_docs j on j.id=d.jg_id join target t on t.wo_id=j.wo_id),
+    wo_totals as (select l.sku_id,
+      coalesce(sum(l.qty) filter(where d.status in (${active})),0) issued,
+      coalesce(sum(l.qty) filter(where d.status='draft'),0) draft_issue,
+      coalesce(sum(l.qty) filter(where d.status='pending'),0) pending_issue
+      from wo_issues d join fl_lines l on l.fl_id=d.id
+      where d.status in (${active},'draft','pending') group by l.sku_id),
     material_ids as (select sku_id from requirements union select sku_id from totals)
     select jsonb_build_object('jgId',t.id,'woId',t.wo_id,'supplierId',t.supplier_id,'observedAt',statement_timestamp(),
       'openDocuments',coalesce((select jsonb_agg(jsonb_build_object('kind',d.kind,'id',d.id,'docNo',d.doc_no,'status',d.status)
         order by d.kind,d.id) from documents d where d.status in ('draft','pending')),'[]'::jsonb),
+      'woOpenIssues',coalesce((select jsonb_agg(jsonb_build_object('kind','fl','id',d.id,'docNo',d.doc_no,'status',d.status,
+        'jgId',d.jg_id,'jgDocNo',d.jg_doc_no) order by d.id) from wo_issues d where d.status in ('draft','pending')),'[]'::jsonb),
       'lines',coalesce((select jsonb_agg(jsonb_build_object('materialSkuId',s.id,'skuCode',s.code,'skuName',s.name,'baseUom',s.base_uom,
         'grossReq',coalesce(r.qty,0)::text,'issuedQty',coalesce(m.issued,0)::text,'returnedQty',coalesce(m.returned,0)::text,
         'draftIssueQty',coalesce(m.draft_issue,0)::text,'pendingIssueQty',coalesce(m.pending_issue,0)::text,
         'draftReturnQty',coalesce(m.draft_return,0)::text,'pendingReturnQty',coalesce(m.pending_return,0)::text,
-        'suggestedIssueQty',case when coalesce(m.draft_issue,0)>0 or coalesce(m.pending_issue,0)>0 then '0'
-          else greatest(coalesce(r.qty,0)-coalesce(m.issued,0),0)::text end
+        'woIssuedQty',coalesce(w.issued,0)::text,'woDraftIssueQty',coalesce(w.draft_issue,0)::text,'woPendingIssueQty',coalesce(w.pending_issue,0)::text,
+        'suggestedIssueQty',case when coalesce(w.draft_issue,0)>0 or coalesce(w.pending_issue,0)>0 then '0'
+          else greatest(coalesce(r.qty,0)-coalesce(w.issued,0),0)::text end
       ) order by s.code,s.id) from material_ids i join skus s on s.id=i.sku_id
-        left join requirements r on r.sku_id=i.sku_id left join totals m on m.sku_id=i.sku_id),'[]'::jsonb)) basis from target t
+        left join requirements r on r.sku_id=i.sku_id left join totals m on m.sku_id=i.sku_id
+        left join wo_totals w on w.sku_id=i.sku_id),'[]'::jsonb)) basis from target t
   `);
   const basis = (result.rows[0] as { basis: JgMaterialBasis } | undefined)?.basis;
   if (!basis) throw new ApiError(404, "加工通知单不存在");
