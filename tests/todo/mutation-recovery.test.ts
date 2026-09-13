@@ -5,8 +5,9 @@ import { eq } from "drizzle-orm";
 import { auditLogs, notifications, users, workItems } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { createWorkItem, getWorkItemMutationResult, patchWorkItem } from "@/server/modules/todo/service";
-import { GET, PATCH } from "@/app/api/todo/[id]/route";
+import { listWorkItemHistory } from "@/server/modules/todo/history";
+import { cancelWorkItemMutation, createWorkItem, getWorkItemMutationResult, patchWorkItem } from "@/server/modules/todo/service";
+import { GET, PATCH, POST } from "@/app/api/todo/[id]/route";
 import { createTestDb, type TestDb } from "../helpers/db";
 const deps = vi.hoisted(() => ({ db: vi.fn(), user: vi.fn(), fail: false }));
 vi.mock("@/db", async original => ({ ...await original<typeof import("@/db")>(), getDbAsync: deps.db }));
@@ -24,6 +25,67 @@ beforeAll(async () => {
 afterAll(async () => { await client?.close(); });
 const task = async () => (await createWorkItem({ title: "合成状态恢复", assigneeId: actor.id }, actor, db)).item;
 const facts = async () => ({ tasks: await db.select().from(workItems), audits: await db.select().from(auditLogs), notices: await db.select().from(notifications) });
+const cancellation = (row: { version: number }) => ({ mode: "cancel-mutation" as const, requestId: randomUUID(), expectedVersion: row.version, status: "done" as const, assigneeId: null, note: null });
+it("cancellation fences the original key durably without changing task, version, timestamp or notifications", async () => {
+  const row = await task(), input = cancellation(row), before = await facts();
+  const saved = await cancelWorkItemMutation(row.id, input, actor, db), after = await facts();
+  expect(saved).toMatchObject({ receipt: { cancelled: true, originalResult: { status: "open", version: 1 } }, current: { status: "open", version: 1 } });
+  expect(after.tasks).toEqual(before.tasks); expect(after.notices).toEqual(before.notices); expect(after.audits).toHaveLength(before.audits.length + 1);
+  expect(await cancelWorkItemMutation(row.id, { ...input, requestId: input.requestId.toUpperCase() }, actor, db)).toEqual(saved);
+  expect(await getWorkItemMutationResult(row.id, input.requestId, actor, db)).toEqual(saved);
+  expect((await listWorkItemHistory(row.id, {}, actor, db)).rows[0]).toMatchObject({ action: "mutation_cancelled", status: null, assigneeId: null, requestId: null });
+  const patch = { requestId: input.requestId, expectedVersion: input.expectedVersion, status: input.status, note: input.note };
+  await expect(patchWorkItem(row.id, patch, actor, db)).rejects.toMatchObject({ status: 409 }); expect(await facts()).toEqual(after);
+  // A deliberate new action uses a new key and current version, rather than reusing the cancelled one.
+  expect(await patchWorkItem(row.id, { ...patch, requestId: randomUUID() }, actor, db)).toMatchObject({ status: "done", version: 2 });
+  expect((await getWorkItemMutationResult(row.id, input.requestId, actor, db)).receipt).toEqual(saved.receipt);
+});
+it("cancellation after committed save returns the original save, never an undo", async () => {
+  const row = await task(), input = cancellation(row);
+  const saved = await patchWorkItem(row.id, { requestId: input.requestId, expectedVersion: 1, status: "done" }, actor, db), before = await facts();
+  const result = await cancelWorkItemMutation(row.id, input, actor, db);
+  expect(result.receipt).toEqual(saved.mutationReceipt); expect(result.receipt?.cancelled).toBeUndefined(); expect(await facts()).toEqual(before);
+});
+it("stale missing request is obsolete, not a fabricated cancellation; future version is rejected", async () => {
+  const row = await task(), input = cancellation(row);
+  await patchWorkItem(row.id, { status: "in_progress" }, actor, db); const before = await facts();
+  expect(await cancelWorkItemMutation(row.id, input, actor, db)).toMatchObject({ receipt: null, current: { version: 2 } });
+  await expect(cancelWorkItemMutation(row.id, { ...input, expectedVersion: 3 }, actor, db)).rejects.toMatchObject({ status: 409 }); expect(await facts()).toEqual(before);
+});
+it.each(["status", "assigneeId", "note", "expectedVersion"] as const)("cancelled key rejects changed %s and other actor/task ownership", async field => {
+  const row = await task(), another = await task(), input = cancellation(row);
+  await cancelWorkItemMutation(row.id, input, actor, db); const before = await facts();
+  const changes = { status: "in_progress", assigneeId: other.id, note: "改变内容", expectedVersion: 2 };
+  await expect(cancelWorkItemMutation(row.id, { ...input, [field]: changes[field] }, actor, db)).rejects.toMatchObject({ status: 409 });
+  await expect(cancelWorkItemMutation(row.id, input, other, db)).rejects.toMatchObject({ status: 403 });
+  await expect(cancelWorkItemMutation(another.id, input, actor, db)).rejects.toMatchObject({ status: 409 }); expect(await facts()).toEqual(before);
+});
+it("cancellation audit failure rolls back the fence and preserves ability to retry", async () => {
+  const row = await task(), input = cancellation(row), before = await facts(); deps.fail = true;
+  try { await expect(cancelWorkItemMutation(row.id, input, actor, db)).rejects.toThrow("synthetic mutation audit failure"); } finally { deps.fail = false; }
+  expect(await facts()).toEqual(before); expect((await getWorkItemMutationResult(row.id, input.requestId, actor, db)).receipt).toBeNull();
+  expect((await cancelWorkItemMutation(row.id, input, actor, db)).receipt?.cancelled).toBe(true);
+});
+it("cancellation rechecks current actor/session/scope, without requiring the old target to remain active", async () => {
+  const row = await task(), input = { ...cancellation(row), assigneeId: other.id };
+  await db.update(users).set({ active: false }).where(eq(users.id, actor.id));
+  try { await expect(cancelWorkItemMutation(row.id, input, actor, db)).rejects.toMatchObject({ status: 403 }); }
+  finally { await db.update(users).set({ active: true }).where(eq(users.id, actor.id)); }
+  await expect(cancelWorkItemMutation(row.id, input, { ...actor, sessionVersion: -1 }, db)).rejects.toMatchObject({ status: 401 });
+  const [outsider] = await db.insert(users).values({ name: "合成范围外取消", roles: ["ops"] }).returning();
+  await expect(cancelWorkItemMutation(row.id, input, { ...actor, id: outsider.id, sessionVersion: outsider.sessionVersion }, db)).rejects.toMatchObject({ status: 404 });
+  await db.update(users).set({ active: false }).where(eq(users.id, other.id));
+  try { expect((await cancelWorkItemMutation(row.id, input, actor, db)).receipt?.cancelled).toBe(true); }
+  finally { await db.update(users).set({ active: true }).where(eq(users.id, other.id)); }
+});
+it("POST only accepts complete cancellation intent and returns a private durable receipt", async () => {
+  deps.user.mockResolvedValue(actor); const row = await task(), input = cancellation(row), ctx = { params: Promise.resolve({ id: String(row.id) }) };
+  const post = (body: unknown, query = "") => POST(new NextRequest(`http://localhost/api/todo/${row.id}${query}`, { method: "POST", body: JSON.stringify(body) }), ctx);
+  for (const body of [null, [], { ...input, mode: "cancel-task" }, { ...input, requestId: undefined }, { ...input, expectedVersion: undefined }, { ...input, status: undefined }, { ...input, note: undefined }, { ...input, extra: true }]) expect((await post(body)).status).toBe(400);
+  expect((await post(input, "?mode=cancel-mutation")).status).toBe(400);
+  const response = await post(input); expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toContain("no-store");
+  expect(await response.json()).toMatchObject({ receipt: { cancelled: true }, current: { version: 1, status: "open" } });
+});
 it("replays immutable completion receipt after reopening without completing again", async () => {
   const row = await task(), input = { requestId: randomUUID(), expectedVersion: row.version, status: "done" as const, note: "合成结果依据" };
   const saved = await patchWorkItem(row.id, input, actor, db);

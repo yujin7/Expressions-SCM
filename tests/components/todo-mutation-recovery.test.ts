@@ -73,6 +73,35 @@ it("missing current version permits explicit same-request retry, not a new UUID"
   expect(JSON.parse(m.fetch.mock.calls[2][1].body)).toMatchObject({ requestId: request.requestId, expectedVersion: 1, status: "done" });
   expect(loadTodoMutation(storage, 1)).toEqual(request); expect(text(render())).toContain("原操作已保存");
 });
+const fenced = (): TodoMutationLookup => ({ ...missing(), receipt: { ...found().receipt!, cancelled: true, originalResult: { version: 1, status: "open", assigneeId: 1, completedAt: null, suspicious: false } } });
+it("cancellation requires explicit second confirmation, rechecks first and only clears after receipt acknowledgement", async () => {
+  m.fetch.mockResolvedValueOnce(missing()).mockResolvedValueOnce(missing()).mockResolvedValueOnce(fenced()).mockResolvedValue(fenced());
+  render(); click("核对原操作结果"); await flush(); click("阻止原操作执行");
+  expect(m.fetch).toHaveBeenCalledOnce(); expect(text(render())).toContain("不取消待办");
+  click("确定阻止原操作"); await flush();
+  expect(m.fetch.mock.calls[2][1].method).toBe("POST"); expect(text(render())).toContain("已阻止原操作执行");
+  expect(text(render())).not.toContain("原操作已保存"); expect(loadTodoMutation(storage, 1)).toEqual(request);
+  expect(all(render()).some(e => text(e) === "重试原操作")).toBe(false);
+  click("确认回执并清理本机记录"); await flush(); expect(loadTodoMutation(storage, 1)).toBeNull(); expect(m.confirmed).toHaveBeenCalledWith(fenced(), false);
+});
+it("save winning before cancellation's recheck never triggers a cancellation write", async () => {
+  m.fetch.mockResolvedValueOnce(missing()).mockResolvedValueOnce(found());
+  render(); click("核对原操作结果"); await flush(); click("阻止原操作执行"); click("确定阻止原操作"); await flush();
+  expect(m.fetch.mock.calls.every(c => c[1].method === undefined)).toBe(true); expect(text(render())).toContain("原操作已保存"); expect(loadTodoMutation(storage, 1)).toEqual(request);
+});
+it("lost cancellation reply keeps the record, then GET recovers without another write", async () => {
+  m.fetch.mockResolvedValueOnce(missing()).mockResolvedValueOnce(missing()).mockRejectedValueOnce(Error("合成取消回复丢失")).mockResolvedValue(fenced());
+  render(); click("核对原操作结果"); await flush(); click("阻止原操作执行"); click("确定阻止原操作"); await flush();
+  expect(loadTodoMutation(storage, 1)).toEqual(request); expect(text(render())).toContain("合成取消回复丢失");
+  click("核对原操作结果"); await flush(); expect(text(render())).toContain("已阻止原操作执行"); expect(m.fetch.mock.calls.filter(c => c[1].method === "POST")).toHaveLength(1);
+});
+it("unmount during cancellation retains recovery evidence and ignores its late result", async () => {
+  let resolve!: (v: unknown) => void;
+  m.fetch.mockResolvedValueOnce(missing()).mockResolvedValueOnce(missing()).mockReturnValueOnce(new Promise(r => { resolve = r; }));
+  render(); click("核对原操作结果"); await flush(); click("阻止原操作执行"); click("确定阻止原操作"); await flush();
+  expect(all(render()).find(e => e.type === "drawer")?.props).toMatchObject({ closable: false, keyboard: false });
+  unmount(); resolve(fenced()); await flush(); expect(h.lateWrites).toBe(0); expect(loadTodoMutation(storage, 1)).toEqual(request);
+});
 it("retry rechecks first and never PATCHes if the receipt appeared meanwhile", async () => {
   m.fetch.mockResolvedValueOnce(missing()).mockResolvedValueOnce(found()); render(); click("核对原操作结果"); await flush(); click("重试原操作"); await flush();
   expect(m.fetch.mock.calls.every(c => c[1].method === undefined)).toBe(true); expect(text(render())).toContain("原操作已保存"); expect(loadTodoMutation(storage, 1)).toEqual(request);

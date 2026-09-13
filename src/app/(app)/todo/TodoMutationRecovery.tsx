@@ -2,7 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Drawer, Space } from "antd";
 import { useTodoMutationRequest } from "@/components/useTodoMutationRequest";
-import { clearTodoMutation, loadTodoMutation, lookupTodoMutation, submitTodoMutation, todoMutationIsObsolete, TODO_MUTATION_CHANGED, TODO_MUTATION_OPEN,
+import { cancelTodoMutation, clearTodoMutation, loadTodoMutation, lookupTodoMutation, submitTodoMutation, todoMutationIsObsolete, TODO_MUTATION_CHANGED, TODO_MUTATION_OPEN,
   withTodoMutationLock, type TodoMutationLookup, type TodoMutationRequest } from "@/components/todo-mutation-request";
 import { todoItemHref } from "@/lib/todo-navigation";
 import { useDialogReturnFocus } from "@/components/useDialogReturnFocus";
@@ -38,7 +38,7 @@ export default function TodoMutationRecovery({ actorId, onChanged }: { actorId: 
     {confirmed ? <Alert type="success" showIcon message={confirmed.text} className={styles.feedback}
       description={<a href={todoItemHref(confirmed.itemId)}>查看当前待办 #{confirmed.itemId}</a>} closable onClose={() => setConfirmed(null)} /> : null}
     {open && recovery.request ? <TodoMutationRecoveryDrawer key={recovery.request.requestId} actorId={actorId} request={recovery.request} onClose={() => setOpen(false)}
-      onConfirmed={(r, obsolete) => { setOpen(false); setConfirmed({ itemId: r.itemId, text: obsolete ? "已核对：旧版本操作未执行，本机记录已清理" : "原操作回执已确认，本机记录已清理；当前状态以任务详情为准" }); onChanged(); }} /> : null}
+      onConfirmed={(r, obsolete) => { setOpen(false); setConfirmed({ itemId: r.itemId, text: r.receipt?.cancelled ? "已阻止原操作，本机记录已清理；待办状态未因此改变" : obsolete ? "已核对：旧版本操作未执行，本机记录已清理" : "原操作回执已确认，本机记录已清理；当前状态以任务详情为准" }); onChanged(); }} /> : null}
   </section>;
 }
 
@@ -48,16 +48,17 @@ export function TodoMutationRecoveryDrawer({ actorId, request, onClose, onConfir
   const [result, setResult] = useState<TodoMutationLookup | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const life = useRef(0), locked = useRef(false), content = useRef<HTMLDivElement>(null);
   useEffect(() => { const generation = ++life.current; return () => { life.current = generation + 1; }; }, []);
   useLayoutEffect(() => {
-    if (result || error) { content.current?.focus({ preventScroll: true }); content.current?.scrollIntoView({ block: "start" }); }
-  }, [result, error]);
+    if (result || error || confirmCancel) { content.current?.focus({ preventScroll: true }); content.current?.scrollIntoView({ block: "start" }); }
+  }, [result, error, confirmCancel]);
   const obsolete = !!result && todoMutationIsObsolete(request, result);
-  const run = async (mode: "lookup" | "retry" | "ack") => {
+  const run = async (mode: "lookup" | "retry" | "ack" | "cancel") => {
     if (locked.current || life.current === 0) return;
     const generation = life.current, isCurrent = () => life.current === generation;
-    locked.current = true; setBusy(true); setError(null);
+    locked.current = true; setBusy(true); setError(null); setConfirmCancel(false);
     try {
       await withTodoMutationLock(actorId, async () => {
         if (!isCurrent()) return;
@@ -66,6 +67,7 @@ export function TodoMutationRecoveryDrawer({ actorId, request, onClose, onConfir
         let fresh = await lookupTodoMutation(prior);
         if (!isCurrent()) return;
         if (mode === "retry" && !fresh.receipt && !todoMutationIsObsolete(prior, fresh)) fresh = await submitTodoMutation(prior);
+        if (mode === "cancel" && !fresh.receipt && !todoMutationIsObsolete(prior, fresh)) fresh = await cancelTodoMutation(prior);
         if (!isCurrent()) return;
         setResult(fresh);
         if (mode === "ack") {
@@ -89,18 +91,22 @@ export function TodoMutationRecoveryDrawer({ actorId, request, onClose, onConfir
       {request.note ? <details><summary>查看原备注</summary><p>{request.note}</p></details> : null}
       <p>仅在本机按账号保留有限原操作，不含密码。核对不会再次修改任务；重试也只使用原编号、原版本和原内容。关页或超时不代表服务器已取消。</p>
       {error ? <Alert type="error" showIcon message="原操作结果未确认" description={error} /> : null}
-      {result?.receipt ? <Alert type="success" showIcon message={`原操作已保存 · 回执 #${result.receipt.eventId}`}
-        description={<div>当时结果：{labels[result.receipt.originalResult.status]} · 责任人 #{result.receipt.originalResult.assigneeId} · v{result.receipt.originalResult.version}
+      {result?.receipt ? <Alert type="success" showIcon message={`${result.receipt.cancelled ? "已阻止原操作执行" : "原操作已保存"} · 回执 #${result.receipt.eventId}`}
+        description={<div>{result.receipt.cancelled ? "服务端已拒绝此原编号的后续提交；没有撤销任何已保存操作，也没有取消待办。阻止时任务：" : "当时结果："}{labels[result.receipt.originalResult.status]} · 责任人 #{result.receipt.originalResult.assigneeId} · v{result.receipt.originalResult.version}
           {result.receipt.originalResult.suspicious ? <p>当时创建不足10分钟即完成，已保留可疑标记（仅提示）。</p> : null}</div>} /> : null}
       {result ? <Alert type={result.receipt && result.current.version > result.receipt.originalResult.version ? "warning" : "info"} showIcon
         message={result.receipt && result.current.version > result.receipt.originalResult.version ? "任务后来已有更新；原回执不代表当前仍是原状态" : "本次核对时的当前任务"}
         description={<div>{labels[result.current.status]} · 责任人 {result.current.assigneeName ?? `#${result.current.assigneeId}`} · v{result.current.version}<br />
           <a href={todoItemHref(request.itemId)}>查看当前待办 #{request.itemId}</a></div>} /> : null}
       {result && !result.receipt ? <Alert type="warning" showIcon message={obsolete ? "旧版本操作未执行，已不能再执行" : "暂未查到原回执"}
-        description={obsolete ? "任务版本已前进，服务端会拒绝此旧版本请求。确认后可清理本机记录，再根据当前任务决定下一步。" : "暂未查到不表示稍后不会完成。可继续核对，或明确重试原操作；不会换新编号或自动提交。"} /> : null}
+        description={obsolete ? "任务版本已前进，服务端会拒绝此旧版本请求。确认后可清理本机记录，再根据当前任务决定下一步。" : "暂未查到不表示稍后不会完成。可继续核对、重试原操作，或请求服务端阻止其执行；不会换新编号或自动提交。"} /> : null}
+      {confirmCancel ? <Alert type="warning" showIcon message="确定不再执行这笔原操作？"
+        description="只阻止尚未执行的原请求，不取消待办。若保存已先完成，会保留并显示真实保存结果。请求超时仍需核对，不会直接清除本机记录。"
+        action={<Button danger disabled={busy} onClick={() => void run("cancel")}>确定阻止原操作</Button>} /> : null}
       <Space wrap>
         <Button loading={busy} disabled={busy} onClick={() => void run("lookup")}>核对原操作结果</Button>
         {result && !result.receipt && !obsolete ? <Button disabled={busy} onClick={() => void run("retry")}>重试原操作</Button> : null}
+        {result && !result.receipt && !obsolete ? <Button danger disabled={busy} onClick={() => setConfirmCancel(v => !v)}>{confirmCancel ? "暂不阻止" : "阻止原操作执行"}</Button> : null}
         {result?.receipt || obsolete ? <Button type="primary" disabled={busy} onClick={() => void run("ack")}>{obsolete ? "确认未执行并清理本机记录" : "确认回执并清理本机记录"}</Button> : null}
       </Space>
       <details><summary>原请求编号</summary><small>{request.requestId}</small></details>

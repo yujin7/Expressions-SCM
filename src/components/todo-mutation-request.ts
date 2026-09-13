@@ -12,7 +12,7 @@ const snapshotSchema = z.object({ version: id, status, assigneeId: id, completed
   .refine(v => (v.status === "done") === (v.completedAt !== null) && (!v.suspicious || v.status === "done"));
 const currentSchema = z.object({ id, title: z.string().min(1).max(200), version: id, status, assigneeId: id,
   assigneeName: z.string().nullable(), completedAt: z.string().datetime().nullable(), suspicious: z.boolean() });
-const receiptSchema = z.object({ eventId: id, requestId: z.string().uuid(), originalIntent: intentSchema, originalResult: snapshotSchema });
+const receiptSchema = z.object({ eventId: id, requestId: z.string().uuid(), originalIntent: intentSchema, originalResult: snapshotSchema, cancelled: z.literal(true).optional() });
 const resultSchema = z.object({ itemId: id, requestId: z.string().uuid(), receipt: receiptSchema.nullable(), current: currentSchema });
 export type TodoMutationRequest = z.output<typeof requestSchema>;
 export type TodoMutationLookup = z.output<typeof resultSchema>;
@@ -56,7 +56,8 @@ function validateResult(raw: unknown, r: TodoMutationRequest): TodoMutationLooku
     || !snapshotSchema.safeParse(result.current).success) return fail();
   if (result.receipt && (result.receipt.requestId !== r.requestId || JSON.stringify(result.receipt.originalIntent) !== JSON.stringify(originalIntent(r)))) return fail();
   if (saved && (saved.version < r.expectedVersion || saved.version > r.expectedVersion + 1 || result.current.version < saved.version
-    || (r.status !== null && saved.status !== r.status) || (r.assigneeId !== null && saved.assigneeId !== r.assigneeId))) return fail();
+    || (result.receipt?.cancelled ? saved.version !== r.expectedVersion
+      : (r.status !== null && saved.status !== r.status) || (r.assigneeId !== null && saved.assigneeId !== r.assigneeId)))) return fail();
   if (saved && result.current.version === saved.version && ["status", "assigneeId", "completedAt", "suspicious"].some(k => result.current[k as keyof typeof saved] !== saved[k as keyof typeof saved])) return fail();
   return result;
 }
@@ -70,6 +71,12 @@ export async function lookupTodoMutation(input: TodoMutationRequest, timeoutMs =
   const r = requestSchema.parse(input);
   return validateResult(await bounded(`/api/todo/${r.itemId}?mode=mutation-result&requestId=${r.requestId}`, { cache: "no-store" }, timeoutMs), r);
 }
+export async function cancelTodoMutation(input: TodoMutationRequest, timeoutMs = 20000) {
+  const r = requestSchema.parse(input);
+  return validateResult(await bounded(`/api/todo/${r.itemId}`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "cancel-mutation", requestId: r.requestId, ...originalIntent(r) }),
+  }, timeoutMs), r);
+}
 export async function submitTodoMutation(input: TodoMutationRequest, timeoutMs = 20000) {
   const r = requestSchema.parse(input);
   const raw = await bounded(`/api/todo/${r.itemId}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -77,7 +84,7 @@ export async function submitTodoMutation(input: TodoMutationRequest, timeoutMs =
       ...(r.status === null ? {} : { status: r.status }), ...(r.assigneeId === null ? {} : { assigneeId: r.assigneeId }), note: r.note }),
   }, timeoutMs);
   const parsed = currentSchema.extend({ mutationReceipt: receiptSchema, replayed: z.boolean() }).safeParse(raw);
-  if (!parsed.success) throw Error("保存回执格式未确认，原操作仍保留，请先核对");
+  if (!parsed.success || parsed.data.mutationReceipt.cancelled) throw Error("保存回执格式未确认，原操作仍保留，请先核对");
   return validateResult({ itemId: r.itemId, requestId: r.requestId, receipt: parsed.data.mutationReceipt, current: parsed.data }, r);
 }
 /** Only a monotonically newer version proves this missing original request can no longer execute. */

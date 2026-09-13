@@ -18,7 +18,7 @@ export const workItemNoteSchema = z.object({
 export const workItemHistoryQuery = z.object({
   before: z.coerce.number().int().positive().max(2_147_483_647).optional(),
 }).strict();
-const ACTIONS = ["create", "assign", "update", "complete", "cancel", "reopen", "follow_up", "capacity_check"];
+const ACTIONS = ["create", "assign", "update", "complete", "cancel", "mutation_cancelled", "reopen", "follow_up", "capacity_check"];
 
 export interface WorkItemHistoryEvent {
   id: number;
