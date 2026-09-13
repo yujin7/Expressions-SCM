@@ -33,6 +33,7 @@ import { fetchJson, postJson } from "@/components/fetchJson";
 import { useMe, type Me } from "@/components/useMe";
 import { useSopExecutionRequest } from "@/components/useSopExecutionRequest";
 import DocStatusTag from "@/components/DocStatusTag";
+import { formatQty } from "@/components/format";
 import { documentHref } from "@/lib/document-links";
 
 type SopRole = "ops" | "pmc" | "finance";
@@ -325,7 +326,7 @@ function SopWorkspace({ me }: { me: Me | null }) {
       title: "冻结建议量", dataIndex: "suggestedQty", width: 130, align: "right",
       render: (v: string, r) => (
         <Space size={4}>
-          <span>{Number(v).toLocaleString("zh-CN")} {r.baseUom}</span>
+          <span>{formatQty(v)} {r.baseUom}</span>
           {r.suppressed ? <Tag color="orange">抑制</Tag> : null}
         </Space>
       ),
