@@ -1,6 +1,7 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import AutoChainClient from "@/app/(app)/outsource/auto-chain/auto-chain-client";
+import KitFactoryEvidence from "@/components/KitFactoryEvidence";
 
 // Callback/lifecycle proof only; real AntD layout and keyboard proof lives in the candidate browser receipt.
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false, q: "" }));
@@ -75,6 +76,17 @@ it("evidence is a labelled button opening the exact source and can be closed", a
   await begin(); const button = nodes(cell("预计齐套日"))[0]; expect(button.type).toBe("button"); expect(button.props["aria-label"]).toContain("WO-18");
   (button.props.onClick as () => void)(); expect(props("modal").open).toBe(true); expect(props("modal").title).toContain("WO-18"); expect(JSON.stringify(props("modal").children)).toContain("系统供给预测说明");
   (props("modal").onCancel as () => void)(); expect(props("modal").open).toBe(false);
+});
+it("reopening even the same WO gives factory evidence a fresh identity and destroys hidden content", async () => {
+  await begin();
+  const open = () => (nodes(cell("预计齐套日"))[0].props.onClick as () => void)();
+  open();
+  const first = nodes(props("modal").children as ReactNode).find(n => n.type === KitFactoryEvidence)!;
+  expect(first.props.woId).toBe(18);
+  (props("modal").onCancel as () => void)(); open();
+  const next = nodes(props("modal").children as ReactNode).find(n => n.type === KitFactoryEvidence)!;
+  expect(next.key).not.toBe(first.key); expect(next.props.woId).toBe(18);
+  expect(props("modal").destroyOnHidden).toBe(true);
 });
 it.each([0, 1])("generation %s guards same-tick repeats and links the exact unsubmitted draft", async i => {
   await begin(); const write = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(write.promise);

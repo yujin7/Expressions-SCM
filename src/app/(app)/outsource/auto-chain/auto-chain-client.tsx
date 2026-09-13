@@ -51,7 +51,9 @@ export default function AutoChainClient() {
   const q = list.filters.q ?? "";
   const [searchDraft, setSearchDraft] = useState(q);
   useEffect(() => { setSearchDraft(q); }, [q]);
-  const [evidence, setEvidence] = useState<Batch | null>(null);
+  const [evidence, setEvidence] = useState<(Batch & { readKey: number }) | null>(null);
+  const evidenceSequence = useRef(0);
+  const openEvidence = (row: Batch) => setEvidence({ ...row, readKey: ++evidenceSequence.current });
   const [busy, setBusy] = useState<string | null>(null);
   const writing = useRef(false);
   const mounted = useRef(true);
@@ -113,7 +115,7 @@ export default function AutoChainClient() {
       dataIndex: "kitDate",
       width: 120,
       render: (v: string | null, r: Batch) => (
-        <Button type="link" size="small" style={{ paddingInline: 0 }} aria-label={`查看 ${r.woDocNo} 齐套依据`} onClick={() => setEvidence(r)}>
+        <Button type="link" size="small" style={{ paddingInline: 0 }} aria-label={`查看 ${r.woDocNo} 齐套依据`} onClick={() => openEvidence(r)}>
           {v ?? "视野内齐不了"}
         </Button>
       ),
@@ -124,7 +126,7 @@ export default function AutoChainClient() {
       width: 125,
       render: (v: string | null, r: Batch) =>
         r.referenceEvidenceCount > 0 ? (
-          <Button type="link" size="small" style={{ paddingInline: 0 }} aria-label={`查看 ${r.woDocNo} 旧台账旁证`} onClick={() => setEvidence(r)}>{v ?? "视野内未可得"}</Button>
+          <Button type="link" size="small" style={{ paddingInline: 0 }} aria-label={`查看 ${r.woDocNo} 旧台账旁证`} onClick={() => openEvidence(r)}>{v ?? "视野内未可得"}</Button>
         ) : <Typography.Text type="secondary">无匹配旁证</Typography.Text>,
     },
     { title: "已下批", dataIndex: "alreadyBatched", width: 90, align: "right", render: (v: string) => formatQty(v) },
@@ -178,7 +180,7 @@ export default function AutoChainClient() {
           <Table<WoSug> rowKey="bhLineId" size={list.tableSize} tableLayout="fixed" scroll={{ x: 830 }} columns={woCols} dataSource={wos} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "可见范围内没有匹配的工单建议，请调整或清空筛选" : "当前可见备货申请中没有转工单建议") : "尚未取得预演数据" }} />
         </Card>
       </Space>
-      <Modal width={1080} style={{ top: 24 }} styles={{ body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>
+      <Modal destroyOnHidden width={1080} style={{ top: 24 }} styles={{ body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>
         {evidence ? <>
           <Typography.Paragraph>{evidence.productCode} · {evidence.productName || "名称未补录"}</Typography.Paragraph>
           <Typography.Title level={5}>系统供给预测</Typography.Title>
@@ -197,7 +199,7 @@ export default function AutoChainClient() {
             { title: "90天末缺口", dataIndex: "shortBy", width: 100, align: "right", render: formatQty },
             { title: "预测可齐日", dataIndex: "forecastDate", width: 125, render: (value: string | null) => value ?? "视野内未可得" },
           ]} /> : <Alert type="warning" message="未取得完整逐料依据，请刷新核对，不能仅按日期判断可生产。" />}
-          <KitFactoryEvidence key={evidence.woId} woId={evidence.woId} />
+          <KitFactoryEvidence key={`${evidence.woId}:${evidence.readKey}`} woId={evidence.woId} />
           <Typography.Title level={5}>旧台账旁证 · 不参与生成数量</Typography.Title>
           <Typography.Paragraph>{evidence.referenceEvidenceCount ? `${evidence.referenceKitNote}；备料池剩余 ${formatQty(evidence.referenceReservedQty)}` : "无匹配旁证，不能推断为库存为零。"}</Typography.Paragraph>
         </> : null}
