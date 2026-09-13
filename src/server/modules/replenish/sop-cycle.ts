@@ -392,32 +392,36 @@ export async function createSopCycle(
   input: unknown,
   dbArg?: AnyDb,
 ): Promise<SopCycle> {
-  requireAnyRole(user, "pmc");
   const value = createSopCycleSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const existingByKey = await db
-    .select({ id: schema.sopCycles.id })
-    .from(schema.sopCycles)
-    .where(eq(schema.sopCycles.idempotencyKey, value.idempotencyKey));
-  if (existingByKey[0]) {
-    const workspace = await getSopWorkspace(user, db);
-    return workspace.cycles.find((cycle) => cycle.id === existingByKey[0].id)!;
-  }
-  const plan = await getVersion(value.planningVersionId, db);
   let id = 0;
+  let replayed = false;
+  let actor: SessionUser = user;
   try {
     await db.transaction(async (tx: AnyDb) => {
+      actor = await currentWriteActor(tx, user);
+      requireAnyRole(actor, "pmc");
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('sop-create'), hashtext(${value.idempotencyKey}))`);
+      const [existing] = await tx.select().from(schema.sopCycles)
+        .where(eq(schema.sopCycles.idempotencyKey, value.idempotencyKey));
+      if (existing) {
+        if (existing.createdBy !== actor.id) throw new ApiError(409, "该创建请求已由其他用户使用，请刷新后核对周期");
+        id = existing.id;
+        replayed = true;
+        return;
+      }
+      const plan = await getVersion(value.planningVersionId, tx);
       const [created] = await tx
         .insert(schema.sopCycles)
         .values({
           ...value,
           planDigest: plan.digest,
-          createdBy: user.id,
+          createdBy: actor.id,
         })
         .returning({ id: schema.sopCycles.id });
       id = created.id;
       await writeAudit(tx, {
-        userId: user.id,
+        userId: actor.id,
         entity: "sop_cycle",
         entityId: id,
         action: "create",
@@ -426,22 +430,14 @@ export async function createSopCycle(
     });
   } catch (error) {
     if (databaseErrorCode(error) === "23505") {
-      const [replay] = await db
-        .select({ id: schema.sopCycles.id })
-        .from(schema.sopCycles)
-        .where(eq(schema.sopCycles.idempotencyKey, value.idempotencyKey));
-      if (replay) {
-        const workspace = await getSopWorkspace(user, db);
-        return workspace.cycles.find((cycle) => cycle.id === replay.id)!;
-      }
       throw new ApiError(409, "该月份已有 S&OP 周期");
     }
     throw error;
   }
-  const workspace = await getSopWorkspace(user, db);
+  const workspace = await getSopWorkspace(actor, db);
   const created = workspace.cycles.find((cycle) => cycle.id === id)!;
   // W2-#5：新周期一开就得让三方知道要签认，否则它从第一天起就停在「等某个人」上
-  await notifySop(db, awaitingItems(created, pendingRoles(created.currentDecisions, created.planDigest)));
+  if (!replayed) await notifySop(db, awaitingItems(created, pendingRoles(created.currentDecisions, created.planDigest)));
   return created;
 }
 
@@ -450,13 +446,14 @@ export async function changeSopPlan(
   input: unknown,
   dbArg?: AnyDb,
 ): Promise<void> {
-  requireAnyRole(user, "pmc");
   const value = changeSopPlanSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const plan = await getVersion(value.planningVersionId, db);
   let nextRound: { id: number; name: string; month: string; version: number } | null = null;
   await db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
     const cycle = await lockCycle(value.cycleId, tx);
+    const plan = await getVersion(value.planningVersionId, tx);
     if (cycle.status !== "consensus") throw new ApiError(409, "只有共识阶段可以更换源计划");
     if (cycle.version !== value.version) throw new ApiError(409, `版本冲突：当前共识轮次 ${cycle.version}`);
     if (cycle.planningVersionId === plan.id) throw new ApiError(400, "请选择不同的计划版本");
@@ -476,7 +473,7 @@ export async function changeSopPlan(
       .returning({ id: schema.sopCycles.id });
     if (!updated) throw new ApiError(409, "S&OP 周期已被其他用户更新");
     await writeAudit(tx, {
-      userId: user.id,
+      userId: actor.id,
       entity: "sop_cycle",
       entityId: cycle.id,
       action: "change_plan",
@@ -496,9 +493,6 @@ export async function decideSopCycle(
   dbArg?: AnyDb,
 ): Promise<void> {
   const value = decideSopCycleSchema.parse(input);
-  if (!user.roles.includes(value.role)) {
-    throw new ApiError(403, "签认必须由实际持有该业务角色的用户本人完成，管理员不能代签");
-  }
   const note = value.note?.trim() || null;
   if (value.decision === "reject" && (note?.length ?? 0) < 5) {
     throw new ApiError(400, "拒绝共识须填写至少 5 个字符的原因");
@@ -506,6 +500,10 @@ export async function decideSopCycle(
   const db = await resolveDb(dbArg);
   let notify: NotifyItem[] = [];
   const decided = db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    if (!actor.roles.includes(value.role)) {
+      throw new ApiError(403, "签认必须由实际持有该业务角色的用户本人完成，管理员不能代签");
+    }
     const cycle = await lockCycle(value.cycleId, tx);
     if (cycle.status !== "consensus") throw new ApiError(409, "当前周期已退出共识阶段，不能再签认");
     if (cycle.version !== value.version) throw new ApiError(409, `共识轮次已变化：当前第 ${cycle.version} 轮`);
@@ -518,7 +516,7 @@ export async function decideSopCycle(
          角色是叠加的，`user.roles.includes(value.role)` 只保证「你确实有这个角色」，
          不保证「签这三个角色的是三个人」——不加这道，一人身兼三角即可独自冻结当月。
          同角色重复签也走这里（本轮没变，重签没有新信息）。 */
-      const mine = roundRows.find((r) => r.decision === "agree" && r.decidedBy === user.id);
+      const mine = roundRows.find((r) => r.decision === "agree" && r.decidedBy === actor.id);
       if (mine) {
         throw new ApiError(
           409,
@@ -553,11 +551,11 @@ export async function decideSopCycle(
         decision: value.decision,
         note,
         planDigest: cycle.planDigest,
-        decidedBy: user.id,
+        decidedBy: actor.id,
       })
       .returning({ id: schema.sopDecisions.id });
     await writeAudit(tx, {
-      userId: user.id,
+      userId: actor.id,
       entity: "sop_decision",
       entityId: decision.id,
       action: value.decision,
@@ -577,7 +575,7 @@ export async function decideSopCycle(
     if (value.decision === "reject") {
       notify = [{
         title: `【S&OP 共识被驳回】${cycle.name}`,
-        body: `${SOP_ROLE_LABELS[value.role]}（${user.name}）驳回了 ${cycle.month} 第 ${cycle.version} 轮共识：${note ?? "（无原因）"}。请更换源计划或与该角色对齐后重开一轮。`,
+        body: `${SOP_ROLE_LABELS[value.role]}（${actor.name}）驳回了 ${cycle.month} 第 ${cycle.version} 轮共识：${note ?? "（无原因）"}。请更换源计划或与该角色对齐后重开一轮。`,
         severity: "high",
         /* 去重键**不含 decision.id**：那是自增主键，每插一条就变一个新键，
            等于「去重键保证每次都不去重」。一轮一个角色最多一条驳回通知，
@@ -614,12 +612,14 @@ export async function transitionSopCycle(
   input: unknown,
   dbArg?: AnyDb,
 ): Promise<void> {
-  requireAnyRole(user, "pmc");
   const value = transitionSopCycleSchema.parse(input);
   const db = await resolveDb(dbArg);
   let notify: NotifyItem[] = [];
   await db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
     const cycle = await lockCycle(value.cycleId, tx);
+    await lockSopMonth(tx, cycle.month);
     if (cycle.version !== value.version) throw new ApiError(409, `版本冲突：当前共识轮次 ${cycle.version}`);
     const expected: Record<typeof value.target, SopStatus> = {
       frozen: "consensus",
@@ -648,10 +648,10 @@ export async function transitionSopCycle(
       }
     }
     const lifecycle = value.target === "frozen"
-      ? { status: "frozen", frozenBy: user.id, frozenAt: now }
+      ? { status: "frozen", frozenBy: actor.id, frozenAt: now }
       : value.target === "executing"
-        ? { status: "executing", executingBy: user.id, executingAt: now }
-        : { status: "closed", closedBy: user.id, closedAt: now };
+        ? { status: "executing", executingBy: actor.id, executingAt: now }
+        : { status: "closed", closedBy: actor.id, closedAt: now };
     const [updated] = await tx
       .update(schema.sopCycles)
       .set({ ...lifecycle, updatedAt: now })
@@ -663,7 +663,7 @@ export async function transitionSopCycle(
       .returning({ id: schema.sopCycles.id });
     if (!updated) throw new ApiError(409, "S&OP 周期已被其他用户更新");
     await writeAudit(tx, {
-      userId: user.id,
+      userId: actor.id,
       entity: "sop_cycle",
       entityId: cycle.id,
       action: value.target,
@@ -684,6 +684,14 @@ export async function transitionSopCycle(
     }
   });
   await notifySop(db, notify);
+}
+
+/** Owning transaction only. Covers a month even when no cycle row exists yet.
+ * Lifecycle: actor → cycle → month. Live BH: actor → month → SKU → document.
+ * Live BH must not lock the cycle row (which would invert these two paths).
+ */
+export async function lockSopMonth(tx: AnyDb, month: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('sop-month-mode'), hashtext(${month}))`);
 }
 
 /** 冻结当月实时建议的周期（frozen/executing）——闸门与界面横幅**同一个查询**，不许各判一次 */
