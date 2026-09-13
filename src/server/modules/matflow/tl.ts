@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
-   approvalConfigs, batches, flDocs, flLines, jgDocs, skus, tlDocs, tlLines, users, warehouses,
+   approvalConfigs, batches, flDocs, flLines, jgDocs, skus, stockLedger, tlDocs, tlLines, users, warehouses,
 } from "@/db/schema";
 import { dAdd, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -20,10 +20,11 @@ import {
   ACTIVE_DOC_STATUSES, completeApprovedDoc, getJgForMatflow, getOutsourceWarehouseOf,
   requireRealtimeWarehouse, lockMatflowJg, lockMatflowWarehouses, matflowSourceBlock,
 } from "./common-notes";
-import { createTlSchema } from "./schemas";
+import { createTlSchema, updateTlSchema } from "./schemas";
+import { outboundBatchBlock } from "@/server/posting/batch-eligibility";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
-import { materialExcess, materialTaskActions } from "./task-actions";
+import { canEditMaterialDraft, materialExcess, materialTaskActions } from "./task-actions";
 
 /**
  * 委外退料单 TL（R5「退回量」唯一数据源）：委外仓 → 自有仓。
@@ -87,6 +88,54 @@ export async function createTl(user: SessionUser, input: unknown, dbArg?: AnyDb)
       after: { docNo: doc.docNo, jgId: jg.id, fromWarehouseId: fromWh.id, lineCount: allocatedLines.length },
     });
     return doc;
+  });
+}
+
+// ---------- 原单纠正：物料/批次/来源不变，不配批、不提交、不过账 ----------
+
+export async function updateTl(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<TlRow> {
+  const v = updateTlSchema.parse(input), db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "warehouse");
+    const [source]: TlRow[] = await tx.select().from(tlDocs).where(eq(tlDocs.id, id));
+    if (!source) throw new ApiError(404, "退料单不存在");
+    await lockMatflowJg(tx, source.jgId);
+    const [doc]: TlRow[] = await tx.select().from(tlDocs).where(eq(tlDocs.id, id)).for("update");
+    if (!doc || doc.jgId !== source.jgId) throw new ApiError(409, "退料来源已变化，请重新读取核对");
+    if (doc.status !== "draft") throw new ApiError(409, "仅草稿或已驳回的退料单可修改；待审批先驳回，已生效单据不可改写");
+    if (!canEditMaterialDraft(actor, doc)) throw new ApiError(403, "仅当前具备仓管权限的制单人或管理员可修改退料草稿");
+    if (doc.version !== v.version) throw new ApiError(409, "单据版本已变化，请重新读取核对，未覆盖他人的修改");
+    const [posted] = await tx.select({ id: stockLedger.id }).from(stockLedger)
+      .where(and(eq(stockLedger.sourceDocType, "tl_return"), eq(stockLedger.sourceDocId, id))).limit(1);
+    if (posted) throw new ApiError(409, "原单已有库存流水，不可按草稿改写；请联系仓管核对纠错");
+    const jg = await getJgForMatflow(tx, doc.jgId, "return");
+    await lockMatflowWarehouses(tx, [doc.fromWarehouseId, doc.toWarehouseId, v.toWarehouseId]);
+    await getOutsourceWarehouseOf(tx, jg.supplierId, doc.fromWarehouseId);
+    await requireRealtimeWarehouse(tx, v.toWarehouseId, "退回仓");
+    const beforeLines: TlLineRow[] = await tx.select().from(tlLines).where(eq(tlLines.tlId, id)).orderBy(tlLines.id);
+    const byId = new Map(beforeLines.map(line => [line.id, line]));
+    const afterLines = v.lines.map(line => {
+      const original = byId.get(line.id);
+      if (!original) throw new ApiError(409, "退料行不属于当前原单，请重新读取；不可借用其他单据的物料或批次");
+      return { ...original, qty: dQty(line.qty), reason: line.reason };
+    });
+    const block = await outboundBatchBlock(tx, { sourceDocType: "tl_return", sourceDocId: id, action: "post",
+      lines: afterLines.map(line => ({ sourceLineId: line.id, skuId: line.skuId, warehouseId: doc.fromWarehouseId, batchId: line.batchId, qtyDelta: dNeg(line.qty) })) });
+    if (block) throw new PostingError(block.code, block.message);
+    const [saved]: TlRow[] = await tx.update(tlDocs).set({ toWarehouseId: v.toWarehouseId, remark: v.remark ?? null,
+      version: sql`${tlDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(tlDocs.id, id), eq(tlDocs.status, "draft"), eq(tlDocs.version, v.version))).returning();
+    if (!saved) throw new ApiError(409, "版本冲突，请重新读取核对");
+    const retained = new Set(afterLines.map(line => line.id));
+    const removed = beforeLines.filter(line => !retained.has(line.id)).map(line => line.id);
+    if (removed.length) await tx.delete(tlLines).where(and(eq(tlLines.tlId, id), inArray(tlLines.id, removed)));
+    for (const line of afterLines) await tx.update(tlLines).set({ qty: line.qty, reason: line.reason })
+      .where(and(eq(tlLines.tlId, id), eq(tlLines.id, line.id)));
+    await writeAudit(tx, { userId: actor.id, entity: "tl", entityId: id, action: "update_draft",
+      before: { version: doc.version, toWarehouseId: doc.toWarehouseId, remark: doc.remark, lines: beforeLines },
+      after: { version: saved.version, toWarehouseId: saved.toWarehouseId, remark: saved.remark, lines: afterLines } });
+    return saved;
   });
 }
 
@@ -254,7 +303,7 @@ export async function getTl(id: number, dbArg?: AnyDb, user?: SessionUser) {
     })
     .from(tlLines)
     .innerJoin(skus, eq(tlLines.skuId, skus.id))
-    .leftJoin(batches, eq(tlLines.batchId, batches.id))
+    .leftJoin(batches, and(eq(tlLines.batchId, batches.id), eq(tlLines.skuId, batches.skuId)))
     .where(eq(tlLines.tlId, id))
     .orderBy(tlLines.id);
 
@@ -268,7 +317,8 @@ export async function getTl(id: number, dbArg?: AnyDb, user?: SessionUser) {
     const excess = materialExcess(lines, returned, issued);
     const quantityBlock = !lines.length ? "退料单无明细，请核对单据。"
       : excess ? `退料超过累计发料：sku#${excess.skuId}（累计退 ${excess.qty} > 累计发 ${excess.limit}），请核对所属工单。` : null;
-    actions = materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock);
+    actions = { ...materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock),
+      edit: canEditMaterialDraft(user, doc) && !sourceBlock };
   }
   return { ...doc, lines, approvals: approvalRows, actions };
 }

@@ -24,7 +24,7 @@ import { createFlSchema, updateFlSchema } from "./schemas";
 import { outboundBatchBlock } from "@/server/posting/batch-eligibility";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
-import { canEditFlDraft, materialExcess, materialTaskActions } from "./task-actions";
+import { canEditMaterialDraft, materialExcess, materialTaskActions } from "./task-actions";
 
 /**
  * 发料单 FL（《01》§3/§4）：自有仓 → 委外仓，按 wo_line 预填；
@@ -103,7 +103,7 @@ export async function updateFl(user: SessionUser, id: number, input: unknown, db
     const [doc]: FlRow[] = await tx.select().from(flDocs).where(eq(flDocs.id, id)).for("update");
     if (!doc || doc.jgId !== source.jgId) throw new ApiError(409, "发料来源已变化，请重新读取核对");
     if (doc.status !== "draft") throw new ApiError(409, "仅草稿或已驳回的发料单可修改；待审批先驳回，已生效单据不可改写");
-    if (!canEditFlDraft(actor, doc)) throw new ApiError(403, "仅当前具备仓管权限的制单人或管理员可修改发料草稿");
+    if (!canEditMaterialDraft(actor, doc)) throw new ApiError(403, "仅当前具备仓管权限的制单人或管理员可修改发料草稿");
     if (doc.version !== v.version) throw new ApiError(409, "单据版本已变化，请重新读取核对，未覆盖他人的修改");
     const [posted] = await tx.select({ id: stockLedger.id }).from(stockLedger)
       .where(and(eq(stockLedger.sourceDocType, "fl_issue"), eq(stockLedger.sourceDocId, id))).limit(1);
@@ -348,7 +348,7 @@ export async function getFl(id: number, dbArg?: AnyDb, user?: SessionUser) {
     const quantityBlock = !lines.length ? "发料单无明细，请核对单据。"
       : materialExcess(lines, relevantCum, gross) && !user.roles.includes("admin") ? "本单会超出工单毛需求，超发需管理员审批。" : null;
     actions = { ...materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock),
-      edit: canEditFlDraft(user, doc) && !sourceBlock };
+      edit: canEditMaterialDraft(user, doc) && !sourceBlock };
   }
   return { ...doc, lines, requirements, approvals: approvalRows, actions };
 }
