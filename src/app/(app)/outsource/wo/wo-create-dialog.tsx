@@ -23,9 +23,13 @@ export default function WoCreateDialog({ actorId, allowed, open, onClose, onResu
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const pending = useRef(false), alive = useRef(true);
+  const recoveryBody = useRef<HTMLDivElement>(null);
   const currentActor = useRef(actorId); currentActor.current = actorId;
   const currentAllowed = useRef(allowed); currentAllowed.current = allowed;
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => {
+    if (open && recoveryBody.current) recoveryBody.current.scrollTop = 0;
+  }, [open, error, result]);
   const active = (id: number) => alive.current && currentActor.current === id && currentAllowed.current;
   const showRequest = (r: WoCreateRequest | null) => {
     setRequest(r); setResult(null); setEditing(false);
@@ -109,10 +113,11 @@ export default function WoCreateDialog({ actorId, allowed, open, onClose, onResu
 
   return <>
     {!open ? recovery : null}
-    <Modal title="新建委外工单" open={open} onCancel={close} width={640} forceRender maskClosable={false}
+    <Modal title="新建委外工单" open={open} onCancel={close} width={640} style={{ top: 24 }} forceRender maskClosable={false}
       closable={!busy} keyboard={!busy} cancelButtonProps={{ disabled: busy }} confirmLoading={busy}
       okButtonProps={{ disabled: !ready || busy || Boolean(found) }} okText={request && !editing ? "重试原请求" : "保存草稿"} cancelText="关闭"
       onOk={() => void submit(Boolean(request && !editing))}>
+      <div ref={recoveryBody} style={{ maxHeight: "calc(100dvh - 180px)", overflowY: "auto", paddingInlineEnd: 4 }}>
       {recovery}
       <Form form={form} layout="vertical" disabled={busy || !canEdit || !ready}>
         <Form.Item name="bhId" label="关联备货申请（可选，仅已审批）">
@@ -137,6 +142,7 @@ export default function WoCreateDialog({ actorId, allowed, open, onClose, onResu
         </Form.Item>
         <Form.Item name="remark" label="备注"><Input.TextArea rows={2} maxLength={500} /></Form.Item>
       </Form>
+      </div>
     </Modal>
   </>;
 }

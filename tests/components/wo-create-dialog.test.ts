@@ -113,3 +113,10 @@ it("invalid local recovery blocks new submission and is never silently deleted",
   data.set("scm:wo-create:v1:1", "{"); render(); expect(dialog().props.okButtonProps).toEqual({ disabled: true });
   submit(); await flush(); expect(h.fetch).not.toHaveBeenCalled(); expect(data.get("scm:wo-create:v1:1")).toBe("{");
 });
+it("long forms keep the footer in the viewport and reveal recovery feedback after a failure", async () => {
+  const body = nodes(render()).find(n => n.type === "div" && n.props.ref)!;
+  expect(body.props.style).toMatchObject({ maxHeight: "calc(100dvh - 180px)", overflowY: "auto" });
+  expect(dialog().props.style).toEqual({ top: 24 });
+  const element = { scrollTop: 250 }; (body.props.ref as { current: unknown }).current = element;
+  h.fetch.mockRejectedValueOnce(Error("lost response")); submit(); await flush(); expect(element.scrollTop).toBe(0);
+});
