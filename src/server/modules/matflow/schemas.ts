@@ -132,7 +132,7 @@ export const createCtSchema = z.object({
       z.object({
         poLineId: z.number().int().positive({ message: "必须关联 PO 行" }),
         skuId: z.number().int().positive({ message: "必须选择 SKU" }),
-        qty: qtyPositive, // 基础单位
+        qty: qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数"), // 基础单位
         batchId: z.number().int().positive().nullable().optional(),
         reason: z.string().trim().max(200).optional(),
       }),

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
 import { createTestDb } from "../helpers/db";
-import { listTlReturnLots, resolveTlPhysicalLines } from "@/server/modules/matflow/return-lots";
+import { listTlReturnLots, resolveReturnPhysicalLines } from "@/server/modules/matflow/return-lots";
 import { createTlSchema } from "@/server/modules/matflow/schemas";
 
 let f: Awaited<ReturnType<typeof createTestDb>>, skuId: number, otherSku: number, warehouseId: number, jgId: number, user: typeof s.users.$inferSelect;
@@ -25,22 +25,22 @@ beforeAll(async () => {
 });
 afterAll(async () => f?.client.close());
 it("omission never chooses fresh stock instead of the actual defective lot", async () => {
-  await expect(resolveTlPhysicalLines(f.db, warehouseId, [{ skuId, qty: "1" }])).rejects.toMatchObject({ status: 409, message: expect.stringContaining("实物") });
+  await expect(resolveReturnPhysicalLines(f.db, warehouseId, [{ skuId, qty: "1" }])).rejects.toMatchObject({ status: 409, message: expect.stringContaining("实物") });
 });
 it("preserves expired, fresh and explicitly unbatched physical lines together", async () => {
   const lines = [{ skuId, batchId: old, qty: "4.1234", reason: "defect_exchange" }, { skuId, batchId: fresh, qty: "1", reason: "surplus_return" }, { skuId, batchId: null, qty: "2", reason: "surplus_return" }];
-  expect(await resolveTlPhysicalLines(f.db, warehouseId, lines)).toEqual(lines.map(l => ({ ...l, qty: l.qty.includes(".") ? l.qty : `${l.qty}.0000` })));
+  expect(await resolveReturnPhysicalLines(f.db, warehouseId, lines)).toEqual(lines.map(l => ({ ...l, qty: l.qty.includes(".") ? l.qty : `${l.qty}.0000` })));
 });
 it("aggregates same-lot requests; shortage cannot borrow from another lot", async () => {
-  await expect(resolveTlPhysicalLines(f.db, warehouseId, [{ skuId, batchId: old, qty: "3" }, { skuId, batchId: old, qty: "2" }])).rejects.toMatchObject({ status: 409 });
-  await expect(resolveTlPhysicalLines(f.db, warehouseId, [{ skuId, batchId: null, qty: "3" }])).rejects.toMatchObject({ status: 409 });
+  await expect(resolveReturnPhysicalLines(f.db, warehouseId, [{ skuId, batchId: old, qty: "3" }, { skuId, batchId: old, qty: "2" }])).rejects.toMatchObject({ status: 409 });
+  await expect(resolveReturnPhysicalLines(f.db, warehouseId, [{ skuId, batchId: null, qty: "3" }])).rejects.toMatchObject({ status: 409 });
 });
 it("wrong SKU and missing lot rejected even with migration gate off", async () => {
   await f.db.update(s.sysParams).set({ value: "0" }).where(eq(s.sysParams.key, "batch_posting_enabled"));
   try {
-    await expect(resolveTlPhysicalLines(f.db, warehouseId, [{ skuId: otherSku, batchId: old, qty: "1" }])).rejects.toMatchObject({ status: 400 });
-    await expect(resolveTlPhysicalLines(f.db, warehouseId, [{ skuId, batchId: 99999, qty: "1" }])).rejects.toMatchObject({ status: 400 });
-    expect(await resolveTlPhysicalLines(f.db, warehouseId, [{ skuId, qty: "1" }])).toEqual([{ skuId, qty: "1.0000", batchId: null }]);
+    await expect(resolveReturnPhysicalLines(f.db, warehouseId, [{ skuId: otherSku, batchId: old, qty: "1" }])).rejects.toMatchObject({ status: 400 });
+    await expect(resolveReturnPhysicalLines(f.db, warehouseId, [{ skuId, batchId: 99999, qty: "1" }])).rejects.toMatchObject({ status: 400 });
+    expect(await resolveReturnPhysicalLines(f.db, warehouseId, [{ skuId, qty: "1" }])).toEqual([{ skuId, qty: "1.0000", batchId: null }]);
   } finally { await f.db.update(s.sysParams).set({ value: "1" }).where(eq(s.sysParams.key, "batch_posting_enabled")); }
 });
 const query = () => ({ jgId, warehouseId, skuId, q: "", page: 1, pageSize: 2 });

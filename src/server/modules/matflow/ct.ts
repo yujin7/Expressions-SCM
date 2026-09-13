@@ -14,9 +14,9 @@ import {
   type AnyDb, requireAnyRole, resolveDb, rethrowApproval,
 } from "@/server/modules/outsource/common";
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
-import { completeApprovedDoc, requireRealtimeWarehouse } from "./common-notes";
+import { completeApprovedDoc, lockMatflowWarehouses, requireRealtimeWarehouse } from "./common-notes";
 import { createCtSchema } from "./schemas";
-import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
+import { requirePurchaseReturnStatus, resolveReturnPhysicalLines } from "./return-lots";
 import { skuLineMatch } from "@/server/core/doc-search";
 import { lockPurchaseReceipt } from "./purchase-receipt-lock";
 import { currentWriteActor as currentMatflowActor } from "@/server/core/current-write-actor";
@@ -52,11 +52,13 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
   const v = createCtSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  const [po]: (typeof poDocs.$inferSelect)[] = await db.select().from(poDocs).where(eq(poDocs.id, v.poId));
-  if (!po) throw new ApiError(404, `采购订单不存在: #${v.poId}`);
-  await requireRealtimeWarehouse(db, v.warehouseId, "退货出库仓");
-
-  const plRows: PoLineRow[] = await db.select().from(poLines).where(eq(poLines.poId, v.poId));
+  return db.transaction(async (tx: AnyDb) => {
+  const actor = await currentMatflowActor(tx, user);
+  requireAnyRole(actor, "warehouse");
+  const { po, lines: plRows } = await lockPurchaseReceipt(tx, v.poId);
+  requirePurchaseReturnStatus(po.status);
+  await lockMatflowWarehouses(tx, [v.warehouseId]);
+  await requireRealtimeWarehouse(tx, v.warehouseId, "退货出库仓");
   const poLineById = new Map(plRows.map((r) => [r.id, r]));
   const ctQtyByPoLine = new Map<number, string>();
   for (const l of v.lines) {
@@ -69,10 +71,7 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
   }
   assertWithinReceived(ctQtyByPoLine, poLineById);
 
-  return db.transaction(async (tx: AnyDb) => {
-    const actor = await currentMatflowActor(tx, user);
-    requireAnyRole(actor, "warehouse");
-    const allocatedLines = await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines, "return");
+    const allocatedLines = await resolveReturnPhysicalLines(tx, v.warehouseId, v.lines);
     const docNo = await nextDocNo(tx, "CT");
     const [doc]: CtRow[] = await tx
       .insert(ctDocs)
@@ -81,7 +80,7 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
         remark: v.remark ?? null,
         poId: v.poId,
         warehouseId: v.warehouseId,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await tx.insert(ctLines).values(
@@ -95,7 +94,7 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
       })),
     );
     await writeAudit(tx, {
-      userId: user.id, entity: "ct", entityId: doc.id, action: "create",
+      userId: actor.id, entity: "ct", entityId: doc.id, action: "create",
       after: { docNo: doc.docNo, poId: v.poId, lineCount: allocatedLines.length },
     });
     return doc;
@@ -114,6 +113,10 @@ export async function submitCt(user: SessionUser, id: number, version: number, d
       throw new ApiError(403, "仅制单人/仓管/管理员可提交");
     }
     if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+    const { po } = await lockPurchaseReceipt(tx, doc.poId);
+    requirePurchaseReturnStatus(po.status);
+    await lockMatflowWarehouses(tx, [doc.warehouseId]);
+    await requireRealtimeWarehouse(tx, doc.warehouseId, "退货出库仓");
     const updated: CtRow[] = await tx
       .update(ctDocs)
       .set({ status: "pending", version: sql`${ctDocs.version} + 1`, updatedAt: new Date() })
@@ -161,7 +164,10 @@ export async function approveCt(
       if (lines.length === 0) throw new ApiError(409, "退货单无行，不可审批过账");
 
       // 兜底重查：创建后可能又有 CT 回冲过——退货量不得超过当前已收数
-      const { lines: plRows } = await lockPurchaseReceipt(tx, doc.poId);
+      const { po, lines: plRows } = await lockPurchaseReceipt(tx, doc.poId);
+      requirePurchaseReturnStatus(po.status);
+      await lockMatflowWarehouses(tx, [doc.warehouseId]);
+      await requireRealtimeWarehouse(tx, doc.warehouseId, "退货出库仓");
       const poLineById = new Map(plRows.map((row) => [row.id, row]));
       const ctQtyByPoLine = new Map<number, string>();
       for (const l of lines) {

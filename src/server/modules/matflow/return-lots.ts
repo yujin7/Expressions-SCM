@@ -1,15 +1,15 @@
 import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import { batches, stockBalances } from "@/db/schema";
+import { batches, poDocs, poLines, stockBalances } from "@/db/schema";
 import { dAdd, dCmp, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { type AnyDb, requireAnyRole, resolveDb } from "@/server/modules/outsource/common";
 import { isBatchPostingEnabled, type BatchAllocatableLine } from "@/server/modules/inventory/batch-allocation";
 import { getLocatedQty } from "@/server/modules/inventory/location-balance";
-import { getJgForMatflow, getOutsourceWarehouseOf } from "./common-notes";
+import { getJgForMatflow, getOutsourceWarehouseOf, requireRealtimeWarehouse } from "./common-notes";
 
 /** Return the physical lot the operator identified, never replace it with FEFO stock. */
-export async function resolveTlPhysicalLines<T extends BatchAllocatableLine>(db: AnyDb, warehouseId: number, input: T[]) {
+export async function resolveReturnPhysicalLines<T extends BatchAllocatableLine>(db: AnyDb, warehouseId: number, input: T[]) {
   const enabled = await isBatchPostingEnabled(db);
   const grouped = new Map<string, { skuId: number; batchId: number | null; qty: string }>();
   for (const line of input) {
@@ -45,6 +45,33 @@ export async function listTlReturnLots(user: SessionUser, input: {
   requireAnyRole(user, "warehouse");
   const db = await resolveDb(dbArg), jg = await getJgForMatflow(db, input.jgId, "return");
   await getOutsourceWarehouseOf(db, jg.supplierId, input.warehouseId);
+  return listPhysicalReturnLots(db, input);
+}
+
+export function requirePurchaseReturnStatus(status: string) {
+  if (!["approved", "in_progress", "completed"].includes(status)) throw new ApiError(409,
+    "采购订单当前不可退货，请核对来源状态；草稿、待审批、作废或已关闭来源不可新退货");
+}
+
+/** PO line remaining receipt is a ceiling, not proof of this warehouse lot's provenance. */
+export async function listCtReturnLots(user: SessionUser, input: {
+  poId: number; poLineId: number; warehouseId: number; q: string; page: number; pageSize: number; ids?: string[];
+}, dbArg?: AnyDb) {
+  requireAnyRole(user, "warehouse");
+  const db = await resolveDb(dbArg);
+  const [po] = await db.select({ status: poDocs.status }).from(poDocs).where(eq(poDocs.id, input.poId));
+  if (!po) throw new ApiError(404, "采购订单不存在");
+  requirePurchaseReturnStatus(po.status);
+  const [line] = await db.select({ skuId: poLines.skuId, receivedQty: poLines.receivedQty }).from(poLines)
+    .where(and(eq(poLines.id, input.poLineId), eq(poLines.poId, input.poId)));
+  if (!line || dCmp(line.receivedQty, "0") <= 0) throw new ApiError(409, "采购行不属于该订单或当前无已收数量，请重新读取");
+  await requireRealtimeWarehouse(db, input.warehouseId, "退货出库仓");
+  return listPhysicalReturnLots(db, { ...input, skuId: line.skuId });
+}
+
+async function listPhysicalReturnLots(db: AnyDb, input: {
+  warehouseId: number; skuId: number; q: string; page: number; pageSize: number; ids?: string[];
+}) {
   const ids = input.ids?.filter(id => id !== "unbatched").map(Number) ?? [];
   const where = and(eq(stockBalances.warehouseId, input.warehouseId), eq(stockBalances.skuId, input.skuId),
     gt(stockBalances.qty, "0"), or(isNull(stockBalances.batchId), eq(batches.skuId, stockBalances.skuId)),
