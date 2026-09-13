@@ -100,11 +100,10 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
   const materialRows: { id: number }[] = woRows.length ? await db.selectDistinct({ id: schema.woLines.materialSkuId })
     .from(schema.woLines).where(inArray(schema.woLines.woId, woRows.map(wo => wo.id))) : [];
   const allMaterialIds = materialRows.map(row => row.id);
-  const [matOnHand, allSupply, allReference] = await Promise.all([
-    getOnHandBySku(db, { skuIds: allMaterialIds }),
-    getOpenSupplyLines(db, allMaterialIds),
-    allMaterialIds.length ? getMaterialReferenceLines(db, allMaterialIds) : Promise.resolve([]),
-  ]);
+  // This also runs on one transaction connection during generation; do not enqueue concurrent queries.
+  const matOnHand = await getOnHandBySku(db, { skuIds: allMaterialIds });
+  const allSupply = await getOpenSupplyLines(db, allMaterialIds);
+  const allReference = allMaterialIds.length ? await getMaterialReferenceLines(db, allMaterialIds) : [];
   const batches: BatchSuggestion[] = [];
   for (const wo of woRows) {
     const lines: { materialSkuId: number; grossReq: string; materialCode: string; materialName: string | null; baseUom: string }[] = await db
