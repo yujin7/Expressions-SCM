@@ -102,6 +102,8 @@ interface TlDetail {
 }
 
 interface CreateLine {
+  rowKey: number;
+  batchId?: number | null;
   skuId: number;
   skuCode: string;
   skuName: string;
@@ -157,7 +159,9 @@ export default function TlClient() {
   const [fromWarehouseId, setFromWarehouseId] = useState<number | null>(null);
   const [remark, setRemark] = useState("");
   const [createLines, setCreateLines] = useState<CreateLine[]>([]);
+  const nextLineKey = useRef(0);
   const materialRead = useJgMaterialLines((lines) => setCreateLines(lines.map((l) => ({
+    rowKey: ++nextLineKey.current,
     skuId: l.materialSkuId, skuCode: l.skuCode, skuName: l.skuName, baseUom: l.baseUom,
     issuedQty: l.issuedQty, returnedQty: l.returnedQty,
     draftReturnQty: l.draftReturnQty, pendingReturnQty: l.pendingReturnQty,
@@ -222,8 +226,10 @@ export default function TlClient() {
     if (jgId == null) return void message.warning("请选择加工通知单");
     if (toWarehouseId == null) return void message.warning("请选择退回仓");
     if (fromWarehouseId == null || materialRead.supplierId == null) return void message.warning("请选择加工厂退料出仓");
+    if (createLines.some(l => !/^\d{1,10}(\.\d{1,4})?$/.test(l.qty))) return void message.warning("请逐行核对数量：不能为负，最多10位整数、4位小数");
     const valid = createLines.filter((l) => DEC_RE.test(l.qty) && decCmp(l.qty, "0") > 0);
     if (valid.length === 0) return void message.warning("至少需要一行数量大于 0 的退料行");
+    if (valid.some(l => l.batchId === undefined)) return void message.warning("请选择每行实际退回批次；无批次历史库存也须明确选择，不自动配批");
     createLock.current = true;
     setCreateLoading(true);
     try {
@@ -232,7 +238,7 @@ export default function TlClient() {
         toWarehouseId,
         fromWarehouseId,
         remark: remark.trim() || undefined,
-        lines: valid.map((l) => ({ skuId: l.skuId, qty: l.qty, reason: l.reason })),
+        lines: valid.map((l) => ({ skuId: l.skuId, qty: l.qty, batchId: l.batchId, reason: l.reason })),
       });
       message.success("退料单已创建");
       setCreateOpen(false);
@@ -338,6 +344,17 @@ export default function TlClient() {
     { title: "单位", dataIndex: "baseUom", width: 70 },
     { title: "已批发 / 退", key: "active", width: 130, align: "right", render: (_, r) => formatQty(r.issuedQty) + " / " + formatQty(r.returnedQty) },
     { title: "退料草稿 / 待批", key: "open", width: 140, align: "right", render: (_, r) => formatQty(r.draftReturnQty) + " / " + formatQty(r.pendingReturnQty) },
+    { title: "实际退回批次", key: "batch", width: 310, render: (_, r) => <RemoteSelect
+      key={`${jgId}:${fromWarehouseId}:${r.rowKey}`}
+      api={`/api/matflow/tl/return-lots?jgId=${jgId ?? 0}&warehouseId=${fromWarehouseId ?? 0}&skuId=${r.skuId}`}
+      disabled={createLoading || jgId == null || fromWarehouseId == null}
+      style={{ width: "100%" }} aria-label={`实际退回批次 ${r.skuCode} 行${r.rowKey}`}
+      placeholder="按实物标签选择，不自动配批" value={r.batchId === null ? "unbatched" : r.batchId}
+      getValue={row => row.batchId == null ? "unbatched" : Number(row.batchId)}
+      getLabel={row => `${row.batchNo ?? "历史无批次（不可追溯）"}｜效期 ${row.expiryDate ?? "未知"}｜未定位 ${formatQty(String(row.availableQty))}`}
+      onChange={(value: number | "unbatched") => setCreateLines(prev => prev.map(line => line.rowKey === r.rowKey
+        ? { ...line, batchId: value === "unbatched" ? null : value } : line))}
+    /> },
     {
       title: "退料数量",
       key: "qty",
@@ -345,6 +362,8 @@ export default function TlClient() {
       render: (_, r, idx) => (
         <InputNumber<string>
           stringMode
+          disabled={createLoading}
+          aria-label={`退料数量 ${r.skuCode} 行${r.rowKey}`}
           min="0"
           style={{ width: "100%" }}
           value={r.qty}
@@ -360,6 +379,7 @@ export default function TlClient() {
       width: 160,
       render: (_, r, idx) => (
         <Select<TlReason>
+          disabled={createLoading}
           style={{ width: "100%" }}
           value={r.reason}
           options={[
@@ -372,6 +392,8 @@ export default function TlClient() {
         />
       ),
     },
+    { title: "拆分", key: "split", width: 120, render: (_, r) => <Button type="link" disabled={createLoading}
+      onClick={() => { const rowKey = ++nextLineKey.current; setCreateLines(prev => [...prev, { ...r, rowKey, qty: "0", batchId: undefined }]); }}>另一个批次</Button> },
   ];
 
   const actions = detail ? (
@@ -544,6 +566,8 @@ export default function TlClient() {
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <Alert type="info" showIcon message="收货关闭后、结算冻结前可退回实物余料。"
             description="退料不会自动更新结算，请通知PMC核对草稿或待审批依据。结算已冻结的工单禁止继续退料，请联系财务和仓管核对库存及差额纠错，不改写历史金额。" />
+          <Alert type="warning" showIcon message="按实物标签选择批次，不按FEFO猜测。"
+            description="同一物料退多批可点“另一个批次”。批次余额只是该仓未定位库存，不证明属于本加工单；已到期批次仍可受控退回。无可选库存请核对原仓、批次或先处理库位；历史无批次不可冒充可追溯。" />
           <div>
             <div style={{ marginBottom: 4 }}>加工通知单（已审批、执行中、收货关闭或短关）</div>
             <RemoteSelect
@@ -560,6 +584,7 @@ export default function TlClient() {
             <div style={{ marginBottom: 4 }}>退回仓（自有实时仓）</div>
             <RemoteSelect
               api="/api/master/warehouse"
+              disabled={createLoading}
               style={{ width: "100%" }}
               placeholder="选择退回仓"
               value={toWarehouseId}
@@ -576,7 +601,7 @@ export default function TlClient() {
           <div>
             <div style={{ marginBottom: 4 }}>加工厂退料出仓</div>
             <OutsourceWarehouseSelect supplierId={materialRead.supplierId} value={fromWarehouseId}
-              onChange={setFromWarehouseId} disabled={createLoading} label="加工厂退料出仓" />
+              onChange={value => { setFromWarehouseId(value); setCreateLines(prev => prev.map(line => ({ ...line, batchId: undefined, qty: "0" }))); }} disabled={createLoading} label="加工厂退料出仓" />
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>退料行（工单及该加工单发退物料；数量为 0 的行不提交）</div>
@@ -585,13 +610,13 @@ export default function TlClient() {
             {materialRead.error && <Alert type="error" showIcon message={materialRead.error}
               action={<Button size="small" disabled={jgId == null || createLoading} onClick={() => { if (jgId != null) void handleJgChange(jgId); }}>重试物料</Button>} />}
             <Table<CreateLine>
-              rowKey="skuId"
+              rowKey="rowKey"
               size="small"
               loading={materialRead.loading}
               columns={createLineColumns}
               dataSource={createLines}
               pagination={false}
-              scroll={{ x: 850 }}
+              scroll={{ x: 1280, y: 320 }}
               tableLayout="fixed"
               locale={{ emptyText: materialRead.error ? "物料读取失败" : jgId == null ? "请先选择加工通知单" : "当前工单没有物料行" }}
             />

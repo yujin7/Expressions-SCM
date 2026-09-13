@@ -51,7 +51,7 @@ export const createTlSchema = z.object({
     .array(
       z.object({
         skuId: z.number().int().positive({ message: "必须选择物料" }),
-        qty: qtyPositive,
+        qty: qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数"),
         batchId: z.number().int().positive().nullable().optional(),
         reason: z.enum(["surplus_return", "defect_exchange"], {
           errorMap: () => ({ message: "退料原因必填：剩料退回/不合格料退换" }),

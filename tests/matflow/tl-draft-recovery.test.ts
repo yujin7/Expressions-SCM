@@ -43,6 +43,24 @@ async function snapshot() {
   return { docs: await f.db.select().from(s.tlDocs), lines: await f.db.select().from(s.tlLines), audit: await f.db.select().from(s.auditLogs),
     approvals: await f.db.select().from(s.approvals), ledger: await f.db.select().from(s.stockLedger), balances: await f.db.select().from(s.stockBalances) };
 }
+it("new return creation preserves operator-selected expired identity and rejects omitted batch atomically", async () => {
+  const x = await fixture();
+  await f.db.insert(s.sysParams).values({ scope: "global", key: "batch_posting_enabled", value: "1" })
+    .onConflictDoUpdate({ target: [s.sysParams.scope, s.sysParams.key], set: { value: "1" } });
+  try {
+    const base = { jgId: x.jg.id, fromWarehouseId: x.out.id, toWarehouseId: x.own.id };
+    const before = await snapshot();
+    await expect(createTl(x.maker, { ...base, lines: [{ skuId: x.material.id, qty: "1", reason: "defect_exchange" }] }, f.db)).rejects.toMatchObject({ status: 409 });
+    expect(await snapshot()).toEqual(before);
+    const input = { ...base, lines: [{ skuId: x.material.id, qty: "1.1234", batchId: x.batch.id, reason: "defect_exchange" }] };
+    vi.spyOn(audit, "writeAudit").mockRejectedValueOnce(Error("create audit down"));
+    await expect(createTl(x.maker, input, f.db)).rejects.toThrow("create audit down");
+    expect(await snapshot()).toEqual(before);
+    const created = await createTl(x.maker, input, f.db);
+    expect((await getTl(created.id, f.db)).lines).toMatchObject([{ batchId: x.batch.id, qty: "1.1234", reason: "defect_exchange" }]);
+    expect(await getBalance(f.db, x.material.id, x.out.id, x.batch.id)).toBe("10.0000");
+  } finally { await f.db.update(s.sysParams).set({ value: "0" }).where(eq(s.sysParams.key, "batch_posting_enabled")); }
+});
 it("over-return → reject → correct same expired physical lot → approve once, preserving line id/history", async () => {
   const x = await fixture(), pending = await submitTl(x.maker, x.doc.id, 1, f.db);
   const before = await snapshot();

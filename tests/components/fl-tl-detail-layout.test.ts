@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 
 describe("发退料窄屏表格契约（像素与操作仍需浏览器验收）", () => {
   for (const [domain, rowType, detailWidth, createWidth] of [
-    ["fl", "FlLine", 770, 830], ["tl", "TlLine", 660, 850],
+    ["fl", "FlLine", 770, 830], ["tl", "TlLine", 660, 1280],
   ] as const) {
     const source = readFileSync(`src/app/(app)/matflow/${domain}/${domain}-client.tsx`, "utf8");
     it(`${domain} 明细与录入表保留可滚动列宽`, () => {
       for (const [type, width] of [[rowType, detailWidth], ["CreateLine", createWidth]]) {
         const table = source.match(new RegExp(`<Table<${type}>[\\s\\S]*?/>`))?.[0];
-        expect(table).toContain(`scroll={{ x: ${width} }}`);
+        expect(table).toMatch(new RegExp(`scroll=\\{\\{ x: ${width}(?:, y: 320)? \\}\\}`));
         expect(table).toContain('tableLayout="fixed"');
         expect(table).toContain("pagination={false}");
       }
