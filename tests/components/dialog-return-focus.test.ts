@@ -28,17 +28,17 @@ function element(key = ""): Fake {
 let scope: Fake, trigger: Fake, api: ReturnType<typeof useDialogReturnFocus>;
 let serial = 0;
 const frames = new Map<number, () => void>();
-// eslint-disable-next-line react-hooks/rules-of-hooks -- Deterministic hook runner; real DOM behavior is verified independently in the browser.
-function render(open: boolean) { h.cursor = 0; api = useDialogReturnFocus(open); api.scopeRef.current = dom(scope); h.effects.splice(0).forEach(fn => fn()); }
+// Deterministic component runner; real DOM behavior is verified independently in the browser.
+function FocusHarness(open: boolean) { h.cursor = 0; api = useDialogReturnFocus(open); api.scopeRef.current = dom(scope); h.effects.splice(0).forEach(fn => fn()); }
 function frame() { const work = [...frames.values()]; frames.clear(); work.forEach(fn => fn()); }
-function close() { render(false); frame(); }
+function close() { FocusHarness(false); frame(); }
 beforeEach(() => {
   h.cursor = 0; h.slots = []; h.effects = []; h.cleanups.clear(); frames.clear();
   doc.activeElement = doc.body; doc.modals = []; scope = element(); trigger = element("assign:17");
   vi.stubGlobal("window", { location: { href: "http://127.0.0.1:3476/todo" } });
   vi.stubGlobal("requestAnimationFrame", (fn: () => void) => { frames.set(++serial, fn); return serial; });
   vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
-  render(false); api.remember(dom(trigger), "assign:17"); render(true);
+  FocusHarness(false); api.remember(dom(trigger), "assign:17"); FocusHarness(true);
 });
 afterEach(() => { h.cleanups.forEach(fn => fn()); vi.unstubAllGlobals(); });
 
@@ -47,7 +47,7 @@ describe("parent-owned dialog return focus", () => {
     frame(); expect(trigger.focus).not.toHaveBeenCalled(); close(); expect(trigger.focus).toHaveBeenCalledOnce();
   });
   it("waits until removed dialog DOM leaves BODY focused", () => {
-    render(false); expect(trigger.focus).not.toHaveBeenCalled(); frame(); expect(doc.activeElement).toBe(trigger);
+    FocusHarness(false); expect(trigger.focus).not.toHaveBeenCalled(); frame(); expect(doc.activeElement).toBe(trigger);
   });
   it("uses the visible same-action replacement when responsive copies or refreshed rows change", () => {
     trigger.visible = false; const hidden = element("assign:17"), other = element("assign:18"), replacement = element("assign:17");
@@ -70,10 +70,10 @@ describe("parent-owned dialog return focus", () => {
     doc.modals = [element()]; close(); expect(trigger.focus).not.toHaveBeenCalled();
   });
   it("ignores hidden modal remnants", () => { const modal = element(); modal.visible = false; doc.modals = [modal]; close(); expect(trigger.focus).toHaveBeenCalledOnce(); });
-  it("cancels a queued return on reopen", () => { render(false); render(true); frame(); expect(trigger.focus).not.toHaveBeenCalled(); });
-  it("cancels a queued return on owner unmount", () => { render(false); h.cleanups.forEach(fn => fn()); frame(); expect(trigger.focus).not.toHaveBeenCalled(); });
+  it("cancels a queued return on reopen", () => { FocusHarness(false); FocusHarness(true); frame(); expect(trigger.focus).not.toHaveBeenCalled(); });
+  it("cancels a queued return on owner unmount", () => { FocusHarness(false); h.cleanups.forEach(fn => fn()); frame(); expect(trigger.focus).not.toHaveBeenCalled(); });
   it("does not act on a departed route or detached scope", () => {
     window.location.href = "http://127.0.0.1:3476/workbench"; close(); expect(trigger.focus).not.toHaveBeenCalled();
-    render(true); scope.isConnected = false; close(); expect(scope.focus).not.toHaveBeenCalled();
+    FocusHarness(true); scope.isConnected = false; close(); expect(scope.focus).not.toHaveBeenCalled();
   });
 });
