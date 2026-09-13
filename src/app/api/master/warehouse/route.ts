@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, readJson } from "@/server/modules/master/common";
+import { optionalIntegerQuery } from "@/server/core/query-number";
 import { guardRead, guardWrite } from "@/server/modules/master/common";
 import { createWarehouse, listWarehouses, WAREHOUSE_SORT_KEYS } from "@/server/modules/master/warehouse";
 import { parseSelectedValues } from "@/server/core/selected-options";
@@ -9,7 +10,9 @@ export async function GET(req: NextRequest) {
   try {
     await guardRead();
     const query = parseMasterListQuery(req.url, WAREHOUSE_SORT_KEYS);
-    return NextResponse.json(await listWarehouses(query.q, query.page, query.pageSize, parseSelectedValues(query.searchParams), query));
+    return NextResponse.json(await listWarehouses(query.q, query.page, query.pageSize, parseSelectedValues(query.searchParams), {
+      ...query, outsourceSupplierId: optionalIntegerQuery(query.searchParams, "outsourceSupplierId", { label: "加工厂" }),
+    }));
   } catch (e) {
     return errorResponse(e);
   }

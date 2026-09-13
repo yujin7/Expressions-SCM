@@ -20,6 +20,7 @@ import DocWindowFilterTag from "@/components/DocWindowFilterTag";
 import ListToolbar from "@/components/ListToolbar";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 import RemoteSelect from "@/components/RemoteSelect";
+import OutsourceWarehouseSelect from "@/components/OutsourceWarehouseSelect";
 import { JsonRequestError, postJson } from "@/components/fetchJson";
 import { formatQty, formatAsOf } from "@/components/format";
 import { useListState } from "@/components/useListState";
@@ -132,6 +133,8 @@ interface ShDetail {
   sourceId: number;
   sourceDocNo: string | null;
   warehouseName: string;
+  sourceSupplierId: number | null;
+  consumptionWarehouses: { id: number; code: string; name: string }[];
   createdAt: string;
   createdByName: string | null;
   lines: ShLine[];
@@ -266,6 +269,7 @@ export default function ShClient() {
   const [qcConclusion, setQcConclusion] = useState("");
   const [qcLoading, setQcLoading] = useState(false);
   const [inboundLoading, setInboundLoading] = useState(false);
+  const [inboundWarehouse, setInboundWarehouse] = useState<{ shId: number; warehouseId: number | null } | null>(null);
   const reviewBusy = useRef(false);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<{ id: number; message: string } | null>(null);
@@ -536,10 +540,13 @@ export default function ShClient() {
 
   /** ③ 入库确认：结果 toast 展示入库数量（后端仅回状态，数量按检验结果汇总） */
   const handleInbound = async () => {
-    if (!detail || !detail.qc) return;
+    if (!detail || !detail.qc || inboundLoading) return;
+    const outsourceWarehouseId = inboundWarehouse?.shId === detail.id ? inboundWarehouse.warehouseId : null;
+    if (detail.sourceType === "jg" && outsourceWarehouseId == null) return void message.warning("请先选择本次实际扣料的委外仓");
     setInboundLoading(true);
     try {
-      const result = await postJson<{ materialReview?: "checked" | "pending"; batchCheck?: "checked" | "pending" }>(`/api/matflow/sh/${detail.id}/inbound`, {});
+      const result = await postJson<{ materialReview?: "checked" | "pending"; batchCheck?: "checked" | "pending" }>(`/api/matflow/sh/${detail.id}/inbound`,
+        detail.sourceType === "jg" ? { outsourceWarehouseId } : {});
       let pass = "0";
       let concession = "0";
       for (const l of detail.qc.lines) {
@@ -1175,6 +1182,11 @@ export default function ShClient() {
               {detail.inbound ? (
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
                   <Alert type="success" showIcon message="已完成入库" />
+                  {detail.sourceType === "jg" ? <Typography.Text>
+                    实际扣料仓：{detail.consumptionWarehouses?.length
+                      ? detail.consumptionWarehouses.map(w => `${w.code}｜${w.name}`).join("、")
+                      : "本单没有物料扣减流水（不按当前加工厂仓倒推）"}
+                  </Typography.Text> : null}
                   {detail.sourceType === "po" ? <ReceiptBatchPanel key={detail.id} receiptId={detail.id} review={detail.batchReview ?? null}
                     canCheck={hasAnyRole(me, "pmc")} onChecked={refresh} /> : null}
                   {detail.sourceType === "jg" ? (
@@ -1197,7 +1209,14 @@ export default function ShClient() {
                   ) : null}
                 </Space>
               ) : (
-                <Space direction="vertical">
+                <Space direction="vertical" style={{ width: "100%" }} size={12}>
+                  {canWrite && detail.sourceType === "jg" ? <div style={{ maxWidth: 520 }}>
+                    <Typography.Paragraph style={{ marginBottom: 8 }}>本次扣料仓（按实际生产用料核对，不代表本单已预留库存）</Typography.Paragraph>
+                    <OutsourceWarehouseSelect supplierId={detail.sourceSupplierId ?? null}
+                      value={inboundWarehouse?.shId === detail.id ? inboundWarehouse.warehouseId : null}
+                      onChange={warehouseId => setInboundWarehouse({ shId: detail.id, warehouseId })}
+                      disabled={inboundLoading} label="本次委外扣料仓" />
+                  </div> : null}
                   {detail.qc == null ? (
                     <Typography.Text type="secondary">收货必检：须先提交检验方可入库。</Typography.Text>
                   ) : null}
@@ -1211,7 +1230,8 @@ export default function ShClient() {
                       <Button
                         type="primary"
                         loading={inboundLoading}
-                        disabled={detail.qc == null || detail.status !== "approved"}
+                        disabled={detail.qc == null || detail.status !== "approved" || (detail.sourceType === "jg" &&
+                          (inboundWarehouse?.shId !== detail.id || inboundWarehouse.warehouseId == null))}
                       >
                         确认入库
                       </Button>

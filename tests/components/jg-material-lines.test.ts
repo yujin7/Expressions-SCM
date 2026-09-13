@@ -25,7 +25,7 @@ afterEach(() => { h.cleanups.forEach(fn => fn()); });
 
 describe("JG → WO material read isolation", () => {
   it("clears old editable lines, reads the selected JG's WO and forwards one abort signal", async () => {
-    h.fetchJson.mockResolvedValueOnce({ woId: 9 }).mockResolvedValueOnce({ lines: [line] });
+    h.fetchJson.mockResolvedValueOnce({ woId: 9, supplierId: 19 }).mockResolvedValueOnce({ lines: [line] });
     const pending = MaterialReadHarness().load(7);
     expect(onLoaded).toHaveBeenLastCalledWith([]);
     expect(MaterialReadHarness()).toMatchObject({ loading: true, error: null });
@@ -33,7 +33,9 @@ describe("JG → WO material read isolation", () => {
     expect(h.fetchJson.mock.calls.map(c => c[0])).toEqual(["/api/outsource/jg/7", "/api/outsource/wo/9"]);
     expect(h.fetchJson.mock.calls[0][1].signal).toBe(h.fetchJson.mock.calls[1][1].signal);
     expect(onLoaded).toHaveBeenLastCalledWith([line]);
-    expect(MaterialReadHarness()).toMatchObject({ loading: false, error: null });
+    expect(MaterialReadHarness()).toMatchObject({ loading: false, error: null, supplierId: 19 });
+    MaterialReadHarness().cancel();
+    expect(MaterialReadHarness().supplierId).toBeNull();
   });
 
   it("does not even start the stale WO request if an old JG detail arrives late", async () => {
@@ -48,17 +50,18 @@ describe("JG → WO material read isolation", () => {
 
   it.each(["success", "failure"])("ignores an old WO %s after another JG has loaded", async outcome => {
     const old = Promise.withResolvers<{ lines: JgMaterialLine[] }>();
-    h.fetchJson.mockResolvedValueOnce({ woId: 11 }).mockReturnValueOnce(old.promise)
-      .mockResolvedValueOnce({ woId: 22 }).mockResolvedValueOnce({ lines: [line] });
+    h.fetchJson.mockResolvedValueOnce({ woId: 11, supplierId: 111 }).mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce({ woId: 22, supplierId: 222 }).mockResolvedValueOnce({ lines: [line] });
     const hook = MaterialReadHarness(), first = hook.load(1);
     await flush();
+    expect(MaterialReadHarness().supplierId).toBeNull();
     await hook.load(2);
     if (outcome === "success") old.resolve({ lines: [{ ...line, skuCode: "OLD" }] });
     else old.reject(Error("旧工单故障"));
     await first;
     expect(onLoaded).toHaveBeenLastCalledWith([line]);
     expect(onLoaded).toHaveBeenCalledTimes(3);
-    expect(MaterialReadHarness()).toMatchObject({ loading: false, error: null });
+    expect(MaterialReadHarness()).toMatchObject({ loading: false, error: null, supplierId: 222 });
   });
 
   it("shows a material failure and retries the same source without hidden stale rows", async () => {

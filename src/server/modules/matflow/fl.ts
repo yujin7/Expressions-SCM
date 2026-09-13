@@ -18,7 +18,7 @@ import {
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import {
   ACTIVE_DOC_STATUSES, completeApprovedDoc, getJgForMatflow, getOutsourceWarehouseOf,
-  requireRealtimeWarehouse, lockMatflowJg, matflowSourceBlock,
+  requireRealtimeWarehouse, lockMatflowJg, lockMatflowWarehouses, matflowSourceBlock,
 } from "./common-notes";
 import { createFlSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
@@ -45,8 +45,9 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
   requireAnyRole(actor, "warehouse");
   await lockMatflowJg(tx, v.jgId);
   const jg = await getJgForMatflow(tx, v.jgId);
-  // 收料仓自动定位：该加工厂的委外仓（不由前端传入，防错仓）
-  const toWh = await getOutsourceWarehouseOf(tx, jg.supplierId);
+  const toWh = await getOutsourceWarehouseOf(tx, jg.supplierId, v.toWarehouseId);
+  await lockMatflowWarehouses(tx, [v.fromWarehouseId, toWh.id]);
+  await getOutsourceWarehouseOf(tx, jg.supplierId, toWh.id);
   await requireRealtimeWarehouse(tx, v.fromWarehouseId, "发料源仓");
 
   const skuIds = [...new Set(v.lines.map((l) => l.skuId))];
@@ -175,7 +176,10 @@ export async function approveFl(
         after: { comment: v.comment ?? null },
       });
       if (v.action === "reject") return r;
-      await getJgForMatflow(tx, doc.jgId);
+      const sourceJg = await getJgForMatflow(tx, doc.jgId);
+      await lockMatflowWarehouses(tx, [doc.fromWarehouseId, doc.toWarehouseId]);
+      await getOutsourceWarehouseOf(tx, sourceJg.supplierId, doc.toWarehouseId);
+      await requireRealtimeWarehouse(tx, doc.fromWarehouseId, "发料源仓");
 
       const lines: FlLineRow[] = await tx.select().from(flLines).where(eq(flLines.flId, id)).orderBy(flLines.id);
       if (lines.length === 0) throw new ApiError(409, "发料单无行，不可审批过账");

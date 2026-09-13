@@ -178,6 +178,24 @@ describe("七类列表真实 handler + SQL 精确补取（隔离合成库）", (
     });
   }
 
+  it("加工厂选仓在分页、总数、搜索及已选补取前统一裁剪，不包含停用/自有/其他厂", async () => {
+    const rows = await db.insert(schema.warehouses).values([
+      { code: "WH-FACTORY-A", name: "同厂一仓", kind: "outsource", supplierId: 11004 },
+      { code: "WH-FACTORY-B", name: "同厂二仓", kind: "outsource", supplierId: 11004 },
+      { code: "WH-FACTORY-X", name: "其他厂", kind: "outsource", supplierId: 11003 },
+    ]).returning();
+    const params = new URLSearchParams({ outsourceSupplierId: "11004", pageSize: "1", page: "2" });
+    const body = await call(routes[5], params);
+    expect(body.total).toBe(2); expect(readRows(body).map(r => r.id)).toEqual([rows[1].id]);
+    params.set("selectedValues", JSON.stringify([rows[0].id, rows[2].id, 5001, 5002]));
+    expect(readRows(await call(routes[5], params)).map(r => r.id)).toEqual([rows[0].id]);
+    params.delete("selectedValues"); params.set("q", "二仓"); params.set("page", "1");
+    expect(readRows(await call(routes[5], params)).map(r => r.id)).toEqual([rows[1].id]);
+    for (const invalid of ["", "oops", "0", "1.2", "2147483648", "11004&outsourceSupplierId=11003"]) {
+      expect((await warehouseGet(new NextRequest(`http://localhost/api/master/warehouse?outsourceSupplierId=${invalid}`))).status).toBe(400);
+    }
+  });
+
   it("超过第 999 个供应商可精确回显，仍使用原最小投影", async () => {
     const firstPage = await call(routes[4], new URLSearchParams({ page: "1", pageSize: "999" }));
     expect(readRows(firstPage).some((row) => row.id === 11004)).toBe(false);

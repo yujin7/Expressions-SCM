@@ -18,6 +18,8 @@ import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import ListToolbar from "@/components/ListToolbar";
 import RemoteSelect from "@/components/RemoteSelect";
+import OutsourceWarehouseSelect from "@/components/OutsourceWarehouseSelect";
+import { viewportModalProps } from "@/components/viewport-modal";
 import { useJgMaterialLines } from "@/components/useJgMaterialLines";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
@@ -144,6 +146,7 @@ export default function TlClient() {
   const createLock = useRef(false);
   const [jgId, setJgId] = useState<number | null>(null);
   const [toWarehouseId, setToWarehouseId] = useState<number | null>(null);
+  const [fromWarehouseId, setFromWarehouseId] = useState<number | null>(null);
   const [remark, setRemark] = useState("");
   const [createLines, setCreateLines] = useState<CreateLine[]>([]);
   const materialRead = useJgMaterialLines((lines) => setCreateLines(lines.map((l) => ({
@@ -191,6 +194,7 @@ export default function TlClient() {
     setCreateOpen(true);
     setJgId(null);
     setToWarehouseId(null);
+    setFromWarehouseId(null);
     setRemark("");
     setCreateLines([]);
   };
@@ -199,6 +203,7 @@ export default function TlClient() {
   const handleJgChange = async (id: number) => {
     if (createLock.current) return;
     setJgId(id);
+    setFromWarehouseId(null);
     await materialRead.load(id);
   };
 
@@ -206,6 +211,7 @@ export default function TlClient() {
     if (createLock.current || materialRead.loading || materialRead.error) return;
     if (jgId == null) return void message.warning("请选择加工通知单");
     if (toWarehouseId == null) return void message.warning("请选择退回仓");
+    if (fromWarehouseId == null || materialRead.supplierId == null) return void message.warning("请选择加工厂退料出仓");
     const valid = createLines.filter((l) => DEC_RE.test(l.qty) && decCmp(l.qty, "0") > 0);
     if (valid.length === 0) return void message.warning("至少需要一行数量大于 0 的退料行");
     createLock.current = true;
@@ -214,6 +220,7 @@ export default function TlClient() {
       const created = await postJson<{ id: number }>("/api/matflow/tl", {
         jgId,
         toWarehouseId,
+        fromWarehouseId,
         remark: remark.trim() || undefined,
         lines: valid.map((l) => ({ skuId: l.skuId, qty: l.qty, reason: l.reason })),
       });
@@ -390,7 +397,7 @@ export default function TlClient() {
         退料单（TL）
       </Typography.Title>
       <Typography.Paragraph type="secondary">
-        委外仓向自有仓退回物料；出仓自动定位该加工厂委外仓。逐物料累计退料不得超过累计发料。
+        从该加工厂的指定委外仓向自有仓退回物料；请核对实际出仓。逐物料累计退料不得超过累计发料。
       </Typography.Paragraph>
       <Tabs
         activeKey={status}
@@ -505,6 +512,7 @@ export default function TlClient() {
 
       <Modal
         title="新建退料单"
+        {...viewportModalProps}
         open={createOpen}
         width={820}
         okText="创建"
@@ -513,7 +521,7 @@ export default function TlClient() {
         onCancel={() => { if (!createLock.current) { materialRead.cancel(); setCreateOpen(false); } }}
         maskClosable={!createLoading}
         keyboard={!createLoading}
-        okButtonProps={{ disabled: !canWrite || materialRead.loading || Boolean(materialRead.error) }}
+        okButtonProps={{ disabled: !canWrite || materialRead.loading || Boolean(materialRead.error) || fromWarehouseId == null }}
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
@@ -547,6 +555,11 @@ export default function TlClient() {
               }
               onChange={(v: number) => setToWarehouseId(v)}
             />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>加工厂退料出仓</div>
+            <OutsourceWarehouseSelect supplierId={materialRead.supplierId} value={fromWarehouseId}
+              onChange={setFromWarehouseId} disabled={createLoading} label="加工厂退料出仓" />
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>退料行（工单物料清单；数量为 0 的行不提交）</div>

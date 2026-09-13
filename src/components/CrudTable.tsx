@@ -1,4 +1,5 @@
 "use client";
+import { viewportModalProps } from "./viewport-modal";
 
 import SearchInput from "@/components/SearchInput";
 
@@ -296,14 +297,7 @@ export default function CrudTable<T extends { id: number }>(props: CrudTableProp
         onCancel={() => setModalOpen(false)}
         confirmLoading={saving}
         width={modalWidth ?? 560}
-        centered
-        style={{ maxWidth: "calc(100vw - 32px)", paddingBottom: 0 }}
-        styles={{
-          content: { maxHeight: "calc(100dvh - 32px)", display: "flex", flexDirection: "column" },
-          body: { minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" },
-          header: { flexShrink: 0, paddingInlineEnd: 32, overflowWrap: "anywhere" },
-          footer: { flexShrink: 0 },
-        }}
+        {...viewportModalProps}
         forceRender
         maskClosable={false}
         okText="保存"
