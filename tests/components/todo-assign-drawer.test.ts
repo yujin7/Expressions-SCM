@@ -34,6 +34,13 @@ describe("shared assignee picker and explicit reassignment", () => {
     const picker = TodoAssigneeSelect({ excludeId: 42 });
     expect(picker.props).toMatchObject({ api: "/api/todo/assignees?excludeId=42", showSearch: true, virtual: false, listHeight: 240 });
   });
+  it("closes the candidate popup after selection, so Tab cannot silently select a new default row", () => {
+    const onChange = vi.fn();
+    const picker = () => { h.cursor = 0; return TodoAssigneeSelect({ onChange }); };
+    picker().props.onOpenChange(true); expect(picker().props.open).toBe(true);
+    picker().props.onChange(43, { label: "#43 同名" });
+    expect(picker().props.open).toBe(false); expect(onChange).toHaveBeenCalledExactlyOnceWith(43, { label: "#43 同名" });
+  });
   it.each([undefined, 42, "43", 0, -1, 1.1, 2147483648])("never submits invalid/current candidate %s", value => {
     select(value); expect(confirm().disabled).toBe(true); confirm().onClick!(); expect(props.onConfirm).not.toHaveBeenCalled();
   });
