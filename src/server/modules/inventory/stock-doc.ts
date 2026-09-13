@@ -67,39 +67,41 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
   const v = createStockDocSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  // 仓库校验
-  const whIds = [...new Set([v.warehouseId, ...(v.toWarehouseId ? [v.toWarehouseId] : [])])];
-  const whRows: (typeof warehouses.$inferSelect)[] = await db
-    .select()
-    .from(warehouses)
-    .where(inArray(warehouses.id, whIds));
-  const fromWh = whRows.find((w) => w.id === v.warehouseId);
-  if (!fromWh || !fromWh.active) throw new ApiError(400, `仓库不存在或已停用: #${v.warehouseId}`);
-  // 四类手工单的源仓（期初=入账仓）都必须是实时记账仓——快照仓只吃快照导入
-  if (fromWh.accountingMode !== "realtime") {
-    throw new ApiError(400, v.subtype === "opening" ? "期初建账仅限实时仓；快照仓 1.1 启用" : "出库/调拨源仓必须是实时仓");
-  }
-  if (v.subtype === "transfer") {
-    const toWh = whRows.find((w) => w.id === v.toWarehouseId);
-    if (!toWh || !toWh.active) throw new ApiError(400, `转入仓不存在或已停用: #${v.toWarehouseId}`);
-    if (toWh.kind === "snapshot" || toWh.accountingMode === "snapshot") {
-      throw new ApiError(400, "快照仓 1.1 启用");
-    }
-  }
-
-  // SKU 校验：存在且启用（停用=禁新单引用）
-  const skuIds = [...new Set(v.lines.map((l) => l.skuId))];
-  const skuRows: { id: number; code: string; active: boolean }[] = await db
-    .select({ id: skus.id, code: skus.code, active: skus.active })
-    .from(skus)
-    .where(inArray(skus.id, skuIds));
-  const activeSku = new Set(skuRows.filter((s) => s.active).map((s) => s.id));
-  for (const sid of skuIds) {
-    if (!activeSku.has(sid)) throw new ApiError(400, `SKU 不存在或已停用: #${sid}`);
-  }
-
   return db.transaction(async (tx: AnyDb) => {
     const actor = await warehouseActor(tx, user);
+    // Hold reference eligibility through document + audit commit. SHARE blocks non-key
+    // edits (active/accounting mode/SKU identity), unlike FK KEY SHARE locks.
+    // Stable warehouse -> SKU order also covers opposite-direction transfers.
+    const whIds = [...new Set([v.warehouseId, ...(v.toWarehouseId ? [v.toWarehouseId] : [])])];
+    const whRows: (typeof warehouses.$inferSelect)[] = await tx
+      .select()
+      .from(warehouses)
+      .where(inArray(warehouses.id, whIds)).orderBy(warehouses.id).for("share");
+    const fromWh = whRows.find((w) => w.id === v.warehouseId);
+    if (!fromWh || !fromWh.active) throw new ApiError(400, `仓库不存在或已停用: #${v.warehouseId}`);
+    // 四类手工单的源仓（期初=入账仓）都必须是实时记账仓——快照仓只吃快照导入
+    if (fromWh.accountingMode !== "realtime") {
+      throw new ApiError(400, v.subtype === "opening" ? "期初建账仅限实时仓；快照仓 1.1 启用" : "出库/调拨源仓必须是实时仓");
+    }
+    if (v.subtype === "transfer") {
+      const toWh = whRows.find((w) => w.id === v.toWarehouseId);
+      if (!toWh || !toWh.active) throw new ApiError(400, `转入仓不存在或已停用: #${v.toWarehouseId}`);
+      if (toWh.kind === "snapshot" || toWh.accountingMode === "snapshot") {
+        throw new ApiError(400, "快照仓 1.1 启用");
+      }
+    }
+
+    // SKU 校验：存在且启用（停用=禁新单引用）
+    const skuIds = [...new Set(v.lines.map((l) => l.skuId))];
+    const skuRows: { id: number; code: string; active: boolean }[] = await tx
+      .select({ id: skus.id, code: skus.code, active: skus.active })
+      .from(skus)
+      .where(inArray(skus.id, skuIds)).orderBy(skus.id).for("share");
+    const activeSku = new Set(skuRows.filter((s) => s.active).map((s) => s.id));
+    for (const sid of skuIds) {
+      if (!activeSku.has(sid)) throw new ApiError(400, `SKU 不存在或已停用: #${sid}`);
+    }
+
     if (v.riskDisposalId) {
       const [disposal]: { refKey: string | null; title: string }[] = await tx
         .select({ refKey: reviewItems.refKey, title: reviewItems.title })
@@ -108,7 +110,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
           eq(reviewItems.id, v.riskDisposalId),
           eq(reviewItems.category, "risk_disposal"),
           eq(reviewItems.status, "open"),
-        ));
+        )).for("share");
       if (!disposal) throw new ApiError(409, "风险处置登记不存在、已关闭或已被改判");
       if (!disposal.title.startsWith("处置决定：报废评审 ")) {
         throw new ApiError(409, "只有「报废评审」登记可生成报废出库单");
