@@ -512,6 +512,13 @@
       "when": 1789329560394,
       "tag": "0072_stock_create_receipt",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1789335319837,
+      "tag": "0073_ct_create_receipt",
+      "breakpoints": true
     }
   ]
 }

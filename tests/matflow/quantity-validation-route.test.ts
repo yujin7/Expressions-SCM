@@ -9,6 +9,7 @@ import { POST as qcPost } from "@/app/api/matflow/sh/[id]/qc/route";
 import { POST as ctPost } from "@/app/api/matflow/ct/route";
 
 const h = vi.hoisted(() => ({ fresh: vi.fn(), db: vi.fn(), log: vi.fn(), persist: vi.fn() }));
+vi.mock("@/server/core/svc", async original => ({ ...await original<typeof import("@/server/core/svc")>(), resolveDb: h.db }));
 vi.mock("@/server/modules/outsource/common", async original => ({
   ...await original<typeof import("@/server/modules/outsource/common")>(), guardFreshWrite: h.fresh, resolveDb: h.db,
 }));
@@ -32,7 +33,7 @@ const cases: Case[] = [
   { name: "TL correction", handler: tlPatch, method: "PATCH", field: "qty", body: { version: 1, toWarehouseId: 1 }, line: { id: 1, reason: "surplus_return" } },
   ...["actualQty", "expectedQty"].map(field => ({ name: `SH ${field}`, handler: shPost, method: "POST", field, body: { sourceType: "po", sourceId: 1, warehouseId: 1 }, line: { skuId: 1, actualQty: "1", expectedQty: "1" } })),
   ...["passQty", "failQty", "concessionQty"].map(field => ({ name: `QC ${field}`, handler: qcPost, method: "POST", field, body: {}, line: { shLineId: 1, passQty: "1", failQty: "0", concessionQty: "0" } })),
-  { name: "CT", handler: ctPost, method: "POST", field: "qty", body: { poId: 1, warehouseId: 1 }, line: { poLineId: 1, skuId: 1 } },
+  { name: "CT", handler: ctPost, method: "POST", field: "qty", body: { requestKey: "ee392149-8738-4e50-992f-f565bba7f911", poId: 1, warehouseId: 1 }, line: { poLineId: 1, skuId: 1, batchId: null } },
 ];
 const request = (c: Case, value: unknown) => new NextRequest("http://localhost/api/matflow/test", {
   method: c.method, headers: { "content-type": "application/json" },

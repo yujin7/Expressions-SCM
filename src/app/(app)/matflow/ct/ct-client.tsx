@@ -24,6 +24,9 @@ import { hasAnyRole, useMe, type Me } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import CtDraftEditor from "./ct-draft-editor";
 import CtDraftVoid from "./ct-draft-void";
+import CtCreateRecovery, { useCtCreateRecovery } from "@/components/CtCreateRecovery";
+import type { CtCreateRequest } from "@/components/ct-create-request";
+import { viewportModalProps } from "@/components/viewport-modal";
 
 // ---------- 客户端十进制比较（仅提交前过滤/预警用；非负字符串，禁 float） ----------
 
@@ -150,6 +153,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
   const rows = listValid ? listRead.data!.rows : [];
   const listError = listRead.error ?? (listRead.data && !listValid ? "列表响应格式异常，请重新读取" : null);
   const load = listRead.retry;
+  const recovery = useCtCreateRecovery(me?.id ?? null, canWrite, () => void load());
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
@@ -174,6 +178,8 @@ function CtWorkspace({ me }: { me: Me | null }) {
   const [warehouseId, setWarehouseId] = useState<number | null>(null);
   const [remark, setRemark] = useState("");
   const [lineEdits, setLineEdits] = useState<Record<number, LineEdit[]>>({});
+  const [editingRequestKey, setEditingRequestKey] = useState<string | null>(null);
+  const [restoredSource, setRestoredSource] = useState<CtCreateRequest | null>(null);
   const poRead = useDocumentRead<{ id: number; lines: PoDetailLine[] }>(createOpen && poId != null ? `/api/outsource/po/${poId}` : null);
   const poValid = poRead.data != null && poRead.data.id === poId && Array.isArray(poRead.data.lines)
     && poRead.data.lines.every(l => l != null && Number.isSafeInteger(l.id) && l.id > 0 && Number.isSafeInteger(l.skuId) && l.skuId > 0
@@ -181,7 +187,9 @@ function CtWorkspace({ me }: { me: Me | null }) {
       && typeof l.receivedQty === "string" && QTY_RE.test(l.receivedQty))
     && new Set(poRead.data.lines.map(l => l.id)).size === poRead.data.lines.length;
   const poError = poRead.error ?? (poRead.data && !poValid ? "采购订单身份或行数据不一致，请重新读取" : null);
-  const createLines: CreateLine[] = poValid ? poRead.data!.lines.filter(l => decCmp(l.receivedQty, "0") > 0).flatMap(l => (lineEdits[l.id] ?? [emptyLine()]).map((edit, index) => ({
+  const sourceMismatch = poValid && restoredSource?.poId === poId && restoredSource.lines.some(original =>
+    !poRead.data!.lines.some(current => current.id === original.poLineId && current.skuId === original.skuId));
+  const createLines: CreateLine[] = poValid ? poRead.data!.lines.filter(l => decCmp(l.receivedQty, "0") > 0 || lineEdits[l.id] != null).flatMap(l => (lineEdits[l.id] ?? [emptyLine()]).map((edit, index) => ({
     rowKey: `${l.id}:${index}`, index, ...edit,
     poLineId: l.id, skuId: l.skuId, skuCode: l.skuCode, skuName: l.skuName, baseUom: l.baseUom,
     receivedQty: l.receivedQty,
@@ -205,6 +213,17 @@ function CtWorkspace({ me }: { me: Me | null }) {
     setWarehouseId(null);
     setRemark("");
     setLineEdits({});
+    setEditingRequestKey(null); setRestoredSource(null);
+  };
+
+  const editCreateRequest = (request: CtCreateRequest) => {
+    // Reopening the same source inside an already-open modal must also withdraw stale balances.
+    if (createOpen && poId === request.poId) poRead.retry();
+    setCreateOpen(true); setEditingRequestKey(request.requestKey); setRestoredSource(request);
+    setPoId(request.poId); setWarehouseId(request.warehouseId); setRemark(request.remark ?? "");
+    const edits: Record<number, LineEdit[]> = {};
+    for (const line of request.lines) (edits[line.poLineId] ??= []).push({ qty: line.qty, batchId: line.batchId, reason: line.reason ?? "" });
+    setLineEdits(edits);
   };
 
   /** 选 PO 后：取已收行（可退数量 = 当前已收数，基础单位） */
@@ -212,10 +231,12 @@ function CtWorkspace({ me }: { me: Me | null }) {
     if (creating.current) return;
     setPoId(id ?? null);
     setLineEdits({});
+    setRestoredSource(null);
   };
 
   const handleCreate = async () => {
     if (creating.current) return;
+    if (sourceMismatch) return void message.warning("原请求采购行缺失或物料身份变化，请明确重新选择采购来源并核对全部实物行；未发送请求");
     if (poId == null) return void message.warning("请选择采购订单");
     if (!poValid || poRead.phase !== "success") return void message.warning("请先成功读取当前采购订单的可退行");
     if (warehouseId == null) return void message.warning("请选择退货出库仓");
@@ -234,7 +255,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
     creating.current = true;
     setCreateLoading(true);
     try {
-      const created = await postJson<{ id: number }>("/api/matflow/ct", {
+      const created = await recovery.submit({
         poId,
         warehouseId,
         remark: remark.trim() || undefined,
@@ -242,14 +263,15 @@ function CtWorkspace({ me }: { me: Me | null }) {
           poLineId: l.poLineId,
           skuId: l.skuId,
           qty: l.qty,
-          batchId: l.batchId,
+          batchId: l.batchId!,
           reason: l.reason.trim() || undefined,
         })),
-      });
+      }, editingRequestKey != null);
+      if (!created?.document) return;
       message.success("采购退货单已创建");
       setCreateOpen(false);
       void load();
-      setDetailId(created.id);
+      setDetailId(created.document.id);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -463,6 +485,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
         }
       />
       <LoadErrorAlert error={listError} onRetry={load} subject="采购退货列表" />
+      {!createOpen && <CtCreateRecovery recovery={recovery} onEdit={editCreateRequest} />}
       <Table<CtRow>
         rowKey="id"
         size={listState.tableSize}
@@ -552,13 +575,14 @@ function CtWorkspace({ me }: { me: Me | null }) {
         onSaved={() => { setVoidingDraft(null); message.success("原草稿已作废，库存及采购已收数未改变"); refresh(); }} />}
 
       <Modal
+        {...viewportModalProps}
         title="新建采购退货单"
         open={createOpen}
         width={1180}
         okText="创建"
         cancelText="取消"
         confirmLoading={createLoading}
-        okButtonProps={{ disabled: !poValid || createLines.length === 0 || warehouseId == null }}
+        okButtonProps={{ disabled: !recovery.ready || recovery.busy || (!editingRequestKey && !!recovery.request) || !!sourceMismatch || !poValid || createLines.length === 0 || warehouseId == null }}
         cancelButtonProps={{ disabled: createLoading }}
         closable={!createLoading}
         maskClosable={!createLoading}
@@ -567,6 +591,8 @@ function CtWorkspace({ me }: { me: Me | null }) {
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
+          <CtCreateRecovery recovery={recovery} onEdit={editCreateRequest} />
+          {sourceMismatch && <Alert type="error" showIcon message="原请求采购行缺失或物料身份已变，未丢弃原恢复记录。请明确重新选择采购来源并核对全部实物行，再修正同一请求。" />}
           <div>
             <div style={{ marginBottom: 4 }}>采购订单</div>
             <RemoteSelect

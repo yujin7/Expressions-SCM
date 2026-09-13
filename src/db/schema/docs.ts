@@ -400,6 +400,20 @@ export const stockCreateRequests = pgTable("stock_create_requests", {
   check("ck_stock_create_request_hash", sql`${t.requestHash} ~ '^[0-9a-f]{64}$'`),
 ]);
 
+/** Immutable account/request receipt; physical CT lines are never inferred from a retry. */
+export const ctCreateRequests = pgTable("ct_create_requests", {
+  id: serial("id").primaryKey(),
+  requestedBy: integer("requested_by").notNull().references(() => users.id),
+  requestKey: text("request_key").notNull(),
+  requestHash: text("request_hash").notNull(),
+  ctDocId: integer("ct_doc_id").notNull().references(() => ctDocs.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  unique("uq_ct_create_request").on(t.requestedBy, t.requestKey),
+  unique("uq_ct_create_request_doc").on(t.ctDocId),
+  check("ck_ct_create_request_hash", sql`${t.requestHash} ~ '^[0-9a-f]{64}$'`),
+]);
+
 export const stockDocLines = pgTable("stock_doc_lines", {
   id: serial("id").primaryKey(),
   stockDocId: integer("stock_doc_id").notNull().references(() => stockDocs.id),
