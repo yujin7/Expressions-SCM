@@ -35,7 +35,7 @@ export default function KitFactoryEvidence({ woId }: { woId: number }) {
           { title: "在厂账面", dataIndex: "factoryOnHand", width: 110, align: "right", render: value => value === null ? "未知" : formatQty(value) },
           { title: "同厂其他工单", key: "peers", width: 120, align: "right", render: (_, row) => row.peers.length },
         ]}
-        expandable={{ expandedRowRender: row => <Space direction="vertical" size={12} style={{ width: "100%", minWidth: 0 }}>
+        expandable={{ expandedRowRender: row => <Space direction="vertical" size={12} style={{ width: "100%", maxWidth: "calc(100vw - 128px)", minWidth: 0 }}>
           <Typography.Text type="secondary">在厂账面含停用委外仓余额及负余额。隔离量含停用隔离位；未记录隔离不等于质量已放行。未标效期不等于过期。</Typography.Text>
           <Table<Evidence["materials"][number]["warehouses"][number]> aria-label={`${row.code} 分仓风险依据`} rowKey="warehouseId" size="small" tableLayout="fixed" scroll={{ x: 790 }}
             dataSource={row.warehouses} pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: "未关联委外仓" }} columns={[

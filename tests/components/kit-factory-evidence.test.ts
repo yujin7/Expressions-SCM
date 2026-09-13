@@ -32,5 +32,7 @@ it("unknown stays unknown, narrow tables scroll internally, retry is a read", ()
   const cols = table.props.columns as { dataIndex?: string; render?: (v: unknown) => ReactNode }[];
   expect(cols.find(c => c.dataIndex === "factoryOnHand")!.render!(null)).toBe("未知");
   expect(JSON.stringify(tree)).toContain("本单可领用量尚未确认");
+  const expanded = (table.props.expandable as { expandedRowRender: (row: unknown) => ReactNode }).expandedRowRender(evidence().materials[0]);
+  expect(nodes(expanded)[0].props.style).toMatchObject({ maxWidth: "calc(100vw - 128px)", minWidth: 0 });
   (tree.find(n => n.type === "button")!.props.onClick as () => void)(); expect(h.retry).toHaveBeenCalledTimes(1);
 });
