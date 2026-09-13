@@ -68,7 +68,7 @@ function render(fn: () => React.ReactElement): React.ReactElement {
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: Error) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
-const row: WorkItemRow = { id: 17, title: "合成待办：核对物料", detail: "第一行\n长明细末尾证据", assigneeId: 42, assigneeName: "合成计划员", assignerId: 1,
+const row: WorkItemRow = { id: 17, version: 1, title: "合成待办：核对物料", detail: "第一行\n长明细末尾证据", assigneeId: 42, assigneeName: "合成计划员", assignerId: 1,
   assignerName: "合成管理员", ownerRole: "pmc", priority: "high", dueDate: null, status: "open", sourceKind: "alert", sourceRef: "9",
   completedAt: null, createdBy: 1, createdAt: "2026-09-01T00:00:00Z", overdue: false, suspicious: false };
 const listing = { rows: [row], total: 25, today: "2026-09-07" };
@@ -102,7 +102,7 @@ describe("compact todo facts and persistent outcomes", () => {
     let refreshKey = 0;
     const run = () => ItemTable({ view: "mine", prefix: "mine", assignees: [], refreshKey, onChanged: m.changed });
     render(run); await flush(); const button = elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!;
-    button.props.onClick!(); button.props.onClick!(); expect(m.patch).toHaveBeenCalledExactlyOnceWith("/api/todo/17", { status: "done" });
+    button.props.onClick!(); button.props.onClick!(); expect(m.patch).toHaveBeenCalledExactlyOnceWith("/api/todo/17", { status: "done", expectedVersion: 1, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
     pending.resolve({ ...row, status: "done" }); await flush(); expect(m.changed).toHaveBeenCalledOnce();
     refreshKey++; render(run); await flush(); const tree = render(run);
     const feedback = elements(tree).find(e => e.type === "alert")!;

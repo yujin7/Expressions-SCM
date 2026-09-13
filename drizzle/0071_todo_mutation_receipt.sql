@@ -1,0 +1,3 @@
+ALTER TABLE "work_items" ADD COLUMN "version" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_work_item_mutation_request" ON "audit_logs" USING btree (lower("after"->>'mutationRequestId')) WHERE "audit_logs"."entity" = 'work_item' AND "audit_logs"."after"->>'mutationRequestId' IS NOT NULL;--> statement-breakpoint
+ALTER TABLE "work_items" ADD CONSTRAINT "ck_work_items_version" CHECK ("work_items"."version" > 0);

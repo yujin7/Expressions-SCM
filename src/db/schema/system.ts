@@ -69,6 +69,8 @@ export const auditLogs = pgTable("audit_logs", {
   // New manual task requests bind to one immutable creation receipt, not current mutable task fields.
   uniqueIndex("uq_work_item_create_request").on(sql`lower(${t.after}->>'requestId')`)
     .where(sql`${t.entity} = 'work_item' AND ${t.action} = 'create' AND ${t.after}->>'requestId' IS NOT NULL`),
+  uniqueIndex("uq_work_item_mutation_request").on(sql`lower(${t.after}->>'mutationRequestId')`)
+    .where(sql`${t.entity} = 'work_item' AND ${t.after}->>'mutationRequestId' IS NOT NULL`),
 ]);
 
 export const importJobs = pgTable("import_jobs", {

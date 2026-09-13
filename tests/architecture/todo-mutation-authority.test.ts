@@ -161,12 +161,37 @@ export function completeWorkItem(id, actor, dbArg, opts) { return setWorkItemSta
 export function cancelWorkItem(id, actor, dbArg, opts) { return setWorkItemStatus(id, "cancelled", actor, dbArg, opts); }
 `;
 
+// Bounded to the two owning service functions; not a proof against arbitrary dynamic SQL elsewhere.
+function checkVersions(serviceText: string): boolean {
+  const source = ts.createSourceFile(SERVICE, serviceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  return ["createWorkItem", "patchWorkItem"].every(name => {
+    const body = functionBody(source, name);
+    if (!body) return false;
+    const sets = nodes(body, ts.isCallExpression).filter(call => method(call, "set") && ts.isPropertyAccessExpression(call.expression)
+      && ts.isCallExpression(call.expression.expression) && method(call.expression.expression, "update")
+      && named(call.expression.expression.arguments[0], "workItems"));
+    return sets.length === 1 && sets.every(call => {
+      const payload = call.arguments[0];
+      if (!payload || !ts.isObjectLiteralExpression(payload)) return false;
+      const version = payload.properties.find(p => ts.isPropertyAssignment(p) && named(p.name, "version"));
+      return !!version && ts.isPropertyAssignment(version) && ts.isTaggedTemplateExpression(version.initializer)
+        && named(version.initializer.tag, "sql") && version.initializer.template.getText(source) === "`${workItems.version} + 1`";
+    });
+  });
+}
+
 function replaceOnce(source: string, before: string, after: string): string {
   expect(source.split(before)).toHaveLength(2);
   return source.replace(before, after);
 }
 
 describe("待办修改单一入口：当前路由和包装函数的有界结构门", () => {
+  it("manual mutation and fingerprint reopen increment one monotonic version", () => {
+    expect(checkVersions(read(SERVICE))).toBe(true);
+  });
+  it.each(["version: 1,", "", "version: sql`${workItems.version} - 1`,"])("missing or non-monotonic version guard turns red: %s", replacement => {
+    expect(checkVersions(read(SERVICE).replace("version: sql`${workItems.version} + 1`,", replacement))).toBe(false);
+  });
   it("实际 PATCH/assign/status/complete/cancel 统一委托，事务锁行后按同一可见范围授权", () => {
     expect(checkAuthority(read(ROUTE), read(SERVICE))).toEqual([]);
   });
