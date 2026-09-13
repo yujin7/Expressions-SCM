@@ -12,6 +12,7 @@ import { useListState } from "@/components/useListState";
 import ListToolbar from "@/components/ListToolbar";
 import SearchInput from "@/components/SearchInput";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
+import KitFactoryEvidence from "@/components/KitFactoryEvidence";
 import type { BatchSuggestion } from "@/server/modules/outsource/auto-chain";
 
 interface Batch {
@@ -50,7 +51,9 @@ export default function AutoChainClient() {
   const q = list.filters.q ?? "";
   const [searchDraft, setSearchDraft] = useState(q);
   useEffect(() => { setSearchDraft(q); }, [q]);
-  const [evidence, setEvidence] = useState<Batch | null>(null);
+  const [evidence, setEvidence] = useState<(Batch & { readKey: number }) | null>(null);
+  const evidenceSequence = useRef(0);
+  const openEvidence = (row: Batch) => setEvidence({ ...row, readKey: ++evidenceSequence.current });
   const [busy, setBusy] = useState<string | null>(null);
   const writing = useRef(false);
   const mounted = useRef(true);
@@ -104,7 +107,7 @@ export default function AutoChainClient() {
     { title: "工单", dataIndex: "woDocNo", width: 170, render: (v: string, r) => <Link href={`/outsource/wo?docId=${r.woId}`}>{v}</Link> },
     { title: "成品", key: "product", width: 240, render: (_, r) => <div style={{ overflowWrap: "anywhere" }}><Typography.Text>{r.productCode}</Typography.Text><div>{r.productName || "名称未补录"}</div></div> },
     { title: "工单量", dataIndex: "woQty", width: 90, align: "right", render: (v: string) => formatQty(v) },
-    { title: "到料可产", dataIndex: "producible", width: 100, align: "right", render: (v: string) => <span style={{ overflowWrap: "anywhere" }}>{formatQty(v)}</span> },
+    { title: "采购已收折算", dataIndex: "producible", width: 100, align: "right", render: (v: string) => <span style={{ overflowWrap: "anywhere" }}>{formatQty(v)}</span> },
     {
       // E2-09：「现在够不够」之外，回答业务真正要问的「几号能齐套」。
       // 视野内齐不了就直说并指出卡在哪个料，不给一个含糊的日期。
@@ -112,7 +115,7 @@ export default function AutoChainClient() {
       dataIndex: "kitDate",
       width: 120,
       render: (v: string | null, r: Batch) => (
-        <Button type="link" size="small" style={{ paddingInline: 0 }} aria-label={`查看 ${r.woDocNo} 齐套依据`} onClick={() => setEvidence(r)}>
+        <Button type="link" size="small" style={{ paddingInline: 0 }} aria-label={`查看 ${r.woDocNo} 齐套依据`} onClick={() => openEvidence(r)}>
           {v ?? "视野内齐不了"}
         </Button>
       ),
@@ -123,7 +126,7 @@ export default function AutoChainClient() {
       width: 125,
       render: (v: string | null, r: Batch) =>
         r.referenceEvidenceCount > 0 ? (
-          <Button type="link" size="small" style={{ paddingInline: 0 }} aria-label={`查看 ${r.woDocNo} 旧台账旁证`} onClick={() => setEvidence(r)}>{v ?? "视野内未可得"}</Button>
+          <Button type="link" size="small" style={{ paddingInline: 0 }} aria-label={`查看 ${r.woDocNo} 旧台账旁证`} onClick={() => openEvidence(r)}>{v ?? "视野内未可得"}</Button>
         ) : <Typography.Text type="secondary">无匹配旁证</Typography.Text>,
     },
     { title: "已下批", dataIndex: "alreadyBatched", width: 90, align: "right", render: (v: string) => formatQty(v) },
@@ -160,7 +163,7 @@ export default function AutoChainClient() {
         type={data?.flags.autoJgOnReady || data?.flags.autoWoOnBh ? "warning" : "info"}
         showIcon
         message="只生成草稿，提交与审批仍由人工完成"
-        description={<><div>BH 自动建 WO：{data ? (data.flags.autoWoOnBh ? "开" : "关") : "未知"} · 齐套自动 JG：{data ? (data.flags.autoJgOnReady ? "开" : "关") : "未知"}（运行参数页调整）。</div><div>到料可产按本工单 PO 已收计算，不等于实际到厂或生产放行。预计齐套日按全网在库与系统单据推演，未扣其他工单占用；点击日期核对逐料依据。旧台账不改变生成数量。暂停工单不建批，批次≤8、已有待审草稿先处理。</div></>}
+        description={<><div>BH 自动建 WO：{data ? (data.flags.autoWoOnBh ? "开" : "关") : "未知"} · 齐套自动 JG：{data ? (data.flags.autoJgOnReady ? "开" : "关") : "未知"}（运行参数页调整）。</div><div>采购已收折算按本工单 PO 已收计算，不等于实际到厂或生产放行。预计齐套日按全网在库与系统单据推演，未扣其他工单占用；点击日期核对逐料依据。旧台账不改变生成数量。暂停工单不建批，批次≤8、已有待审草稿先处理。</div></>}
       />
       <ListToolbar state={list} extra={<SearchInput aria-label="筛选自动链建议" placeholder="工单 / 备货单 / 成品 / OEM" value={searchDraft} onChange={e => setSearchDraft(e.target.value)} onSearch={value => list.setFilter({ q: value.trim() })} allowClear style={{ width: 300, maxWidth: "100%" }} />}
         primaryActions={<><a href="/matflow/sh?batchCheckPending=1">采购建批待核对</a><Button onClick={refresh} loading={loading} disabled={busy !== null}>刷新预演</Button></>} />
@@ -177,7 +180,7 @@ export default function AutoChainClient() {
           <Table<WoSug> rowKey="bhLineId" size={list.tableSize} tableLayout="fixed" scroll={{ x: 830 }} columns={woCols} dataSource={wos} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "可见范围内没有匹配的工单建议，请调整或清空筛选" : "当前可见备货申请中没有转工单建议") : "尚未取得预演数据" }} />
         </Card>
       </Space>
-      <Modal width={1080} style={{ top: 24 }} styles={{ body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>
+      <Modal destroyOnHidden width={1080} style={{ top: 24 }} styles={{ header: { paddingInlineEnd: 32 }, body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>
         {evidence ? <>
           <Typography.Paragraph>{evidence.productCode} · {evidence.productName || "名称未补录"}</Typography.Paragraph>
           <Typography.Title level={5}>系统供给预测</Typography.Title>
@@ -196,6 +199,7 @@ export default function AutoChainClient() {
             { title: "90天末缺口", dataIndex: "shortBy", width: 100, align: "right", render: formatQty },
             { title: "预测可齐日", dataIndex: "forecastDate", width: 125, render: (value: string | null) => value ?? "视野内未可得" },
           ]} /> : <Alert type="warning" message="未取得完整逐料依据，请刷新核对，不能仅按日期判断可生产。" />}
+          <KitFactoryEvidence key={`${evidence.woId}:${evidence.readKey}`} woId={evidence.woId} />
           <Typography.Title level={5}>旧台账旁证 · 不参与生成数量</Typography.Title>
           <Typography.Paragraph>{evidence.referenceEvidenceCount ? `${evidence.referenceKitNote}；备料池剩余 ${formatQty(evidence.referenceReservedQty)}` : "无匹配旁证，不能推断为库存为零。"}</Typography.Paragraph>
         </> : null}

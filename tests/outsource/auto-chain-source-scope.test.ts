@@ -58,6 +58,10 @@ it("HTTP preview forwards scope and cannot be cached as shared data", async () =
   expect(response.headers.get("cache-control")).toBe("private, no-store");
   expect((await response.json()).wos.map((w: { bhId: number }) => w.bhId)).toEqual([ownId, sharedId]);
 });
+it("unsupported role gets a business refusal instead of an internal-server error", async () => {
+  actor = { ...viewer, roles: ["ops"] };
+  expect((await GET()).status).toBe(403);
+});
 it("guessing an out-of-scope BH in generation neither reveals it nor calls the writer", async () => {
   const response = await POST(new NextRequest("http://localhost/api/outsource/auto-chain/wo", { method: "POST", body: JSON.stringify({ bhId: hiddenId, skuId }) }));
   expect(response.status).toBe(404); expect(JSON.stringify(await response.json())).not.toContain("BH-AUTO-SCOPE-2");
