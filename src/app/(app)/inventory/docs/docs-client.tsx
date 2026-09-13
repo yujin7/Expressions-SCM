@@ -28,7 +28,10 @@ import type { StockCreatePayload } from "@/components/stock-create-request";
 import { STOCK_SUBTYPE_LABELS, toOptions } from "@/components/labels";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import { useSearchParams } from "next/navigation";
-import { FefoPreviewModal, type FefoPreviewGroup } from "./FefoPreviewModal";
+import { FefoPreviewModal } from "./FefoPreviewModal";
+import { currentFefoPreviewKey, fefoPreviewKey, useFefoPreview } from "@/components/useFefoPreview";
+import { compareDecimalValues } from "@/lib/decimal-sort";
+import LoadErrorAlert from "@/components/LoadErrorAlert";
 import type { StockDocActionHints } from "@/lib/stock-doc-actions";
 
 interface DocRow {
@@ -108,16 +111,6 @@ interface CreateFormValues {
 
 const BATCH_OUTBOUND_SUBTYPES = new Set(["issue_out", "sales_out", "transfer"]);
 
-function fefoFingerprint(values: Pick<CreateFormValues, "subtype" | "warehouseId" | "lines">): string {
-  return JSON.stringify({
-    subtype: values.subtype,
-    warehouseId: values.warehouseId,
-    lines: (values.lines ?? [])
-      .filter((line) => line?.skuId && Number(line.qty) > 0)
-      .map((line) => ({ skuId: line.skuId, qty: Number(line.qty) })),
-  });
-}
-
 const SUBTYPE_COLORS: Record<string, string> = {
   opening: "cyan",
   issue_out: "orange",
@@ -193,11 +186,16 @@ function DocsInner({ me }: { me: Me | null }) {
   const createLines = Form.useWatch("lines", form);
   const createRiskDisposalId = Form.useWatch("riskDisposalId", form);
   const handledScrapLink = useRef<string | null>(null);
-  const [batchPostingEnabled, setBatchPostingEnabled] = useState(false);
+  const batchStatus = useDocumentRead<{ enabled: boolean }>(createOpen ? "/api/inventory/batch-posting/status" : null);
+  const batchStatusKnown = batchStatus.phase === "success" && typeof batchStatus.data?.enabled === "boolean";
+  const batchPostingEnabled = batchStatusKnown && batchStatus.data?.enabled === true;
+  const batchStatusError = batchStatus.error ?? (batchStatus.phase === "success" && !batchStatusKnown ? "批次规则响应不完整" : null);
   const [fefoPreviewOpen, setFefoPreviewOpen] = useState(false);
-  const [fefoPreviewLoading, setFefoPreviewLoading] = useState(false);
-  const [fefoPreviewGroups, setFefoPreviewGroups] = useState<FefoPreviewGroup[]>([]);
+  const [fefoTarget, setFefoTarget] = useState<string | null>(null);
+  const currentFefoKey = currentFefoPreviewKey({ subtype: createSubtype, warehouseId: createWarehouseId, lines: createLines, riskDisposalId: createRiskDisposalId });
+  const fefo = useFefoPreview(createOpen && fefoPreviewOpen ? fefoTarget : null, currentFefoKey);
   const [confirmedFefoFingerprint, setConfirmedFefoFingerprint] = useState<string | null>(null);
+  const fefoConfirmed = currentFefoKey != null && confirmedFefoFingerprint === currentFefoKey;
 
   useEffect(() => {
     if (searchParams.get("create") !== "scrap" || !recovery.ready || recovery.request || !hasAnyRole(me, "warehouse")) return;
@@ -222,15 +220,9 @@ function DocsInner({ me }: { me: Me | null }) {
   }, [form, searchParams, recovery.ready, recovery.request, me]);
 
   useEffect(() => {
-    if (!createOpen) return;
-    fetchJson<{ enabled: boolean }>("/api/inventory/batch-posting/status")
-      .then((result) => setBatchPostingEnabled(result.enabled))
-      .catch(() => setBatchPostingEnabled(false));
-  }, [createOpen]);
-
-  useEffect(() => {
     setConfirmedFefoFingerprint(null);
-  }, [createSubtype, createWarehouseId, createLines]);
+    if (!createOpen) { setFefoPreviewOpen(false); setFefoTarget(null); }
+  }, [createOpen, currentFefoKey]);
 
   // R15 临期禁售拦截 v1：sales_out/transfer 明细选定 SKU 后，防抖调用 expiry-check，仅告警不阻断
   const [expiryAlerts, setExpiryAlerts] = useState<ExpiryCheckItem[]>([]);
@@ -270,36 +262,16 @@ function DocsInner({ me }: { me: Me | null }) {
 
   const loadFefoPreview = async (): Promise<boolean> => {
     try {
-      const values = await form.validateFields(["subtype", "warehouseId", "lines"]);
+      const values = await form.validateFields(["subtype", "warehouseId", "lines", "riskDisposalId"]);
       if (!BATCH_OUTBOUND_SUBTYPES.has(values.subtype)) return true;
-      const lines = (values.lines ?? []).filter((line) => line?.skuId && Number(line.qty) > 0);
-      const qtyBySku = new Map<number, number>();
-      for (const line of lines) {
-        qtyBySku.set(line.skuId, (qtyBySku.get(line.skuId) ?? 0) + Number(line.qty));
-      }
-      if (qtyBySku.size === 0) {
-        message.warning("请先填写至少一条有效明细");
-        return false;
-      }
+      setConfirmedFefoFingerprint(null);
+      setFefoTarget(fefoPreviewKey(values));
       setFefoPreviewOpen(true);
-      setFefoPreviewLoading(true);
-      const groups = await Promise.all(
-        [...qtyBySku.entries()].map(async ([skuId, qty]) => {
-          const params = new URLSearchParams({
-            skuId: String(skuId),
-            warehouseId: String(values.warehouseId),
-            qty: String(qty),
-          });
-          return fetchJson<FefoPreviewGroup>(`/api/inventory/fefo-suggest?${params.toString()}`);
-        }),
-      );
-      setFefoPreviewGroups(groups);
+      fefo.retry();
       return true;
     } catch (error) {
       if (error instanceof Error && error.message) message.error(error.message);
       return false;
-    } finally {
-      setFefoPreviewLoading(false);
     }
   };
 
@@ -341,8 +313,11 @@ function DocsInner({ me }: { me: Me | null }) {
         message.warning("至少添加一行明细");
         return;
       }
+      if (BATCH_OUTBOUND_SUBTYPES.has(values.subtype) && !batchStatusKnown) {
+        throw Error("尚未取得批次规则，请先重试读取；未发送建单请求");
+      }
       if (batchPostingEnabled && BATCH_OUTBOUND_SUBTYPES.has(values.subtype)) {
-        const fingerprint = fefoFingerprint(values);
+        const fingerprint = fefoPreviewKey(values);
         if (confirmedFefoFingerprint !== fingerprint) {
           const opened = await loadFefoPreview();
           if (opened) message.info("请核对并确认 FEFO 批次预分配后再保存");
@@ -540,7 +515,7 @@ function DocsInner({ me }: { me: Me | null }) {
         onOk={() => void handleCreate()}
         onCancel={() => setCreateOpen(false)}
         confirmLoading={saving || recovery.busy}
-        okButtonProps={{ disabled: !recovery.ready || !!recovery.result?.document || (!!recovery.request && !editingRequest) }}
+        okButtonProps={{ disabled: !recovery.ready || !!recovery.result?.document || (!!recovery.request && !editingRequest) || (BATCH_OUTBOUND_SUBTYPES.has(createSubtype) && !batchStatusKnown) }}
         width="min(720px, 100vw)"
         forceRender
         maskClosable={false}
@@ -552,6 +527,8 @@ function DocsInner({ me }: { me: Me | null }) {
           setEditingRequest(true); setSaveError(null);
         }} />
         {saveError && <Alert type="error" showIcon message="尚未保存" description={saveError} style={{ marginBottom: 12 }} />}
+        <LoadErrorAlert error={batchStatusError} onRetry={batchStatus.retry} subject="批次规则" retrying={batchStatus.phase === "loading"} />
+        {BATCH_OUTBOUND_SUBTYPES.has(createSubtype) && !batchStatusKnown && !batchStatusError && <Alert type="info" showIcon message="正在核对批次规则，暂不可保存出库草稿" style={{ marginBottom: 12 }} />}
         <Form form={form} layout="vertical">
           <Form.Item name="riskDisposalId" hidden>
             <Input />
@@ -649,7 +626,7 @@ function DocsInner({ me }: { me: Me | null }) {
               <Button
                 icon={<ExperimentOutlined />}
                 onClick={() => void loadFefoPreview()}
-                loading={fefoPreviewLoading}
+                loading={fefo.loading}
               >
                 预览 FEFO 批次
               </Button>
@@ -657,10 +634,10 @@ function DocsInner({ me }: { me: Me | null }) {
           </Space>
           {batchPostingEnabled && BATCH_OUTBOUND_SUBTYPES.has(createSubtype) ? (
             <Alert
-              type={confirmedFefoFingerprint ? "success" : "info"}
+              type={fefoConfirmed ? "success" : "info"}
               showIcon
               style={{ marginBottom: 12 }}
-              message={confirmedFefoFingerprint ? "已确认当前 FEFO 预分配" : "保存前需核对 FEFO 批次"}
+              message={fefoConfirmed ? "已确认当前 FEFO 预分配" : "保存前需核对 FEFO 批次"}
               description="修改仓库、SKU 或数量后需要重新确认；系统保存时会再次校验，以防并发出库造成批次余额变化。"
             />
           ) : null}
@@ -688,11 +665,11 @@ function DocsInner({ me }: { me: Me | null }) {
                       rules={[{ required: true, message: "数量必填" }]}
                       style={{ marginBottom: 8 }}
                     >
-                      <InputNumber min={0.0001} precision={4} placeholder="数量" style={{ width: 130 }} />
+                      <InputNumber stringMode min="0.0001" max="9999999999.9999" precision={4} placeholder="数量" aria-label={`第${name + 1}行数量`} style={{ width: 130 }} />
                     </Form.Item>
                     {createSubtype === "opening" ? (
                       <Form.Item {...restField} name={[name, "price"]} style={{ marginBottom: 8 }}>
-                        <InputNumber min={0} precision={2} placeholder="单价（可选）" style={{ width: 130 }} />
+                        <InputNumber stringMode min="0" max="999999999999.99" precision={2} placeholder="单价（可选）" style={{ width: 130 }} />
                       </Form.Item>
                     ) : null}
                     <Button
@@ -714,13 +691,20 @@ function DocsInner({ me }: { me: Me | null }) {
       </Modal>
 
       <FefoPreviewModal
-        open={fefoPreviewOpen}
-        loading={fefoPreviewLoading}
-        groups={fefoPreviewGroups}
+        open={createOpen && fefoPreviewOpen}
+        loading={fefo.loading}
+        groups={fefo.groups}
+        error={fefo.error}
+        onRetry={() => void loadFefoPreview()}
         onCancel={() => setFefoPreviewOpen(false)}
         onConfirm={() => {
-          const values = form.getFieldsValue(["subtype", "warehouseId", "lines"]);
-          setConfirmedFefoFingerprint(fefoFingerprint(values as CreateFormValues));
+          const values = form.getFieldsValue(["subtype", "warehouseId", "lines", "riskDisposalId"]);
+          const key = currentFefoPreviewKey(values);
+          if (key == null || key !== fefoTarget || fefo.loading || fefo.error || !fefo.groups?.length
+            || fefo.groups.some(group => compareDecimalValues(group.shortBy, "0") > 0)) {
+            message.warning("当前批次预览尚未确认，请重新读取"); return;
+          }
+          setConfirmedFefoFingerprint(key);
           setFefoPreviewOpen(false);
           message.success("已确认 FEFO 批次规则；保存时将重新校验并写入草稿行");
         }}

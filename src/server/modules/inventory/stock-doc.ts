@@ -19,6 +19,7 @@ import {
   shortCloseStockDocSchema, voidStockDocSchema, withdrawStockDocSchema,
 } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "./batch-allocation";
+import { assertReviewedScrapSource } from "./reviewed-scrap";
 import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 import { documentHref } from "@/lib/document-links";
 import type { StockDocActionHints } from "@/lib/stock-doc-actions";
@@ -103,26 +104,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
     }
 
     if (v.riskDisposalId) {
-      const [disposal]: { refKey: string | null; title: string }[] = await tx
-        .select({ refKey: reviewItems.refKey, title: reviewItems.title })
-        .from(reviewItems)
-        .where(and(
-          eq(reviewItems.id, v.riskDisposalId),
-          eq(reviewItems.category, "risk_disposal"),
-          eq(reviewItems.status, "open"),
-        )).for("share");
-      if (!disposal) throw new ApiError(409, "风险处置登记不存在、已关闭或已被改判");
-      if (!disposal.title.startsWith("处置决定：报废评审 ")) {
-        throw new ApiError(409, "只有「报废评审」登记可生成报废出库单");
-      }
-      const linkedSkuCodes = new Set(
-        v.lines
-          .map((line) => skuRows.find((sku) => sku.id === line.skuId)?.code)
-          .filter((code): code is string => Boolean(code)),
-      );
-      if (linkedSkuCodes.size !== 1 || !disposal.refKey || !linkedSkuCodes.has(disposal.refKey)) {
-        throw new ApiError(409, "报废出库明细必须且只能包含该处置登记对应的 SKU");
-      }
+      await assertReviewedScrapSource(tx, v.riskDisposalId, skuRows.map(sku => sku.code));
     }
     const lines = v.subtype === "opening"
       ? v.lines.map((line) => ({ ...line, qty: dQty(line.qty), batchId: line.batchId ?? null }))
