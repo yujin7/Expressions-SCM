@@ -180,7 +180,7 @@ export default function AutoChainClient() {
           <Table<WoSug> rowKey="bhLineId" size={list.tableSize} tableLayout="fixed" scroll={{ x: 830 }} columns={woCols} dataSource={wos} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "可见范围内没有匹配的工单建议，请调整或清空筛选" : "当前可见备货申请中没有转工单建议") : "尚未取得预演数据" }} />
         </Card>
       </Space>
-      <Modal destroyOnHidden width={1080} style={{ top: 24 }} styles={{ body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>
+      <Modal destroyOnHidden width={1080} style={{ top: 24 }} styles={{ header: { paddingInlineEnd: 32 }, body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>
         {evidence ? <>
           <Typography.Paragraph>{evidence.productCode} · {evidence.productName || "名称未补录"}</Typography.Paragraph>
           <Typography.Title level={5}>系统供给预测</Typography.Title>

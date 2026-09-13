@@ -87,6 +87,7 @@ it("reopening even the same WO gives factory evidence a fresh identity and destr
   const next = nodes(props("modal").children as ReactNode).find(n => n.type === KitFactoryEvidence)!;
   expect(next.key).not.toBe(first.key); expect(next.props.woId).toBe(18);
   expect(props("modal").destroyOnHidden).toBe(true);
+  expect(props("modal").styles).toMatchObject({ header: { paddingInlineEnd: 32 } });
 });
 it.each([0, 1])("generation %s guards same-tick repeats and links the exact unsubmitted draft", async i => {
   await begin(); const write = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(write.promise);
