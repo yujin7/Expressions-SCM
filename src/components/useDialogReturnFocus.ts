@@ -6,7 +6,8 @@ import { useCallback, useEffect, useRef } from "react";
 export function canReturnDialogFocus(element: HTMLElement | null): element is HTMLElement {
   if (!element?.isConnected || element.closest('[inert], [hidden], [aria-hidden="true"]') || element.matches(':disabled, [aria-disabled="true"]')) return false;
   const style = element.ownerDocument.defaultView?.getComputedStyle(element);
-  return element.getClientRects().length > 0 && style?.visibility !== "hidden" && style?.visibility !== "collapse";
+  return Array.from(element.getClientRects()).some(rect => rect.width > 0 && rect.height > 0)
+    && style?.visibility !== "hidden" && style?.visibility !== "collapse";
 }
 
 /** For parent-owned dialogs removed on close. Capture the stable trigger, never a transient menu item.

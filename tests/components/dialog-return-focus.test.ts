@@ -11,18 +11,18 @@ vi.mock("react", () => ({
     h.slots[i] = deps; h.effects.push(() => { h.cleanups.get(i)?.(); h.cleanups.delete(i); const cleanup = fn(); if (cleanup) h.cleanups.set(i, cleanup); });
   },
 }));
-type Fake = { isConnected: boolean; visible: boolean; disabled: boolean; hidden: boolean; visibility: string; key: string;
+type Fake = { isConnected: boolean; visible: boolean; disabled: boolean; hidden: boolean; visibility: string; key: string; height: number;
   ownerDocument: typeof doc; children: Fake[]; fallback: Fake | null; focus: ReturnType<typeof vi.fn>;
-  closest: (s: string) => Fake | null; matches: () => boolean; getClientRects: () => number[];
+  closest: (s: string) => Fake | null; matches: () => boolean; getClientRects: () => { width: number; height: number }[];
   querySelectorAll: () => Fake[]; getAttribute: () => string };
 const doc = { body: {} as object, activeElement: null as object | null, modals: [] as Fake[],
   defaultView: { getComputedStyle: (e: Fake) => ({ visibility: e.visibility }) }, querySelectorAll: () => doc.modals };
 const dom = (e: Fake) => e as unknown as HTMLElement;
 function element(key = ""): Fake {
-  const e: Fake = { isConnected: true, visible: true, disabled: false, hidden: false, visibility: "visible", key,
+  const e: Fake = { isConnected: true, visible: true, disabled: false, hidden: false, visibility: "visible", key, height: 30,
     ownerDocument: doc, children: [], fallback: null, focus: vi.fn(() => { doc.activeElement = e; }),
     closest: s => s === "[data-dialog-fallback]" ? e.fallback : e.hidden ? e : null,
-    matches: () => e.disabled, getClientRects: () => e.visible ? [1] : [], querySelectorAll: () => e.children, getAttribute: () => e.key };
+    matches: () => e.disabled, getClientRects: () => e.visible ? [{ width: 100, height: e.height }] : [], querySelectorAll: () => e.children, getAttribute: () => e.key };
   return e;
 }
 let scope: Fake, trigger: Fake, api: ReturnType<typeof useDialogReturnFocus>;
@@ -60,6 +60,10 @@ describe("parent-owned dialog return focus", () => {
   it("falls back to the workspace if a recovery banner has become empty", () => {
     trigger.isConnected = false; scope.visible = false; const workspace = element(); scope.fallback = workspace;
     close(); expect(workspace.focus).toHaveBeenCalledOnce();
+  });
+  it("rejects an empty region even though the browser returns a client rectangle", () => {
+    trigger.isConnected = false; scope.height = 0; const workspace = element(); scope.fallback = workspace;
+    expect(scope.getClientRects()).toHaveLength(1); close(); expect(scope.focus).not.toHaveBeenCalled(); expect(workspace.focus).toHaveBeenCalledOnce();
   });
   it.each(["disabled", "hidden", "isConnected"] as const)("rejects an unavailable target: %s", field => {
     trigger[field] = field !== "isConnected"; close(); expect(trigger.focus).not.toHaveBeenCalled(); expect(scope.focus).toHaveBeenCalledOnce();
