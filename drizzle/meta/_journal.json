@@ -470,6 +470,13 @@
       "when": 1789259346682,
       "tag": "0066_wo_create_receipt",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1789269665517,
+      "tag": "0067_bh_line_generation",
+      "breakpoints": true
     }
   ]
 }

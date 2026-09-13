@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import * as s from "@/db/schema";
@@ -13,8 +13,12 @@ let viewer: SessionUser, actor: SessionUser, ownId: number, sharedId: number, hi
 const writes = vi.hoisted(() => ({ create: vi.fn<(...args: unknown[]) => Promise<{ id: number; docNo: string }>>(async () => ({ id: 909, docNo: "WO-SYNTHETIC" })) }));
 vi.mock("@/db", () => ({ getDbAsync: async () => db }));
 vi.mock("@/server/core/dto", async original => ({ ...await original<typeof import("@/server/core/dto")>(), getFreshSessionUser: async () => actor }));
-vi.mock("@/server/modules/outsource/wo", () => ({ createWo: writes.create }));
-beforeAll(async () => {
+vi.mock("@/server/modules/outsource/wo", async original => {
+  const actual = await original<typeof import("@/server/modules/outsource/wo")>();
+  writes.create.mockImplementation(actual.createWo as never);
+  return { ...actual, createWo: writes.create };
+});
+beforeEach(async () => {
   ({ db, client } = await createTestDb());
   const [own, shared, hidden] = await db.insert(s.users).values([
     { name: "范围PMC", roles: ["pmc"] }, { name: "同渠道运营", roles: ["ops"] }, { name: "范围外运营", roles: ["ops"] },
@@ -31,9 +35,9 @@ beforeAll(async () => {
   [ownId, sharedId, hiddenId] = bhs.map(b => b.id);
   await db.insert(s.bhLines).values(bhs.map(b => ({ bhId: b.id, skuId, qty: "9999999999.9999" })));
   viewer = { id: own.id, name: own.name, roles: ["pmc"], isApprover: false, channelScope: [channel.id] };
+  actor = viewer; writes.create.mockClear();
 });
-afterAll(async () => { await client.close(); });
-beforeEach(() => { actor = viewer; writes.create.mockClear(); });
+afterEach(async () => { await client.close(); });
 
 it("preview uses the same own/shared-channel scope before reading BH lines", async () => {
   const before = await db.select().from(s.auditLogs);
@@ -62,7 +66,7 @@ it("guessing an out-of-scope BH in generation neither reveals it nor calls the w
 it("allowed generation preserves source decimal strings and private response", async () => {
   const response = await POST(new NextRequest("http://localhost/api/outsource/auto-chain/wo", { method: "POST", body: JSON.stringify({ bhId: sharedId, skuId }) }));
   expect(response.status).toBe(201); expect(response.headers.get("cache-control")).toBe("private, no-store");
-  expect(writes.create).toHaveBeenCalledWith(viewer, expect.objectContaining({ bhId: sharedId, qty: "9999999999.9999", feeRatePlan: "1.23" }));
+  expect(writes.create).toHaveBeenCalledWith(expect.objectContaining({ id: viewer.id }), expect.objectContaining({ bhId: sharedId, qty: "9999999999.9999", feeRatePlan: "1.23" }), expect.anything());
 });
 it("approval hook loads persisted scope even without HTTP scope payload", async () => {
   await db.insert(s.sysParams).values({ scope: "global", key: "auto_wo_on_bh", value: "1" }).onConflictDoUpdate({ target: [s.sysParams.scope, s.sysParams.key], set: { value: "1" } });
@@ -70,7 +74,7 @@ it("approval hook loads persisted scope even without HTTP scope payload", async 
   expect(writes.create).not.toHaveBeenCalled();
   await hookAfterBhApprove({ ...viewer, channelScope: undefined }, sharedId, db);
   expect(writes.create).toHaveBeenCalledTimes(1);
-  expect(writes.create.mock.calls[0]).toEqual([expect.anything(), expect.objectContaining({ qty: "9999999999.9999", feeRatePlan: "1.23" }), db]);
+  expect(writes.create.mock.calls[0]).toEqual([expect.anything(), expect.objectContaining({ qty: "9999999999.9999", feeRatePlan: "1.23" }), expect.anything()]);
 });
 it("changed shared-channel membership removes visibility on the next read", async () => {
   await db.delete(s.userDataScopes).where(eq(s.userDataScopes.targetId, channelId));

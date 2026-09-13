@@ -89,6 +89,20 @@ export const woCreateRequests = pgTable("wo_create_requests", {
   check("ck_wo_create_request_hash", sql`${t.requestHash} ~ '^[0-9a-f]{64}$'`),
 ]);
 
+/** One automatic draft per original BH line, shared across users/devices/hooks. Never infer historical mappings. */
+export const bhWoGenerations = pgTable("bh_wo_generations", {
+  id: serial("id").primaryKey(),
+  bhLineId: integer("bh_line_id").notNull().references(() => bhLines.id),
+  sourceVersion: integer("source_version").notNull(),
+  woId: integer("wo_id").notNull().references(() => woDocs.id),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  unique("uq_bh_wo_generation_line").on(t.bhLineId),
+  unique("uq_bh_wo_generation_wo").on(t.woId),
+  check("ck_bh_wo_generation_version", sql`${t.sourceVersion} > 0`),
+]);
+
 /* ── 采购订单 PO（仅原料/包材行；加工费应付唯一载体=JS） ── */
 export const poDocs = pgTable("po_docs", {
   id: serial("id").primaryKey(),

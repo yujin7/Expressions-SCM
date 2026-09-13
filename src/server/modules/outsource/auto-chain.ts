@@ -1,7 +1,7 @@
 /**
  * D33 自动链（spec/11 预演优先）：BH→自动WO草稿；到料齐套→自动JG批次草稿。
  * 铁律：自动只产【草稿】，审批永远人工；开关默认关（auto_wo_on_bh / auto_jg_on_ready）；
- * 幂等：WO 按 bhId 查重；JG 批次按 UNIQUE(woId,batchSeq)+建议量水位；
+ * 幂等：WO 按原始 BH 明细凭据唯一；JG 批次按 UNIQUE(woId,batchSeq)+建议量水位；
  * 护栏：批次≤8、成品 attrs.needsReview 非空不自动、钩子失败绝不阻断主流程（审计留痕）。
  * 供应商解析：OEM 归属参考（transit_refs kind='oem_map'）→ supplier_oem 别名。
  */
@@ -64,6 +64,7 @@ export interface BatchSuggestion {
 
 export interface WoSuggestion {
   bhId: number;
+  bhLineId: number;
   bhDocNo: string;
   skuId: number;
   skuCode: string;
@@ -72,6 +73,9 @@ export interface WoSuggestion {
   supplierName: string | null;
   feeRatePlan: string | null;
   blockedReason: string | null;
+  expectDate: string | null;
+  generated: { id: number; docNo: string; status: string } | null;
+  legacyDocuments: { id: number; docNo: string }[];
 }
 
 async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion[]> {
@@ -274,22 +278,42 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
 export async function previewAutoChain(dbArg?: AnyDb, user?: BhReadUser): Promise<{ batches: BatchSuggestion[]; wos: WoSuggestion[] }> {
   const db = await resolveDb(dbArg);
   const batches = await previewBatches(db);
+  return { batches, wos: await previewWoSuggestions(db, user) };
+}
 
-  /* 自动 WO 建议：approved BH 且尚无 WO */
-  const bhs: { id: number; docNo: string }[] = await db
-    .select({ id: schema.bhDocs.id, docNo: schema.bhDocs.docNo })
+/** Source lines remain visible after generation, so a lost response can be recovered by reading. */
+async function previewWoSuggestions(db: AnyDb, user?: BhReadUser, bhId?: number): Promise<WoSuggestion[]> {
+  const bhs: { id: number; docNo: string; status: string }[] = await db
+    .select({ id: schema.bhDocs.id, docNo: schema.bhDocs.docNo, status: schema.bhDocs.status })
     .from(schema.bhDocs)
-    .where(and(eq(schema.bhDocs.status, "approved"), bhReadScope(db, user)));
+    .where(and(or(eq(schema.bhDocs.status, "approved"), sql`exists (
+      select 1 from ${schema.bhWoGenerations} g join ${schema.bhLines} l on l.id = g.bh_line_id where l.bh_id = ${schema.bhDocs.id}
+    )`), bhReadScope(db, user), bhId == null ? undefined : eq(schema.bhDocs.id, bhId)))
+    .orderBy(schema.bhDocs.id);
   const wosOut: WoSuggestion[] = [];
   for (const bh of bhs) {
-    const [existWo] = await db.select({ id: schema.woDocs.id }).from(schema.woDocs).where(eq(schema.woDocs.bhId, bh.id));
-    if (existWo) continue;
-    const lines: { skuId: number; qty: string; code: string }[] = await db
-      .select({ skuId: schema.bhLines.skuId, qty: schema.bhLines.qty, code: schema.skus.code })
+    const existing: { id: number; docNo: string; status: string; skuId: number; bhLineId: number | null; supplierId: number; supplierName: string | null; feeRatePlan: string }[] = await db
+      .select({ id: schema.woDocs.id, docNo: schema.woDocs.docNo, status: schema.woDocs.status, skuId: schema.woDocs.productSkuId, bhLineId: schema.bhWoGenerations.bhLineId,
+        supplierId: schema.woDocs.supplierId, supplierName: schema.suppliers.name, feeRatePlan: schema.woDocs.feeRatePlan })
+      .from(schema.woDocs).leftJoin(schema.bhWoGenerations, eq(schema.bhWoGenerations.woId, schema.woDocs.id))
+      .leftJoin(schema.suppliers, eq(schema.suppliers.id, schema.woDocs.supplierId))
+      .where(eq(schema.woDocs.bhId, bh.id)).orderBy(schema.woDocs.id);
+    const lines: { id: number; skuId: number; qty: string; code: string; expectDate: string | null }[] = await db
+      .select({ id: schema.bhLines.id, skuId: schema.bhLines.skuId, qty: schema.bhLines.qty, code: schema.skus.code, expectDate: schema.bhLines.expectDate })
       .from(schema.bhLines)
       .innerJoin(schema.skus, eq(schema.bhLines.skuId, schema.skus.id))
-      .where(eq(schema.bhLines.bhId, bh.id));
+      .where(eq(schema.bhLines.bhId, bh.id)).orderBy(schema.bhLines.id);
     for (const l of lines) {
+      const matched = existing.find(w => w.bhLineId === l.id);
+      const legacyDocuments = existing.filter(w => w.bhLineId == null && w.skuId === l.skuId).map(w => ({ id: w.id, docNo: w.docNo }));
+      if (matched) {
+        // A durable result uses its own factory/fee, not today's potentially changed OEM/reference.
+        wosOut.push({ bhId: bh.id, bhLineId: l.id, bhDocNo: bh.docNo, skuId: l.skuId, skuCode: l.code, qty: l.qty, expectDate: l.expectDate,
+          supplierId: matched.supplierId, supplierName: matched.supplierName, feeRatePlan: matched.feeRatePlan,
+          generated: { id: matched.id, docNo: matched.docNo, status: matched.status }, legacyDocuments,
+          blockedReason: "此明细已生成工单，请打开原单核对；不重复生成" });
+        continue;
+      }
       // OEM 归属 → 供应商
       const [oem] = await db
         .select({ oemRaw: schema.transitRefs.oemRaw, supplierId: schema.transitRefs.supplierId })
@@ -330,13 +354,53 @@ export async function previewAutoChain(dbArg?: AnyDb, user?: BhReadUser): Promis
       if (!activeBom) blockedReason = "无生效 BOM";
       else if (supplierId == null) blockedReason = "OEM 归属未解析（在途参考·OEM 归属页补认）";
       else if (feeRatePlan == null || dCmp(feeRatePlan, "0") <= 0) blockedReason = "无加工费参考价（加工费参考价页补录后自动可用）";
-      wosOut.push({ bhId: bh.id, bhDocNo: bh.docNo, skuId: l.skuId, skuCode: l.code, qty: l.qty, supplierId, supplierName, feeRatePlan, blockedReason });
+      if (bh.status !== "approved") blockedReason = "备货申请当前未审批，不能生成新工单";
+      else if (legacyDocuments.length) blockedReason = "已有同申请同成品工单，但未记录来源明细；请核对原单，不自动猜测分配或重复生成";
+      wosOut.push({ bhId: bh.id, bhLineId: l.id, bhDocNo: bh.docNo, skuId: l.skuId, skuCode: l.code, qty: l.qty, expectDate: l.expectDate,
+        supplierId, supplierName, feeRatePlan, blockedReason, generated: null, legacyDocuments });
     }
   }
-  return { batches, wos: wosOut };
+  return wosOut;
 }
 
 /* ── 生成（人工点按或钩子调用；一律草稿） ── */
+
+/** Exact source identity, not actor/session/SKU identity. Same transaction owns draft + audit + receipt. */
+export async function generateWoFromBhLine(user: SessionUser, input: { bhId: number; bhLineId?: number; skuId: number }, dbArg?: AnyDb) {
+  for (const id of [input.bhId, input.skuId, ...(input.bhLineId == null ? [] : [input.bhLineId])]) {
+    if (!Number.isSafeInteger(id) || id <= 0 || id > 2147483647) throw new ApiError(400, "来源编号无效");
+  }
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    const scopes = await loadUserScopes(tx, actor.id);
+    const sourceUser = { ...actor, ...scopes };
+    // Serializes hooks, multiple actors, manual creation and source state changes for this BH.
+    const [bh] = await tx.select().from(schema.bhDocs)
+      .where(and(eq(schema.bhDocs.id, input.bhId), bhReadScope(tx, sourceUser))).for("update");
+    if (!bh) throw new ApiError(404, "备货申请不存在或不可访问");
+    const lines: { id: number }[] = await tx.select({ id: schema.bhLines.id }).from(schema.bhLines)
+      .where(and(eq(schema.bhLines.bhId, bh.id), eq(schema.bhLines.skuId, input.skuId), input.bhLineId == null ? undefined : eq(schema.bhLines.id, input.bhLineId)));
+    if (!lines.length) throw new ApiError(404, "备货明细不存在，请刷新核对来源");
+    if (lines.length !== 1) throw new ApiError(409, "该申请含多条同成品明细，请刷新页面并按具体明细生成，不能按成品猜测来源");
+    const bhLineId = lines[0].id;
+    const [prior] = await tx.select({ id: schema.woDocs.id, docNo: schema.woDocs.docNo, status: schema.woDocs.status })
+      .from(schema.bhWoGenerations).innerJoin(schema.woDocs, eq(schema.bhWoGenerations.woId, schema.woDocs.id))
+      .where(eq(schema.bhWoGenerations.bhLineId, bhLineId));
+    if (prior) return { ...prior, idempotent: true };
+    if (bh.status !== "approved") throw new ApiError(409, "备货申请当前未审批，不能生成新工单");
+    const suggestion = (await previewWoSuggestions(tx, sourceUser, bh.id)).find(w => w.bhLineId === bhLineId);
+    if (!suggestion) throw new ApiError(404, "无此建议，请刷新核对来源");
+    if (suggestion.blockedReason) throw new ApiError(409, suggestion.blockedReason);
+    const { createWo } = await import("./wo");
+    const doc = await createWo(actor, { bhId: bh.id, productSkuId: suggestion.skuId, qty: suggestion.qty,
+      supplierId: suggestion.supplierId!, feeRatePlan: suggestion.feeRatePlan, dueDate: suggestion.expectDate,
+      remark: `预演生成（D33；来源 ${bh.docNo} 明细#${bhLineId}）` }, tx);
+    await tx.insert(schema.bhWoGenerations).values({ bhLineId, sourceVersion: bh.version, woId: doc.id, createdBy: actor.id });
+    return { id: doc.id, docNo: doc.docNo, status: doc.status, idempotent: false };
+  });
+}
 
 export async function createBatchJg(user: SessionUser, woId: number, dbArg?: AnyDb) {
   if (!Number.isSafeInteger(woId) || woId <= 0 || woId > 2147483647) throw new ApiError(400, "工单编号无效");
@@ -447,21 +511,18 @@ export async function hookAfterBhApprove(user: SessionUser, bhId: number, dbArg?
     if ((await getNumParam("auto_wo_on_bh", 0, db)) !== 1) return;
     // Approval hooks do not carry HTTP-loaded scopes. Load the same source visibility explicitly.
     const scopes = await loadUserScopes(db, user.id);
-    const { wos } = await previewAutoChain(db, { ...user, ...scopes });
+    const wos = await previewWoSuggestions(db, { ...user, ...scopes }, bhId);
     const mine = wos.filter((w) => w.bhId === bhId && !w.blockedReason && w.supplierId != null && w.feeRatePlan != null);
+    let created = 0;
+    const failed: { bhLineId: number; error: string }[] = [];
     for (const w of mine) {
-      const { createWo } = await import("./wo");
-      await createWo(user, {
-        productSkuId: w.skuId,
-        supplierId: w.supplierId,
-        qty: w.qty,
-        feeRatePlan: w.feeRatePlan,
-        bhId: w.bhId,
-        remark: `自动生成（D33 auto_wo_on_bh；来源 ${w.bhDocNo}）`,
-      }, db);
+      try {
+        const result = await generateWoFromBhLine(user, { bhId, bhLineId: w.bhLineId, skuId: w.skuId }, db);
+        if (!result.idempotent) created++;
+      } catch (error) { failed.push({ bhLineId: w.bhLineId, error: String(error).slice(0, 300) }); }
     }
     if (mine.length > 0) {
-      await writeAudit(db, { userId: user.id, entity: "auto_chain", action: "auto_wo", after: { bhId, count: mine.length } });
+      await writeAudit(db, { userId: user.id, entity: "auto_chain", action: failed.length ? "auto_wo_failed" : "auto_wo", after: { bhId, count: created, failed } });
     }
   } catch (e) {
     try {
