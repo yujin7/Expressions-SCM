@@ -164,12 +164,10 @@ export async function post(db: AnyDb, event: PostingEvent): Promise<{ posted: bo
         })
         .returning({ qty: stockBalances.qty });
 
-      if (dCmp(row.qty, "0") < 0) {
-        const kind = kindByWh.get(l.warehouseId);
-        if (kind === "outsource") continue; // 委外仓可负=加工厂垫料（对账页标红）
+      if (dCmp(row.qty, "0") < 0 && kindByWh.get(l.warehouseId) !== "outsource") {
         throw new PostingError(
           "NEGATIVE_STOCK",
-          `负库存被拒（R4）: sku#${l.skuId} warehouse#${l.warehouseId}(${kind ?? "unknown"}) 过账后余额 ${row.qty} < 0`,
+          `负库存被拒（R4）: sku#${l.skuId} warehouse#${l.warehouseId}(${kindByWh.get(l.warehouseId) ?? "unknown"}) 过账后余额 ${row.qty} < 0`,
         );
       }
       if (dCmp(delta, "0") < 0) {
@@ -178,7 +176,9 @@ export async function post(db: AnyDb, event: PostingEvent): Promise<{ posted: bo
           warehouseId: l.warehouseId,
           batchId: l.batchId ?? null,
         });
-        if (dCmp(row.qty, locatedQty) < 0) {
+        // Factory advances may be negative only without consuming located/held stock.
+        // Do not short-circuit this guard when an oversized debit crosses below zero.
+        if (dCmp(locatedQty, "0") > 0 && dCmp(row.qty, locatedQty) < 0) {
           throw new PostingError(
             "LOCATED_STOCK",
             `可出库的未定位库存不足: sku#${l.skuId} warehouse#${l.warehouseId} ` +

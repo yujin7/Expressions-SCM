@@ -8,6 +8,7 @@ import { createSh, submitSh, approveSh, createQc, confirmInbound, getSh } from "
 import { getOutsourceWarehouseOf } from "@/server/modules/matflow/common-notes";
 import { getJgMaterialBasis } from "@/server/modules/matflow/material-basis";
 import { getBalance } from "@/server/posting";
+import { postBinMovement } from "@/server/modules/inventory/bin-operations";
 import { createTestDb } from "../helpers/db";
 
 let f: Awaited<ReturnType<typeof createTestDb>>, product: number, material: number, bom: number, seq = 0;
@@ -69,13 +70,13 @@ async function fixture() {
   const tl = { jgId: jg.id, toWarehouseId: own.id, fromWarehouseId: b.id, lines: [{ skuId: material, qty: "2", reason: "surplus_return" }] };
   return { supplier, own, a, b, wrong, jg, fl, tl };
 }
-async function receipt(x: Awaited<ReturnType<typeof fixture>>) {
+async function receipt(x: Awaited<ReturnType<typeof fixture>>, qty = "3") {
   const sh = await createSh(maker, { sourceType: "jg", sourceId: x.jg.id, warehouseId: x.own.id,
-    lines: [{ skuId: product, actualQty: "3" }] }, f.db);
+    lines: [{ skuId: product, actualQty: qty }] }, f.db);
   const pending = await submitSh(maker, sh.id, sh.version, f.db);
   await approveSh(checker, sh.id, { action: "approve", version: pending.version }, f.db);
   const detail = await getSh(sh.id, f.db);
-  await createQc(maker, { shId: sh.id, lines: detail.lines.map(l => ({ shLineId: l.id, passQty: "3", failQty: "0", concessionQty: "0" })) }, f.db);
+  await createQc(maker, { shId: sh.id, lines: detail.lines.map(l => ({ shLineId: l.id, passQty: qty, failQty: "0", concessionQty: "0" })) }, f.db);
   return sh;
 }
 async function snapshot() {
@@ -162,4 +163,25 @@ it("unique resolver excludes inactive and non-realtime rows rather than relying 
   expect((await getOutsourceWarehouseOf(f.db, x.supplier.id)).id).toBe(x.b.id);
   await f.db.update(s.warehouses).set({ active: false }).where(eq(s.warehouses.id, x.b.id));
   await expect(getOutsourceWarehouseOf(f.db, x.supplier.id)).rejects.toMatchObject({ status: 404 });
+});
+
+it("TL approval cannot use factory advances to bypass quarantine after real FL and SH consumption; rejection remains available", async () => {
+  const x = await fixture();
+  const fl = await createFl(maker, { ...x.fl, lines: [{ skuId: material, qty: "100" }] }, f.db);
+  const fp = await submitFl(maker, fl.id, fl.version, f.db);
+  await approveFl(checker, fl.id, { action: "approve", version: fp.version }, f.db);
+  const sh = await receipt(x, "60");
+  await confirmInbound(maker, sh.id, f.db, { outsourceWarehouseId: x.b.id });
+  expect(await getBalance(f.db, material, x.b.id)).toBe("10.0000");
+  const tl = await createTl(maker, { ...x.tl, lines: [{ skuId: material, qty: "20", reason: "surplus_return" }] }, f.db);
+  const tp = await submitTl(maker, tl.id, tl.version, f.db);
+  const [bin] = await f.db.insert(s.bins).values({ warehouseId: x.b.id, code: "Q-HOLD", kind: "quarantine" }).returning();
+  await postBinMovement(maker, { warehouseId: x.b.id, skuId: material, toBinId: bin.id, qty: "5", operation: "quarantine",
+    reason: "审批前检验异常隔离", idempotencyKey: "tl-approval-quarantine-after-create" }, f.db);
+  const before = await snapshot(), binBefore = await f.db.select().from(s.binBalances);
+  await expect(approveTl(checker, tl.id, { action: "approve", version: tp.version }, f.db)).rejects.toMatchObject({ code: "LOCATED_STOCK" });
+  expect(await snapshot()).toEqual(before);
+  expect(await f.db.select().from(s.binBalances)).toEqual(binBefore);
+  expect((await approveTl(checker, tl.id, { action: "reject", version: tp.version, comment: "先核对实物余料及隔离原因" }, f.db)).status).toBe("draft");
+  expect(await getBalance(f.db, material, x.b.id)).toBe("10.0000");
 });
