@@ -10,7 +10,7 @@ import { useDocumentRead } from "@/components/useDocumentRead";
 import SearchInput from "@/components/SearchInput";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { App, Alert, Button, Descriptions, Input, Modal, Popconfirm, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { App, Alert, Button, Descriptions, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import DocumentDrawer from "@/components/DocumentDrawer";
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
@@ -18,10 +18,13 @@ import dayjs from "dayjs";
 import ChainStrip from "@/components/ChainStrip";
 import DocStatusTag from "@/components/DocStatusTag";
 import DocTransitionActions from "@/components/DocTransitionActions";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
+import PoWorkflowActions from "./po-workflow-actions";
+import type { PoTaskActions } from "@/server/modules/outsource/po-task-actions";
+import { useMe } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 
 interface PoRow {
@@ -86,6 +89,7 @@ interface DocApproval {
 }
 
 interface PoDetail {
+  taskActions: PoTaskActions | null;
   id: number;
   docNo: string;
   status: string;
@@ -133,6 +137,7 @@ const STATUS_TABS = [
 const LINE_TYPE_LABELS: Record<string, string> = { raw: "原料", packaging: "包材" };
 
 function PoInner() {
+  const me = useMe();
   const searchParams = useSearchParams();
   const hasRequestedLine = searchParams.has("poLineId");
   const requestedLineId = purchaseLineTarget(searchParams.toString());
@@ -148,21 +153,10 @@ function PoInner() {
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
-  useEffect(() => { setRejectOpen(false); setConfirmOpen(false); }, [detailId]);
   const detailRead = useDocumentRead<PoDetail>(detailId == null ? null : `/api/outsource/po/${detailId}`);
   const detail = detailRead.data;
   const detailLoading = detailRead.phase === "loading";
   const loadDetail = detailRead.retry;
-  const [actionLoading, setActionLoading] = useState(false);
-
-  /** R1：提交遇价格异动时的警示（含 PC 单号） */
-  const [priceAlert, setPriceAlert] = useState<{ text: string; pcNos: string[] } | null>(null);
-
-  const [rejectOpen, setRejectOpen] = useState(false);
-  const [rejectComment, setRejectComment] = useState("");
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmNote, setConfirmNote] = useState("");
-
   const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
     const readRequest = beginLoadRead();
@@ -187,50 +181,10 @@ function PoInner() {
     void load();
   }, [load]);
 
-  useEffect(() => { setPriceAlert(null); }, [detailId]);
 
   const refresh = () => {
     if (detail) void loadDetail();
     void load();
-  };
-
-  const post = async (path: string, body: unknown, successText: string) => {
-    if (!detail) return false;
-    setActionLoading(true);
-    try {
-      await postJson(`/api/outsource/po/${detail.id}/${path}`, body);
-      message.success(successText);
-      refresh();
-      return true;
-    } catch (e) {
-      message.error((e as Error).message);
-      return false;
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  /** R1-aware 提交：409「价格异动」→ 警示 Alert（含 PC 单号），不弹通用错误 */
-  const handleSubmit = async () => {
-    if (!detail) return;
-    setActionLoading(true);
-    setPriceAlert(null);
-    try {
-      await postJson(`/api/outsource/po/${detail.id}/submit`, { version: detail.version });
-      message.success("已提交审批");
-      refresh();
-    } catch (e) {
-      const msg = (e as Error).message;
-      if (msg.includes("价格异动")) {
-        const pcNos = msg.match(/PC[0-9A-Za-z-]+/g) ?? [];
-        setPriceAlert({ text: msg, pcNos });
-        void loadDetail();
-      } else {
-        message.error(msg);
-      }
-    } finally {
-      setActionLoading(false);
-    }
   };
 
   const columns: ColumnsType<PoRow> = [
@@ -372,94 +326,6 @@ function PoInner() {
   /* 生成/复制供应商确认链接。链接为 UUID token + 30 天有效期 + 单次使用，
      公开页只读且脱敏（不含内部价），供应商提交后回填逐行交期并推进状态机。
      外发渠道是人工/IT，所以这里只负责生成并把链接交到买手手上。 */
-  const [tokenLoading, setTokenLoading] = useState(false);
-  const genConfirmLink = useCallback(
-    async (poId: number) => {
-      setTokenLoading(true);
-      try {
-        const r = await fetchJson<{ token: string; path: string }>(`/api/outsource/po/${poId}/confirm-token`, {
-          method: "POST",
-        });
-        const url = `${window.location.origin}${r.path}`;
-        try {
-          await navigator.clipboard.writeText(url);
-          message.success("确认链接已生成并复制到剪贴板（30 天有效，仅可使用一次）");
-        } catch {
-          // 非安全上下文或剪贴板权限被拒时退化为可复制弹窗，绝不静默失败
-          message.info("确认链接已生成（30 天有效，仅可使用一次）");
-          window.prompt("复制以下链接发给供应商：", url);
-        }
-      } catch (e) {
-        message.error((e as Error).message);
-      } finally {
-        setTokenLoading(false);
-      }
-    },
-    [message],
-  );
-
-  const actions = detail ? (
-    <Space>
-      {detail.status === "draft" ? (
-        <Popconfirm
-          title="确认提交审批？提交时按 R1 比价，价格异动将生成价格变更申请。"
-          okText="提交"
-          cancelText="取消"
-          onConfirm={() => void handleSubmit()}
-        >
-          <Button type="primary" loading={actionLoading}>
-            提交
-          </Button>
-        </Popconfirm>
-      ) : null}
-      {detail.status === "pending" ? (
-        <>
-          <Popconfirm
-            title="确认审批通过？"
-            okText="通过"
-            cancelText="取消"
-            onConfirm={() =>
-              void post("approve", { action: "approve", version: detail.version }, "审批已通过")
-            }
-          >
-            <Button type="primary" loading={actionLoading}>
-              审批通过
-            </Button>
-          </Popconfirm>
-          <Button danger loading={actionLoading} onClick={() => setRejectOpen(true)}>
-            驳回
-          </Button>
-          {/* 撤回：制单人收回自己的提交（服务端校验 createdBy，非制单人会被拒） */}
-          <Popconfirm
-            title="撤回本单？"
-            description="撤回后回到草稿，可继续修改再提交。"
-            okText="撤回"
-            cancelText="取消"
-            onConfirm={() => void post("withdraw", { version: detail.version }, "已撤回，单据回到草稿")}
-          >
-            <Button loading={actionLoading}>撤回</Button>
-          </Popconfirm>
-        </>
-      ) : null}
-      {detail.status === "approved" ? (
-        <Button type="primary" loading={actionLoading} onClick={() => setConfirmOpen(true)}>
-          确认（代录）
-        </Button>
-      ) : null}
-      {/* 供应商确认链接：token 门户是 po_lines.expected_date 的**唯一**写入路径
-          （内部「确认（代录）」只写表头 note/version，不写行级交期）。
-          首版只加了回调没加这个按钮，回调成了编译进包却不可达的死代码。 */}
-      {["approved", "in_progress"].includes(detail.status) ? (
-        <Button loading={tokenLoading} onClick={() => void genConfirmLink(detail.id)}>
-          生成供应商确认链接
-        </Button>
-      ) : null}
-      {detail.status !== "draft" ? (
-        <Button onClick={() => window.open(`/outsource/po/${detail.id}/print`, "_blank")}>打印采购单</Button>
-      ) : null}
-    </Space>
-  ) : null;
-
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
@@ -519,37 +385,16 @@ function PoInner() {
         onClose={() => setDetailId(null)}
         width={860}
         loading={detailLoading}
-        extra={actions}
+        extra={detail && detail.status !== "draft" ? <Button onClick={() => window.open(`/outsource/po/${detail.id}/print`, "_blank")}>打印采购单</Button> : null}
       >
         {detail ? (
           <div>
             <ChainStrip docType="po" id={detail.id} />
+            <PoWorkflowActions key={`${me?.id}:${detail.id}:${detail.version}`} doc={detail} onChanged={refresh} />
             <DocTransitionActions docType="po" doc={detail} onChanged={refresh} labels={{
               completeHint: "请先核对实际履约。本操作只标记本采购单完成、移除其未结供给；不补记收货、不修改已收数量，也不自动关闭关联工单。",
               shortCloseHint: "供应商不再补齐余量时短关，并停止本采购单的后续到货预期。已收及库存事实保持不变；关联工单仍须另行核对处理。",
             }} />
-            {priceAlert ? (
-              <Alert
-                type="warning"
-                showIcon
-                closable
-                onClose={() => setPriceAlert(null)}
-                style={{ marginBottom: 16 }}
-                message="存在价格异动，提交被阻塞"
-                description={
-                  <div>
-                    <div>{priceAlert.text}</div>
-                    {priceAlert.pcNos.length > 0 ? (
-                      <div style={{ marginTop: 4 }}>
-                        价格变更申请：{priceAlert.pcNos.join("、")}——请前往
-                        <Typography.Link href="/outsource/pc">「价格变更」</Typography.Link>
-                        页面审批通过后重新提交本单。
-                      </div>
-                    ) : null}
-                  </div>
-                }
-              />
-            ) : null}
             <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered styles={{ label: { width: 112, whiteSpace: "nowrap" } }} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="供应商">{detail.supplierName}</Descriptions.Item>
               <Descriptions.Item label="关联工单">
@@ -610,68 +455,7 @@ function PoInner() {
         ) : null}
       </DocumentDrawer>
 
-      <Modal
-        title="驳回单据"
-        open={rejectOpen}
-        okText="确认驳回"
-        okButtonProps={{ danger: true }}
-        cancelText="取消"
-        confirmLoading={actionLoading}
-        onCancel={() => setRejectOpen(false)}
-        onOk={() =>
-          void post(
-            "approve",
-            {
-              action: "reject",
-              comment: rejectComment.trim() || undefined,
-              version: detail?.version ?? 0,
-            },
-            "已驳回",
-          ).then((ok) => {
-            if (ok) {
-              setRejectOpen(false);
-              setRejectComment("");
-            }
-          })
-        }
-      >
-        <Input.TextArea
-          rows={3}
-          maxLength={200}
-          placeholder="驳回意见（可选）"
-          value={rejectComment}
-          onChange={(e) => setRejectComment(e.target.value)}
-        />
-      </Modal>
 
-      <Modal
-        title="供应商确认（内部代录）"
-        open={confirmOpen}
-        okText="确认"
-        cancelText="取消"
-        confirmLoading={actionLoading}
-        onCancel={() => setConfirmOpen(false)}
-        onOk={() =>
-          void post(
-            "confirm",
-            { version: detail?.version ?? 0, note: confirmNote.trim() || undefined },
-            "已确认，单据进入执行中",
-          ).then((ok) => {
-            if (ok) {
-              setConfirmOpen(false);
-              setConfirmNote("");
-            }
-          })
-        }
-      >
-        <Input.TextArea
-          rows={3}
-          maxLength={200}
-          placeholder="确认备注（可选，如供应商回传信息）"
-          value={confirmNote}
-          onChange={(e) => setConfirmNote(e.target.value)}
-        />
-      </Modal>
     </div>
   );
 }

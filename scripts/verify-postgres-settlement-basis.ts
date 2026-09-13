@@ -11,7 +11,8 @@ import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
 import { checkBatchAfterPoReceipt, createBatchJg } from "@/server/modules/outsource/auto-chain";
 import { approveWo, createWo, generateDocs, getWoCreateResult, submitWo, transitionWO, withdrawWO } from "@/server/modules/outsource/wo";
-import { transitionPO } from "@/server/modules/outsource/po";
+import { approvePo, confirmPo, submitPo, transitionPO, withdrawPO } from "@/server/modules/outsource/po";
+import { generateConfirmToken } from "@/server/modules/outsource/po-confirm";
 import { getReceiptBatchReview } from "@/server/modules/matflow/receipt-batch-status";
 import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
@@ -416,8 +417,47 @@ async function main() {
     assert(poReplay.second.ok); assert.equal(poReplay.second.value.idempotent, true);
     assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "po"), eq(s.auditLogs.entityId, replayPo.id), eq(s.auditLogs.action, "short_close")))).length, 1);
     console.log("PASS simultaneous PO short-close replay keeps one audit and the original reason");
+    const buyer = await actor(["purchasing"]);
+    await db.insert(s.approvalConfigs).values({ docType: "po", approverRole: "purchasing" }).onConflictDoNothing();
+    const workflowPo = async (status: "draft" | "pending" | "approved", price = "2") => {
+      const [po] = await db.insert(s.poDocs).values({ docNo: `PO-FLOW-${key}-${++seq}`, status, supplierId: sup.id, createdBy: pmc.id, expectedDate: "2026-12-01" }).returning();
+      const [line] = await db.insert(s.poLines).values({ poId: po.id, skuId: material.id, lineType: "raw", purchaseUom: "个", uomFactor: "1", qty: "100", price }).returning();
+      return { ...po, lineId: line.id };
+    };
+    const r1Po = await workflowPo("draft", "4");
+    const submitR1 = async (connection: DB) => {
+      try { await submitPo(pmc, r1Po.id, r1Po.version, connection); throw Error("R1 should refuse submission"); }
+      catch (error) { assert.equal((error as { code?: string }).code, "PO_PRICE_REVIEW_REQUIRED"); return "price_review"; }
+    };
+    const r1Race = await race(tx => submitR1(tx as unknown as DB), () => submitR1(other as unknown as DB));
+    assert(r1Race.second.ok);
+    const r1Pcs = await db.select().from(s.pcDocs).where(eq(s.pcDocs.poLineId, r1Po.lineId));
+    assert.equal(r1Pcs.length, 1);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "pc"), eq(s.auditLogs.entityId, r1Pcs[0].id), eq(s.auditLogs.action, "create")))).length, 1);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.id, r1Po.id)))[0].status, "draft");
+    console.log("PASS simultaneous R1 submissions wait and reuse one committed PC without submitting the PO");
+    const pendingPo = await workflowPo("pending");
+    const poWithdraw = await race(tx => withdrawPO(pmc, pendingPo.id, { version: pendingPo.version }, tx),
+      () => approvePo(buyer, pendingPo.id, { action: "approve", version: pendingPo.version }, other));
+    assert(!poWithdraw.second.ok); assert.equal(poWithdraw.second.error.status, 409);
+    assert.equal((await db.select().from(s.approvals).where(and(eq(s.approvals.docType, "po"), eq(s.approvals.docId, pendingPo.id)))).length, 0);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.id, pendingPo.id)))[0].status, "draft");
+    console.log("PASS PO approval waits for withdrawal and cannot approve a withdrawn draft");
+    const confirmBuyer = await actor(["purchasing"]), confirmDraft = await workflowPo("approved");
+    const confirmRevoked = await race(tx => tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, confirmBuyer.id)),
+      () => confirmPo(confirmBuyer, confirmDraft.id, { version: confirmDraft.version, note: "合成撤权验证" }, other));
+    assert(!confirmRevoked.second.ok); assert.equal(confirmRevoked.second.error.status, 403);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.id, confirmDraft.id)))[0].confirmedAt, null);
+    console.log("PASS internal PO confirmation waits for role revocation and leaves confirmation facts untouched");
+    const tokenPo = await workflowPo("approved");
+    const tokenAfterClose = await race(tx => transitionPO(pmc, tokenPo.id, { action: "short_close", version: tokenPo.version, reason: "合成关闭与链接竞争" }, tx),
+      () => generateConfirmToken(buyer, tokenPo.id, other));
+    assert(!tokenAfterClose.second.ok); assert.equal(tokenAfterClose.second.error.status, 409);
+    assert.equal((await db.select().from(s.poDocs).where(eq(s.poDocs.id, tokenPo.id)))[0].confirmToken, null);
+    console.log("PASS supplier-link generation waits for PO closure and refuses to issue a terminal-document token");
+    const browserFlowDraft = await workflowPo("draft"), browserFlowR1 = await workflowPo("draft", "4"), browserFlowApproved = await workflowPo("approved"), browserFlowPending = await workflowPo("pending");
     const browserClosePo = await closingPo(), browserBatch = await batchSource();
-    console.log(JSON.stringify({ passed: true, cases: 45, fixture: key, browserClosePo: browserClosePo.id, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    console.log(JSON.stringify({ passed: true, cases: 49, fixture: key, browserFlowDraft: browserFlowDraft.id, browserFlowR1: browserFlowR1.id, browserFlowApproved: browserFlowApproved.id, browserFlowPending: browserFlowPending.id, browserClosePo: browserClosePo.id, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));
