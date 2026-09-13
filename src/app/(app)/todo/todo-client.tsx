@@ -7,10 +7,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Alert, App, Button, Col, DatePicker, Dropdown, Empty, Pagination, Row, Select, Space, Spin, Table, Tabs, Tag, Tooltip, Typography,
+  Alert, App, Button, DatePicker, Dropdown, Empty, Pagination, Select, Space, Spin, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { PlusOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { fetchJson, patchJson } from "@/components/fetchJson";
 import CaliberNote from "@/components/CaliberNote";
@@ -24,7 +23,7 @@ import { workItemSourceAction } from "@/lib/work-item-source";
 import { todoItemHref, todoTabFromQuery, todoTabHref } from "@/lib/todo-navigation";
 import { todoSortPatch, type TodoSortField } from "@/lib/todo-sort";
 import TodoProgressCard from "./TodoProgressCard";
-import TodoCreateDrawer from "./TodoCreateDrawer";
+import TodoCreation from "./TodoCreation";
 import TodoHistoryDrawer from "./TodoHistoryDrawer";
 import TodoNoteRecovery from "./TodoNoteRecovery";
 import styles from "./todo-client.module.css";
@@ -459,7 +458,6 @@ export default function TodoClient() {
   const activeTab = todoTabFromQuery(searchParams.toString());
   const me = useMe();
   const assignees = useAssignees();
-  const [drawer, setDrawer] = useState(false);
   const [tick, setTick] = useState(0);
   const bump = useCallback(() => setTick((t) => t + 1), []);
 
@@ -471,10 +469,9 @@ export default function TodoClient() {
 
   return (
     <div>
-      <Row justify="space-between" align="middle" style={{ marginBottom: 8 }}>
-        <Col><Typography.Title level={4} style={{ margin: 0 }}>待办任务</Typography.Title></Col>
-        <Col><Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawer(true)}>新建待办</Button></Col>
-      </Row>
+      {me ? <TodoCreation key={`${me.id}:${me.roles.join(",")}`} actorId={me.id} defaultAssigneeId={me.id}
+        assigneeOptions={assignees.map(a => ({ value: a.id, label: `${a.name}（${a.roles.map(r => ROLE_LABEL[r] ?? r).join("/")}）` }))}
+        roleOptions={ROLE_OPTIONS} priorityOptions={Object.entries(PRIORITY_LABEL).map(([value, label]) => ({ value, label }))} onChanged={bump} /> : null}
       <CaliberNote
         summary="系统告警 / 复核项自动生成待办（同来源只建一条）；手工待办不计入完成率。单据审批在「待我审批」。"
         detail={<div>部门按责任角色划分（D61）。同来源 7 天内再触发则重新打开而不是新建。完成率 = 已完成 ÷ (总数 − 已取消)；按时率 = 按时完成 ÷ 已完成；创建后不足 10 分钟即关闭标「可疑」。审批类事项不在这里，见顶部菜单「待我审批」。</div>}
@@ -487,16 +484,6 @@ export default function TodoClient() {
         destroyOnHidden={false}
         items={items}
       />
-      {drawer && (
-        <TodoCreateDrawer
-          defaultAssigneeId={me?.id}
-          assigneeOptions={assignees.map((a) => ({ value: a.id, label: `${a.name}（${a.roles.map((r) => ROLE_LABEL[r] ?? r).join("/")}）` }))}
-          roleOptions={ROLE_OPTIONS}
-          priorityOptions={Object.entries(PRIORITY_LABEL).map(([value, label]) => ({ value, label }))}
-          onCancel={() => setDrawer(false)}
-          onCreated={() => { setDrawer(false); bump(); }}
-        />
-      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import React, { isValidElement, type ReactNode } from "react";
 import dayjs from "dayjs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TodoCreateDrawer, { type TodoCreateDrawerProps } from "@/app/(app)/todo/TodoCreateDrawer";
+import { loadTodoCreate, todoCreateKey } from "@/components/todo-create-request";
 
 // Invoke the actual component and its callbacks with instance-local hook storage.
 // This proves request/lifecycle behavior and AntD control props, not DOM/visual QA.
@@ -13,7 +14,7 @@ interface Instance {
   changed: boolean;
   unmounted: boolean;
   writesAfterUnmount: number;
-  form: { validateFields: ReturnType<typeof vi.fn>; resetFields: ReturnType<typeof vi.fn> };
+  form: { validateFields: ReturnType<typeof vi.fn>; resetFields: ReturnType<typeof vi.fn>; setFieldsValue: ReturnType<typeof vi.fn> };
 }
 const hooks = vi.hoisted(() => ({ current: null as Instance | null }));
 const mocks = vi.hoisted(() => ({
@@ -61,10 +62,11 @@ vi.mock("antd", () => ({
   Button: "mock-button",
   DatePicker: "mock-datepicker",
   Select: "mock-select",
+  Space: "mock-space",
   Input: Object.assign(() => null, { TextArea: "mock-textarea" }),
   Form: Object.assign(() => null, { useForm: () => [hooks.current!.form], Item: "mock-form-item" }),
 }));
-vi.mock("@/components/fetchJson", () => ({ postJson: mocks.post }));
+vi.mock("@/components/fetchJson", () => ({ fetchJson: mocks.post }));
 
 interface DrawerProps {
   open: boolean;
@@ -77,6 +79,9 @@ interface DrawerProps {
 }
 interface ElementProps {
   children?: ReactNode;
+  description?: ReactNode;
+  tabIndex?: number;
+  ref?: { current: Pick<HTMLDivElement, "focus" | "scrollIntoView"> | null };
   form?: Instance["form"];
   disabled?: boolean;
   initialValues?: unknown;
@@ -89,7 +94,7 @@ const instances: Instance[] = [];
 function instance(): Instance {
   const created: Instance = {
     cursor: 0, slots: [], effects: [], cleanups: new Map(), changed: false, unmounted: false, writesAfterUnmount: 0,
-    form: { validateFields: vi.fn().mockResolvedValue(values), resetFields: vi.fn() },
+    form: { validateFields: vi.fn().mockResolvedValue(values), resetFields: vi.fn(), setFieldsValue: vi.fn() },
   };
   instances.push(created);
   return created;
@@ -113,11 +118,11 @@ function find(node: ReactNode, predicate: (props: ElementProps) => boolean): Ele
     }
   } else if (isValidElement<ElementProps>(node)) {
     if (predicate(node.props)) return node.props;
-    return find(node.props.children, predicate);
+    return find(node.props.children, predicate) ?? find(node.props.description, predicate);
   }
 }
 function save(drawer: DrawerProps): ElementProps & { onClick: () => void } {
-  const button = find(drawer.extra, (props) => typeof props.onClick === "function");
+  const button = find(drawer.extra, (props) => typeof props.onClick === "function") ?? find(drawer.children, p => p.children === "确认同一创建");
   if (!button?.onClick) throw new Error("Save button not found");
   return { ...button, onClick: button.onClick };
 }
@@ -132,18 +137,23 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
+const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 const values = { title: "合成 QA 待办", detail: "保留填写内容", assigneeId: 42, ownerRole: "ops", priority: "normal", sourceRef: "QA-PO-001" };
-const created = { created: true, reopened: false };
+const key = "ec264aa1-38a0-4803-9643-f9371545d3b8";
+const created = { requestId: key, itemId: 17, created: true };
 let props: TodoCreateDrawerProps;
 
 beforeEach(() => {
   // Vitest uses the classic JSX transform; do not depend on another suite's globals.
   vi.stubGlobal("React", React);
+  const data = new Map<string, string>(); vi.stubGlobal("localStorage", { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => data.set(k, v), removeItem: (k: string) => data.delete(k) });
+  vi.stubGlobal("window", new EventTarget()); vi.stubGlobal("navigator", { locks: { request: (_key: string, action: () => unknown) => action() } });
+  vi.stubGlobal("crypto", { randomUUID: () => key });
   vi.clearAllMocks();
   mocks.post.mockReset();
   instances.length = 0;
   props = {
+    actorId: 1,
     defaultAssigneeId: 42,
     assigneeOptions: [{ value: 42, label: "合成 QA 运营（运营）" }],
     roleOptions: [{ value: "ops", label: "运营" }],
@@ -158,6 +168,15 @@ afterEach(() => {
 });
 
 describe("TodoCreateDrawer submission lifecycle", () => {
+  it("brings an uncertain result into view after the form was submitted from its bottom fields", async () => {
+    const target = instance(); const initial = render(target, props);
+    const focus = vi.fn(), scrollIntoView = vi.fn();
+    find(initial.children, p => p.tabIndex === -1)!.ref!.current = { focus, scrollIntoView };
+    mocks.post.mockRejectedValueOnce(Error("原请求结果未确认"));
+    save(initial).onClick(); await flush(); render(target, props);
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "start" });
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: true }); expect(loadTodoCreate(localStorage, 1)).not.toBeNull();
+  });
   it("locks before async validation, ignores rapid clicks and blocks closing synchronously", async () => {
     const target = instance();
     const validation = deferred<typeof values>();
@@ -181,7 +200,7 @@ describe("TodoCreateDrawer submission lifecycle", () => {
     save(submitting).onClick();
     submitting.onClose();
     expect(target.form.validateFields).toHaveBeenCalledOnce();
-    expect(mocks.post).toHaveBeenCalledExactlyOnceWith("/api/todo", { ...values, dueDate: undefined });
+    expect(mocks.post).toHaveBeenCalledOnce(); expect(JSON.parse(mocks.post.mock.calls[0][1].body)).toEqual({ ...values, dueDate: null, requestId: key });
     expect(props.onCancel).not.toHaveBeenCalled();
     request.resolve(created);
     await flush();
@@ -189,7 +208,7 @@ describe("TodoCreateDrawer submission lifecycle", () => {
     // Still mounted until the parent commits removal: success must not unlock a second POST.
     save(render(target, props)).onClick();
     expect(mocks.post).toHaveBeenCalledOnce();
-    expect(mocks.message.success).toHaveBeenCalledExactlyOnceWith("已创建");
+    expect(mocks.message.success).toHaveBeenCalledExactlyOnceWith("已确认待办 #17，可从页面提示打开准确任务");
   });
 
   it.each([{ errorFields: [{ name: ["title"], errors: ["标题必填"] }] }, new Error("validator unavailable")])(
@@ -227,7 +246,7 @@ describe("TodoCreateDrawer submission lifecycle", () => {
     await flush();
     expect(mocks.post).toHaveBeenCalledOnce();
     save(failed).onClick();
-    expect(find(render(target, props).children, (p) => Boolean(p.message))).toBeUndefined();
+    expect(find(render(target, props).children, (p) => p.message === "责任人已停用")).toBeUndefined();
     await flush();
     expect(mocks.post).toHaveBeenCalledTimes(2);
     expect(props.onCreated).toHaveBeenCalledOnce();
@@ -298,7 +317,8 @@ describe("TodoCreateDrawer submission lifecycle", () => {
     const nextProps = { ...props, onCancel: vi.fn(), onCreated: vi.fn() };
     const reopened = render(current, nextProps);
     expect(save(reopened).loading).toBe(false);
-    expect(find(reopened.children, (p) => p.form === current.form)?.initialValues).toEqual({ priority: "normal", assigneeId: 42 });
+    expect(loadTodoCreate(localStorage, 1)?.requestId).toBe(key);
+    expect(current.form.setFieldsValue).toHaveBeenCalled();
     save(reopened).onClick();
     await flush();
     if (outcome === "success") oldRequest.resolve(created);
@@ -306,7 +326,7 @@ describe("TodoCreateDrawer submission lifecycle", () => {
     await flush();
     const stillPending = render(current, nextProps);
     expect(save(stillPending).loading).toBe(true);
-    expect(find(stillPending.children, (p) => Boolean(p.message))).toBeUndefined();
+    expect(find(stillPending.children, (p) => p.message === "old request failed")).toBeUndefined();
     expect(mocks.message.success).not.toHaveBeenCalled();
     expect(props.onCreated).not.toHaveBeenCalled();
     expect(nextProps.onCreated).not.toHaveBeenCalled();
@@ -332,25 +352,59 @@ describe("TodoCreateDrawer submission lifecycle", () => {
     expect(props.onCancel).toHaveBeenCalledTimes(2);
   });
 
-  it("preserves validated role, reference and calendar-date payloads without adding a deduplication key", async () => {
+  it("preserves validated role, reference and date while adding a stable request key", async () => {
     const target = instance();
     target.form.validateFields.mockResolvedValueOnce({ ...values, dueDate: dayjs("2026-09-19") });
     mocks.post.mockResolvedValueOnce(created);
     save(render(target, props)).onClick();
     await flush();
-    expect(mocks.post).toHaveBeenCalledExactlyOnceWith("/api/todo", { ...values, dueDate: "2026-09-19" });
+    expect(mocks.post).toHaveBeenCalledOnce(); expect(JSON.parse(mocks.post.mock.calls[0][1].body)).toEqual({ ...values, dueDate: "2026-09-19", requestId: key });
     expect(target.form.resetFields).not.toHaveBeenCalled();
   });
 
-  it.each([
-    [{ created: false, reopened: true }, "同来源待办已重新打开"],
-    [{ created: false, reopened: false }, "已存在同来源的未完成待办"],
-  ] as const)("preserves the existing server result message %j", async (result, expected) => {
+  it.each([true, false])("new and replayed manual creation both return the exact task %j", async (isNew) => {
     const target = instance();
-    mocks.post.mockResolvedValueOnce(result);
+    mocks.post.mockResolvedValueOnce({ ...created, created: isNew });
     save(render(target, props)).onClick();
     await flush();
-    expect(mocks.message.success).toHaveBeenCalledExactlyOnceWith(expected);
-    expect(props.onCreated).toHaveBeenCalledOnce();
+    expect(mocks.message.success).toHaveBeenCalledExactlyOnceWith("已确认待办 #17，可从页面提示打开准确任务");
+    expect(props.onCreated).toHaveBeenCalledExactlyOnceWith(17);
+  });
+
+  it("restores after remount, GETs original intent, and requires explicit acknowledgement without POST", async () => {
+    localStorage.setItem(todoCreateKey(1), JSON.stringify({ ...values, dueDate: null, requestId: key }));
+    const target = instance();
+    const initial = render(target, props);
+    expect(mocks.post).not.toHaveBeenCalled();
+    mocks.post.mockResolvedValueOnce({ requestId: key, itemId: 17, originalIntent: { ...values, title: "原始而非后来本机的标题", dueDate: null } });
+    find(initial.children, p => p.children === "核对原创建结果")!.onClick!(); await flush();
+    expect(mocks.post.mock.calls[0][0]).toContain("mode=create-result"); expect(mocks.post.mock.calls[0][1].method).toBeUndefined();
+    expect(loadTodoCreate(localStorage, 1)).not.toBeNull(); expect(props.onCreated).not.toHaveBeenCalled();
+    const checked = render(target, props);
+    expect(find(checked.children, p => p.message === "原请求已创建待办 #17")).toBeDefined();
+    find(checked.children, p => p.children === "已核对原任务")!.onClick!(); await flush();
+    expect(mocks.post).toHaveBeenCalledOnce(); expect(loadTodoCreate(localStorage, 1)).toBeNull(); expect(props.onCreated).toHaveBeenCalledExactlyOnceWith(17);
+  });
+
+  it("missing result only enables deliberate correction, which preserves the request key", async () => {
+    localStorage.setItem(todoCreateKey(1), JSON.stringify({ ...values, dueDate: null, requestId: key }));
+    const target = instance();
+    mocks.post.mockResolvedValueOnce({ requestId: key, itemId: null, originalIntent: null });
+    find(render(target, props).children, p => p.children === "核对后修改原请求")!.onClick!(); await flush();
+    const editing = render(target, props);
+    expect(find(editing.children, p => p.form === target.form)?.disabled).toBe(false); expect(props.onCreated).not.toHaveBeenCalled();
+    target.form.validateFields.mockResolvedValueOnce({ ...values, title: "修改后的合成标题" }); mocks.post.mockResolvedValueOnce(created);
+    save(editing).onClick(); await flush();
+    expect(JSON.parse(mocks.post.mock.calls[1][1].body)).toMatchObject({ requestId: key, title: "修改后的合成标题" });
+    expect(props.onCreated).toHaveBeenCalledExactlyOnceWith(17);
+  });
+
+  it("does not use a stale drawer to replace another tab's request", async () => {
+    localStorage.setItem(todoCreateKey(1), JSON.stringify({ ...values, dueDate: null, requestId: key }));
+    const target = instance(); const initial = render(target, props);
+    localStorage.setItem(todoCreateKey(1), JSON.stringify({ ...values, dueDate: null, requestId: "ec264aa1-38a0-4803-9643-f9371545d3b9" }));
+    save(initial).onClick(); await flush(); expect(mocks.post).not.toHaveBeenCalled();
+    expect(find(render(target, props).children, p => p.message === "原请求已变化，请关闭后重新核对")).toBeDefined();
+    expect(loadTodoCreate(localStorage, 1)?.requestId.endsWith("b9")).toBe(true);
   });
 });
