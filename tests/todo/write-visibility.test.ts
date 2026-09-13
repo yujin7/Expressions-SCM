@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, like } from "drizzle-orm";
-import { auditLogs, notifications, users, workItems } from "@/db/schema";
+import { auditLogs, notifications, users, userDataScopes, workItems } from "@/db/schema";
+import { deptKeyToTargetId } from "@/server/core/data-scope";
 import type { SessionUser } from "@/server/core/dto";
 import { assignWorkItem, listWorkItems, setWorkItemStatus, type WorkItemStatus } from "@/server/modules/todo/service";
 import { GET } from "@/app/api/todo/[id]/route";
@@ -30,6 +31,7 @@ describe("todo 写权限必须服从实际读可见性（D62）", () => {
     const seed = async (key: Person, roles: string[], deptScope?: string[] | null) => {
       const [user] = await db.insert(users).values({ name: `合成-${key}`, roles, active: true }).returning();
       people[key] = { id: user.id, name: user.name, roles, deptScope, isApprover: false };
+      if (deptScope?.length) await db.insert(userDataScopes).values(deptScope.map(role => ({ userId: user.id, scopeKind: "dept", targetId: deptKeyToTargetId(role), createdBy: user.id })));
     };
     await seed("restricted", ["pmc", "ops"], ["pmc"]);
     await seed("unscoped", ["ops"], null);

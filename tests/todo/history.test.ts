@@ -49,7 +49,10 @@ it("replay returns the same event; changed content or another visible actor cann
   const first = await appendWorkItemNote(row.id, input, owner, db);
   expect(await appendWorkItemNote(row.id, input, owner, db)).toEqual({ eventId: first.eventId, replayed: true });
   await expect(appendWorkItemNote(row.id, { ...input, note: "另一份完全不同的内容" }, owner, db)).rejects.toMatchObject({ status: 409 });
-  await expect(appendWorkItemNote(row.id, input, { ...stranger, roles: ["admin"] }, db)).rejects.toMatchObject({ status: 409 });
+  await expect(appendWorkItemNote(row.id, input, { ...stranger, roles: ["admin"] }, db)).rejects.toMatchObject({ status: 404 });
+  await db.update(users).set({ roles: ["admin"] }).where(eq(users.id, stranger.id));
+  try { await expect(appendWorkItemNote(row.id, input, stranger, db)).rejects.toMatchObject({ status: 409 }); }
+  finally { await db.update(users).set({ roles: ["warehouse"] }).where(eq(users.id, stranger.id)); }
   expect((await listWorkItemHistory(row.id, {}, owner, db)).rows).toHaveLength(1);
 });
 it("list and append both enforce the existing item scope before replay", async () => {

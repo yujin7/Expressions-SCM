@@ -9,10 +9,13 @@ describe("完成待办与来源处置是独立的业务事实", () => {
   let db: TestDb;
   let client: { close: () => Promise<void> };
   let actor: SessionUser;
+  let system: SessionUser;
   beforeAll(async () => {
     ({ db, client } = await createTestDb());
     const [user] = await db.insert(users).values({ name: "闭环测试计划员", roles: ["pmc"] }).returning();
     actor = { id: user.id, name: user.name, roles: ["pmc"], isApprover: false };
+    const [admin] = await db.insert(users).values({ name: "合成系统投影管理员", roles: ["admin"] }).returning();
+    system = { id: admin.id, name: admin.name, roles: admin.roles, isApprover: false };
   });
   afterAll(async () => { await client.close(); });
 
@@ -26,7 +29,7 @@ describe("完成待办与来源处置是独立的业务事实", () => {
     for (const source of [{ kind: "alert", id: alert.id }, { kind: "review", id: review.id }] as const) {
       const created = await createWorkItem({
         title: "跟进来源事实", assigneeId: actor.id, sourceKind: source.kind, sourceRef: String(source.id),
-      }, actor, db);
+      }, system, db);
       const done = await setWorkItemStatus(created.item.id, "done", actor, db);
       expect(done.status).toBe("done");
     }

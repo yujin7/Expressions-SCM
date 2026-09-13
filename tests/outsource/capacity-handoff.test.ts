@@ -166,13 +166,16 @@ it("historical channel scope stays frozen when the current alert or shop attribu
   await attachCapacityCheck({ ...f.input, evidenceKey: check.evidenceKey! }, actor, db);
   await db.update(schema.systemAlerts).set({ detail: `店铺 ${shopA}；合成当前单渠道观察` }).where(eq(schema.systemAlerts.id, f.alert.id));
   const limited = { ...actor, channelScope: [a.id] };
+  await db.insert(schema.userDataScopes).values({ userId: actor.id, scopeKind: "channel", targetId: a.id, createdBy: actor.id });
   // The current source is readable, but that is not authority to read its wider old snapshot.
   expect((await getCapacityCheck(limited, f.query, db)).handoff?.source.id).toBe(f.alert.id);
   const hidden = await listWorkItemHistory(f.item.id, {}, limited, db);
   expect(hidden.rows[0]).toMatchObject({ note: "已保存产能核对依据；当前无权读取其来源内容", requestId: null });
   expect(hidden.rows[0].sourceAlertId).toBeUndefined();
   expect(JSON.stringify(hidden)).not.toContain(f.sku.code);
+  const [wide] = await db.insert(schema.userDataScopes).values({ userId: actor.id, scopeKind: "channel", targetId: b.id, createdBy: actor.id }).returning();
   expect((await listWorkItemHistory(f.item.id, {}, { ...actor, channelScope: [a.id, b.id] }, db)).rows[0].note).toContain(f.sku.code);
+  await db.delete(schema.userDataScopes).where(eq(schema.userDataScopes.id, wide.id));
   // Re-attribution after capture must not retroactively authorize the old cross-channel evidence.
   await db.update(schema.aliases).set({ targetId: a.id }).where(eq(schema.aliases.id, links[1].id));
   await db.update(schema.systemAlerts).set({ detail: `店铺 ${shopA}、${shopB}；合成当前同渠道观察` }).where(eq(schema.systemAlerts.id, f.alert.id));
@@ -188,6 +191,7 @@ it("unmapped historical attribution remains unknown after a later shop mapping; 
   const [channel] = await db.insert(schema.channels).values({ code: `cap-known-${randomUUID()}`, name: "合成已知渠道", kind: "platform" }).returning();
   await db.insert(schema.aliases).values({ aliasType: "channel", scope: "JIANDAOYUN", rawValue: shop, targetId: channel.id });
   const limited = { ...actor, channelScope: [channel.id] };
+  await db.insert(schema.userDataScopes).values({ userId: actor.id, scopeKind: "channel", targetId: channel.id, createdBy: actor.id });
   const fresh = await getCapacityCheck(limited, f.query, db);
   expect(fresh.evidenceKey).not.toBe(initial.evidenceKey);
   const saved = await attachCapacityCheck({ ...f.input, evidenceKey: fresh.evidenceKey!, requestId: randomUUID() }, limited, db);
