@@ -75,6 +75,20 @@ export const woLines = pgTable("wo_lines", {
   suggestedQty: numeric("suggested_qty", { precision: 14, scale: 4 }).notNull(), // R11（MOQ/倍数取整后）
 });
 
+/** Immutable manual creation receipt. Business drafts may change; request identity must not. */
+export const woCreateRequests = pgTable("wo_create_requests", {
+  id: serial("id").primaryKey(),
+  requestedBy: integer("requested_by").notNull().references(() => users.id),
+  requestKey: text("request_key").notNull(),
+  requestHash: text("request_hash").notNull(),
+  woId: integer("wo_id").notNull().references(() => woDocs.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  unique("uq_wo_create_request").on(t.requestedBy, t.requestKey),
+  unique("uq_wo_create_request_doc").on(t.woId),
+  check("ck_wo_create_request_hash", sql`${t.requestHash} ~ '^[0-9a-f]{64}$'`),
+]);
+
 /* ── 采购订单 PO（仅原料/包材行；加工费应付唯一载体=JS） ── */
 export const poDocs = pgTable("po_docs", {
   id: serial("id").primaryKey(),

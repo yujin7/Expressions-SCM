@@ -1,13 +1,20 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { NextRequest } from "next/server";
 import * as s from "@/db/schema";
 import * as audit from "@/server/core/audit";
-import { approveWo, createWo, getWo, submitWo, transitionWO, withdrawWO } from "@/server/modules/outsource/wo";
+import { approveWo, createWo, getWo, getWoCreateResult, submitWo, transitionWO, withdrawWO } from "@/server/modules/outsource/wo";
+import { POST as createRoute } from "@/app/api/outsource/wo/route";
+import { GET as resultRoute } from "@/app/api/outsource/wo/create-result/route";
 import { createWoSchema } from "@/server/modules/outsource/schemas";
 import type { SessionUser } from "@/server/core/dto";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 let db: TestDb, client: Awaited<ReturnType<typeof createTestDb>>["client"], seq = 0;
+let routeActor: SessionUser;
+vi.mock("@/db", () => ({ getDbAsync: async () => db }));
+vi.mock("@/server/core/dto", async original => ({ ...await original<typeof import("@/server/core/dto")>(), getFreshSessionUser: async () => routeActor }));
 beforeAll(async () => {
   ({ db, client } = await createTestDb());
   await db.insert(s.approvalConfigs).values({ docType: "wo", approverRole: "pmc" });
@@ -33,6 +40,76 @@ async function fixture() {
 }
 const state = async () => ({ docs: await db.select().from(s.woDocs), counters: await db.select().from(s.docCounters), audit: await db.select().from(s.auditLogs) });
 const events = (id: number, action: string) => db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "wo"), eq(s.auditLogs.entityId, id), eq(s.auditLogs.action, action)));
+
+it("manual creation replay returns the same document, number and audit after mutable qualification changes", async () => {
+  const f = await fixture(), requestKey = randomUUID();
+  const first = await createWo(f.actor, { ...f.input, requestKey, remark: "  test  " }, db);
+  await db.update(s.boms).set({ status: "retired" }).where(eq(s.boms.id, f.bom.id));
+  await db.update(s.suppliers).set({ status: "paused" }).where(eq(s.suppliers.id, f.supplier.id));
+  const before = await state();
+  expect(await createWo(f.actor, { ...f.input, requestKey: requestKey.toUpperCase(), feeRatePlan: "01.25", remark: "test" }, db)).toEqual(first);
+  expect(await state()).toEqual(before);
+  expect(await getWoCreateResult(f.actor, requestKey, db)).toEqual({ requestKey, document: { id: first.id, docNo: first.docNo, status: "draft" } });
+  expect(await events(first.id, "create")).toHaveLength(1);
+});
+it.each([{ qty: "4" }, { feeRatePlan: "1.26" }, { remark: "other" }, { dueDate: "2026-09-14" }, { orderType: "repeat" }, { bhId: 9999 }, { supplierId: 9999 }])("a reused WO creation key cannot change intent %j", async change => {
+  const f = await fixture(), requestKey = randomUUID();
+  await createWo(f.actor, { ...f.input, requestKey }, db);
+  const before = await state();
+  await expect(createWo(f.actor, { ...f.input, requestKey, ...change }, db)).rejects.toMatchObject({ status: 409 });
+  expect(await state()).toEqual(before);
+});
+it("receipt is actor-scoped, and replay/lookup recheck current role, activation and session", async () => {
+  const f = await fixture(), requestKey = randomUUID();
+  const original = await createWo(f.actor, { ...f.input, requestKey }, db);
+  expect((await getWoCreateResult(f.checker, requestKey, db)).document).toBeNull();
+  const other = await createWo(f.checker, { ...f.input, requestKey }, db);
+  expect(other.id).not.toBe(original.id);
+  await db.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, f.actor.id));
+  await expect(getWoCreateResult(f.actor, requestKey, db)).rejects.toMatchObject({ status: 403 });
+  await expect(createWo(f.actor, { ...f.input, requestKey }, db)).rejects.toMatchObject({ status: 403 });
+  await db.update(s.users).set({ roles: ["pmc"], active: false }).where(eq(s.users.id, f.actor.id));
+  await expect(getWoCreateResult(f.actor, requestKey, db)).rejects.toMatchObject({ status: 403 });
+  await db.update(s.users).set({ active: true, sessionVersion: f.actor.sessionVersion + 1 }).where(eq(s.users.id, f.actor.id));
+  await expect(getWoCreateResult(f.actor, requestKey, db)).rejects.toMatchObject({ status: 401 });
+});
+it("receipt insertion failure rolls back draft, numbering and audit, and the same request safely retries", async () => {
+  const f = await fixture(), requestKey = randomUUID(), before = await state();
+  await client.exec("CREATE FUNCTION fail_wo_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'receipt fault'; END $$; CREATE TRIGGER fail_wo_receipt BEFORE INSERT ON wo_create_requests FOR EACH ROW EXECUTE FUNCTION fail_wo_receipt();");
+  try { await expect(createWo(f.actor, { ...f.input, requestKey }, db)).rejects.toThrow(); }
+  finally { await client.exec("DROP TRIGGER fail_wo_receipt ON wo_create_requests; DROP FUNCTION fail_wo_receipt();"); }
+  expect(await state()).toEqual(before);
+  expect((await getWoCreateResult(f.actor, requestKey, db)).document).toBeNull();
+  const created = await createWo(f.actor, { ...f.input, requestKey }, db);
+  expect((await getWoCreateResult(f.actor, requestKey, db)).document?.id).toBe(created.id);
+});
+it("the database enforces immutable unique receipt identity", async () => {
+  const f = await fixture(), requestKey = randomUUID();
+  await createWo(f.actor, { ...f.input, requestKey }, db);
+  const [receipt] = await db.select().from(s.woCreateRequests).where(eq(s.woCreateRequests.requestKey, requestKey));
+  await expect(db.insert(s.woCreateRequests).values({ requestedBy: receipt.requestedBy, requestKey, requestHash: receipt.requestHash, woId: receipt.woId })).rejects.toThrow();
+  await expect(db.update(s.woCreateRequests).set({ requestKey: randomUUID() }).where(eq(s.woCreateRequests.id, receipt.id))).rejects.toThrow();
+  await expect(db.delete(s.woCreateRequests).where(eq(s.woCreateRequests.id, receipt.id))).rejects.toThrow();
+  await expect(client.exec("TRUNCATE wo_create_requests")).rejects.toThrow();
+});
+it("manual HTTP creation requires a key, exposes only its receipt, and lookup never returns another actor's result", async () => {
+  const f = await fixture(); routeActor = f.actor;
+  const post = (body: unknown) => createRoute(new NextRequest("http://localhost/api/outsource/wo", { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } }));
+  const before = await state();
+  expect((await post(f.input)).status).toBe(400);
+  expect(await state()).toEqual(before);
+  const requestKey = randomUUID(), response = await post({ ...f.input, requestKey });
+  expect(response.status).toBe(201);
+  const body = await response.json();
+  expect(Object.keys(body).sort()).toEqual(["document", "requestKey"]);
+  expect(Object.keys(body.document).sort()).toEqual(["docNo", "id", "status"]);
+  const url = `http://localhost/api/outsource/wo/create-result?requestKey=${requestKey}`;
+  const lookup = await resultRoute(new NextRequest(url));
+  expect(lookup.headers.get("cache-control")).toBe("private, no-store");
+  expect(await lookup.json()).toEqual(body);
+  routeActor = f.checker;
+  expect(await (await resultRoute(new NextRequest(url))).json()).toEqual({ requestKey, document: null });
+});
 
 it("creates exact quantity/fee, submits once, and snapshots only after independent approval; no stock effects", async () => {
   const f = await fixture(), stock = await db.select().from(s.stockLedger);

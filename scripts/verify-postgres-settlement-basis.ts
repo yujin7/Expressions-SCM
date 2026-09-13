@@ -10,7 +10,7 @@ import { approveTl, createTl, submitTl } from "@/server/modules/matflow/tl";
 import { approveFl, createFl, submitFl } from "@/server/modules/matflow/fl";
 import { confirmInbound } from "@/server/modules/matflow/sh";
 import { checkBatchAfterPoReceipt, createBatchJg } from "@/server/modules/outsource/auto-chain";
-import { approveWo, createWo, generateDocs, submitWo, transitionWO, withdrawWO } from "@/server/modules/outsource/wo";
+import { approveWo, createWo, generateDocs, getWoCreateResult, submitWo, transitionWO, withdrawWO } from "@/server/modules/outsource/wo";
 import { getReceiptBatchReview } from "@/server/modules/matflow/receipt-batch-status";
 import { refreshInboundMaterialReview, suggestLeftoverAfterInbound } from "@/server/modules/outsource/leftover";
 import { decideReviewItem } from "@/server/modules/review/checklist";
@@ -372,8 +372,29 @@ async function main() {
     assert(!closeRevoked.second.ok); assert.equal(closeRevoked.second.error.status, 403);
     assert.equal((await db.select().from(s.woDocs).where(eq(s.woDocs.id, upWo.id)))[0].status, "approved");
     console.log("PASS WO closure waits for management-role revocation and preserves approved state");
+    const createKey = randomUUID();
+    const sameCreate = await race(tx => createWo(pmc, { ...upstreamInput, requestKey: createKey }, tx),
+      () => createWo(pmc, { ...upstreamInput, qty: "03.0001", feeRatePlan: "01.25", requestKey: createKey }, other));
+    assert(sameCreate.second.ok); assert.equal(sameCreate.second.value.id, sameCreate.first.id);
+    assert.equal((await db.select().from(s.woCreateRequests).where(and(eq(s.woCreateRequests.requestedBy, pmc.id), eq(s.woCreateRequests.requestKey, createKey)))).length, 1);
+    assert.equal((await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "wo"), eq(s.auditLogs.entityId, sameCreate.first.id), eq(s.auditLogs.action, "create")))).length, 1);
+    assert.equal((await getWoCreateResult(pmc, createKey, db)).document?.id, sameCreate.first.id);
+    console.log("PASS simultaneous equivalent WO creates wait and return one immutable receipt, one document and one create audit");
+    const conflictKey = randomUUID();
+    const conflictCreate = await race(tx => createWo(pmc, { ...upstreamInput, requestKey: conflictKey }, tx),
+      () => createWo(pmc, { ...upstreamInput, qty: "4", requestKey: conflictKey }, other));
+    assert(!conflictCreate.second.ok); assert.equal(conflictCreate.second.error.status, 409);
+    assert.equal((await getWoCreateResult(pmc, conflictKey, db)).document?.id, conflictCreate.first.id);
+    console.log("PASS concurrent changed intent with the same WO request key waits then rejects without a second document");
+    const receiptOwner = await actor(["pmc"]), ownerKey = randomUUID();
+    const ownerDoc = await createWo(receiptOwner, { ...upstreamInput, requestKey: ownerKey }, db);
+    const revokedReceipt = await race(tx => tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, receiptOwner.id)),
+      () => getWoCreateResult(receiptOwner, ownerKey, other));
+    assert(!revokedReceipt.second.ok); assert.equal(revokedReceipt.second.error.status, 403);
+    assert.equal((await db.select().from(s.woDocs).where(eq(s.woDocs.id, ownerDoc.id)))[0].status, "draft");
+    console.log("PASS WO receipt lookup waits for role revocation and refuses stale authority without changing the original draft");
     const browserBatch = await batchSource();
-    console.log(JSON.stringify({ passed: true, cases: 39, fixture: key, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
+    console.log(JSON.stringify({ passed: true, cases: 42, fixture: key, browserProduct: product.id, browserSupplier: sup.id, browserReceipt, browserBatchWo: browserBatch.wo.id, browserDraft: js.id, browserJg: jg.id, reviewJg: reviewJg.id,
       recoveryJg: recoveryJg.id, recoverySh: recoverySh.id,
       inboundJg: inboundJg.id, inboundReview: triggeredReview.id,
       browserFl: retryFl.id, issueJg: retrySource.id, frozenJg, database: new URL(connectionString).pathname.slice(1) }));

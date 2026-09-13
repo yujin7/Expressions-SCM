@@ -86,6 +86,7 @@ export const confirmDocSchema = z.object({
 
 const generationQty = qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数，且必须可精确存储");
 export const createWoSchema = z.object({
+  requestKey: z.string().uuid("请保留原创建请求编号重试").transform(s => s.toLowerCase()).optional(),
   bhId: z.number().int().positive().nullable().optional(),
   productSkuId: z.number().int().positive({ message: "必须选择成品 SKU" }),
   qty: generationQty,
@@ -96,6 +97,8 @@ export const createWoSchema = z.object({
   remark: z.string().trim().max(500).optional(),
 });
 export type CreateWoInput = z.infer<typeof createWoSchema>;
+/** Manual HTTP creation requires recovery identity; internal generators keep their own source contracts. */
+export const createWoRequestSchema = createWoSchema.extend({ requestKey: createWoSchema.shape.requestKey.unwrap() });
 
 /** WO 审批通过后一键生成 0..n 张 PO + 恰 1 张 JG */
 const generationPrice = priceNonNegative.refine(s => /^\d{1,12}(\.\d{1,2})?$/.test(s), "单价最多12位整数、2位小数，且必须可精确存储");
