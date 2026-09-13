@@ -177,13 +177,13 @@ function verify(control: Control): void {
   assertTestModule(testPath);
 }
 
-describe("729 项系统执行审计台账", () => {
-  it("ID 恰好 A001–A729、对象唯一、分类数量固定", () => {
-    expect(controls).toHaveLength(729);
+describe("731 项系统执行审计台账", () => {
+  it("ID 恰好 A001–A731、对象唯一、分类数量固定", () => {
+    expect(controls).toHaveLength(731);
     expect(controls.map((control) => control.id)).toEqual(
-      Array.from({ length: 729 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
+      Array.from({ length: 731 }, (_, index) => `A${String(index + 1).padStart(3, "0")}`),
     );
-    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(729);
+    expect(new Set(controls.map((control) => `${control.category}:${control.subject}`)).size).toBe(731);
     // Keep the same component's control ID when retiring its hook suppression;
     // do not restore a lint exception or substitute an unrelated object to fill the slot.
     expect(controls.find((control) => control.id === "A373")).toEqual({
