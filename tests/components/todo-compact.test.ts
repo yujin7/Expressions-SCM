@@ -2,6 +2,7 @@ import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ItemTable, StatsTab, TodoItemSummary, type WorkItemRow } from "@/app/(app)/todo/todo-client";
 import { clearTodoMutation, loadTodoMutation, TODO_MUTATION_CHANGED } from "@/components/todo-mutation-request";
+import TodoAssignDrawer from "@/app/(app)/todo/TodoAssignDrawer";
 
 // Invoke actual component callbacks with deferred requests; CSS/layout is checked separately in a browser.
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
@@ -96,7 +97,7 @@ describe("compact todo facts and persistent outcomes", () => {
   });
   it.each(["mine", "all"] as const)("%s shares one read, pagination and server ordering across both layouts", async view => {
     m.fetch.mockResolvedValue(listing);
-    const run = () => ItemTable({ view, prefix: view, assignees: [], refreshKey: 0, onChanged: m.changed });
+    const run = () => ItemTable({ view, prefix: view, refreshKey: 0, onChanged: m.changed });
     render(run); await flush(); const tree = render(run); const all = elements(tree);
     expect(m.fetch).toHaveBeenCalledOnce();
     expect(all.find(e => e.type === "table")?.props).toMatchObject({ columns: expect.any(Array), dataSource: [row], pagination: false });
@@ -110,7 +111,7 @@ describe("compact todo facts and persistent outcomes", () => {
     m.fetch.mockResolvedValueOnce(listing).mockResolvedValue({ ...listing, rows: [] });
     const pending = deferred<WorkItemRow>(); m.patch.mockReturnValue(pending.promise);
     let refreshKey = 0;
-    const run = () => ItemTable({ view: "mine", prefix: "mine", assignees: [], refreshKey, onChanged: m.changed });
+    const run = () => ItemTable({ view: "mine", prefix: "mine", refreshKey, onChanged: m.changed });
     render(run); await flush(); const button = elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!;
     button.props.onClick!(); button.props.onClick!(); expect(m.patch).toHaveBeenCalledExactlyOnceWith("/api/todo/17", { status: "done", expectedVersion: 1, note: null, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
     pending.resolve({ ...row, status: "done" }); await flush(); expect(m.changed).toHaveBeenCalledOnce();
@@ -124,7 +125,7 @@ describe("compact todo facts and persistent outcomes", () => {
   });
   it("uncertain writes retain the helper warning and exact-item link without automatic retry", async () => {
     m.fetch.mockResolvedValue(listing); m.patch.mockRejectedValue(new Error("操作可能已在服务端完成，请先核对结果，勿重复提交"));
-    const run = () => ItemTable({ view: "mine", prefix: "mine", assignees: [], refreshKey: 0, onChanged: m.changed });
+    const run = () => ItemTable({ view: "mine", prefix: "mine", refreshKey: 0, onChanged: m.changed });
     render(run); await flush(); elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!.props.onClick!();
     await flush(); const alert = elements(render(run)).find(e => e.type === "alert")!;
     expect(text(alert.props.message)).toContain("勿重复提交"); expect(m.changed).not.toHaveBeenCalled(); expect(m.patch).toHaveBeenCalledOnce();
@@ -138,7 +139,7 @@ describe("compact todo facts and persistent outcomes", () => {
   });
   it("late success after table unmount keeps the recovery record and cannot update the departed view", async () => {
     m.fetch.mockResolvedValue(listing); const pending = deferred<WorkItemRow>(); m.patch.mockReturnValue(pending.promise);
-    const run = () => ItemTable({ view: "mine", prefix: "mine", assignees: [], refreshKey: 0, onChanged: m.changed });
+    const run = () => ItemTable({ view: "mine", prefix: "mine", refreshKey: 0, onChanged: m.changed });
     render(run); await flush(); elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!.props.onClick!();
     const original = loadTodoMutation(localStorage, 42); expect(original).not.toBeNull();
     h.cleanups.forEach(fn => fn()); pending.resolve({ ...row, status: "done" }); await flush();
@@ -146,13 +147,44 @@ describe("compact todo facts and persistent outcomes", () => {
   });
   it("storage refusal prevents the actual table action from reaching PATCH", async () => {
     m.fetch.mockResolvedValue(listing); vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => { throw Error("quota"); } });
-    const run = () => ItemTable({ view: "mine", prefix: "mine", assignees: [], refreshKey: 0, onChanged: m.changed });
+    const run = () => ItemTable({ view: "mine", prefix: "mine", refreshKey: 0, onChanged: m.changed });
     render(run); await flush(); elements(render(run)).find(e => e.type === "button" && text(e) === "完成待办")!.props.onClick!(); await flush();
     expect(m.patch).not.toHaveBeenCalled(); expect(m.message.error).toHaveBeenCalledWith(expect.stringContaining("未发送"));
   });
+  it("reassignment opens a compact confirmation and retains the originally observed version after a list refresh", async () => {
+    m.fetch.mockResolvedValueOnce(listing).mockResolvedValue({ ...listing, rows: [{ ...row, version: 99 }] });
+    m.patch.mockResolvedValue({ ...row, assigneeId: 43 });
+    let refreshKey = 0;
+    const run = () => ItemTable({ view: "mine", prefix: "mine", refreshKey, onChanged: m.changed });
+    render(run); await flush();
+    const menu = elements(render(run)).find(e => e.type === "dropdown") as React.ReactElement<{ menu: { items: { key: string; children?: unknown; onClick: () => void }[] } }>;
+    const assign = menu.props.menu.items.find(i => i.key === "assign")!;
+    expect(assign.children).toBeUndefined(); assign.onClick();
+    expect(m.patch).not.toHaveBeenCalled();
+    refreshKey++; render(run); await flush();
+    const drawer = elements(render(run)).find(e => e.type === TodoAssignDrawer) as React.ReactElement<Parameters<typeof TodoAssignDrawer>[0]>;
+    expect(drawer.props.row.version).toBe(1);
+    drawer.props.onConfirm(43); drawer.props.onConfirm(43); await flush();
+    expect(m.patch).toHaveBeenCalledExactlyOnceWith("/api/todo/17", { assigneeId: 43, expectedVersion: 1, note: null, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(elements(render(run)).some(e => e.type === TodoAssignDrawer)).toBe(false);
+  });
+  it("uncertain reassignment stays visible and opens the existing original-operation recovery", async () => {
+    m.fetch.mockResolvedValue(listing); m.patch.mockRejectedValue(Error("结果未确认"));
+    const run = () => ItemTable({ view: "mine", prefix: "mine", refreshKey: 0, onChanged: m.changed });
+    render(run); await flush();
+    const menu = elements(render(run)).find(e => e.type === "dropdown") as React.ReactElement<{ menu: { items: { key: string; onClick: () => void }[] } }>;
+    menu.props.menu.items.find(i => i.key === "assign")!.onClick();
+    const drawer = () => elements(render(run)).find(e => e.type === TodoAssignDrawer) as React.ReactElement<Parameters<typeof TodoAssignDrawer>[0]>;
+    drawer().props.onConfirm(43); await flush();
+    expect(drawer().props).toMatchObject({ recoverable: true, error: "结果未确认" });
+    const original = loadTodoMutation(localStorage, 42); expect(original).toMatchObject({ itemId: 17, assigneeId: 43, expectedVersion: 1 });
+    drawer().props.onRecover();
+    expect(elements(render(run)).some(e => e.type === TodoAssignDrawer)).toBe(false);
+    expect(loadTodoMutation(localStorage, 42)).toEqual(original); expect(m.patch).toHaveBeenCalledOnce();
+  });
   it("read-only visible items do not gain mutation buttons in the mobile layout", async () => {
     m.me = { id: 999, roles: ["ops"] }; m.fetch.mockResolvedValue(listing);
-    const run = () => ItemTable({ view: "all", prefix: "all", assignees: [], refreshKey: 0, onChanged: m.changed });
+    const run = () => ItemTable({ view: "all", prefix: "all", refreshKey: 0, onChanged: m.changed });
     render(run); await flush(); expect(elements(render(run)).some(e => e.type === "button" && text(e) === "完成待办")).toBe(false);
     expect(m.patch).not.toHaveBeenCalled();
   });

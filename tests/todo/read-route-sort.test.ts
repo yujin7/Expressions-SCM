@@ -59,7 +59,7 @@ describe("todo real read routes: server sorting and fresh authority", () => {
     deps.fresh.mockRejectedValueOnce(new SessionAuthError("会话已失效，请重新登录"));
     const response = route === "list" ? await listGet(req(""))
       : route === "detail" ? await detailGet(req("", `/${hiddenId}`), { params: Promise.resolve({ id: String(hiddenId) }) })
-        : route === "assignees" ? await assigneesGet()
+        : route === "assignees" ? await assigneesGet(req("", "/assignees"))
           : await statsGet(req(route === "summary" ? "scope=summary" : "", "/stats"));
     expect(response.status).toBe(401);
   });

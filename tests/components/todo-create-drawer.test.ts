@@ -155,7 +155,6 @@ beforeEach(() => {
   props = {
     actorId: 1,
     defaultAssigneeId: 42,
-    assigneeOptions: [{ value: 42, label: "合成 QA 运营（运营）" }],
     roleOptions: [{ value: "ops", label: "运营" }],
     priorityOptions: [{ value: "normal", label: "中" }],
     onCancel: vi.fn(), onCreated: vi.fn(),

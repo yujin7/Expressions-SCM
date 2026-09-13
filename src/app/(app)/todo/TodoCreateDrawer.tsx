@@ -5,13 +5,13 @@ import { Alert, App, Button, DatePicker, Drawer, Form, Input, Select, Space } fr
 import dayjs, { type Dayjs } from "dayjs";
 import { clearTodoCreate, loadTodoCreate, lookupTodoCreate, prepareTodoCreate, submitTodoCreate, TODO_CREATE_CHANGED, withTodoCreateLock, type TodoCreateRequest } from "@/components/todo-create-request";
 import { todoItemHref } from "@/lib/todo-navigation";
+import TodoAssigneeSelect from "@/components/TodoAssigneeSelect";
 
 interface Option<T> { value: T; label: string }
 interface TodoFormValues { title: string; detail?: string; assigneeId: number; ownerRole?: string; priority: "low" | "normal" | "high"; dueDate?: Dayjs | null; sourceRef?: string }
 export interface TodoCreateDrawerProps {
   actorId: number;
   defaultAssigneeId?: number;
-  assigneeOptions: Option<number>[];
   roleOptions: Option<string>[];
   priorityOptions: Option<string>[];
   onCancel: () => void;
@@ -19,7 +19,7 @@ export interface TodoCreateDrawerProps {
 }
 
 /** Actor-keyed mount; persisted requests are independent of the current list's filters. */
-export default function TodoCreateDrawer({ actorId, defaultAssigneeId, assigneeOptions, roleOptions, priorityOptions, onCancel, onCreated }: TodoCreateDrawerProps) {
+export default function TodoCreateDrawer({ actorId, defaultAssigneeId, roleOptions, priorityOptions, onCancel, onCreated }: TodoCreateDrawerProps) {
   const { message } = App.useApp();
   const [form] = Form.useForm<TodoFormValues>();
   const [submitting, setSubmitting] = useState(false);
@@ -95,7 +95,7 @@ export default function TodoCreateDrawer({ actorId, defaultAssigneeId, assigneeO
     finally { if (!completed) unlock(); }
   };
 
-  return <Drawer title={pending ? "恢复待办创建" : "新建待办"} open width={480}
+  return <Drawer title={pending ? "恢复待办创建" : "新建待办"} open width="min(480px, 100vw)"
     onClose={() => { if (lifecycle.current.active && !lifecycle.current.busy) onCancel(); }} closable={!submitting} maskClosable={!submitting} keyboard={!submitting}
     extra={!pending || editing ? <Button type="primary" loading={submitting} disabled={submitting || !ready || !!storageError} onClick={() => void submit()}>保存</Button> : null}>
     <div ref={content} tabIndex={-1}>
@@ -117,7 +117,7 @@ export default function TodoCreateDrawer({ actorId, defaultAssigneeId, assigneeO
       <Form form={form} disabled={submitting || !ready || !!storageError || (!!pending && !editing)} layout="vertical" initialValues={{ priority: "normal", assigneeId: defaultAssigneeId }}>
         <Form.Item name="title" label="标题" rules={[{ required: true, message: "标题必填" }]}><Input maxLength={200} /></Form.Item>
         <Form.Item name="detail" label="明细"><Input.TextArea rows={3} maxLength={2000} /></Form.Item>
-        <Form.Item name="assigneeId" label="责任人" rules={[{ required: true, message: "必须指定责任人" }]}><Select showSearch optionFilterProp="label" options={assigneeOptions} /></Form.Item>
+        <Form.Item name="assigneeId" label="责任人" rules={[{ required: true, message: "必须指定责任人" }]}><TodoAssigneeSelect aria-label="责任人" /></Form.Item>
         <Form.Item name="ownerRole" label="责任角色（部门）"><Select allowClear options={roleOptions} /></Form.Item>
         <Form.Item name="priority" label="优先级"><Select options={priorityOptions} /></Form.Item>
         <Form.Item name="dueDate" label="截止日期"><DatePicker style={{ width: "100%" }} /></Form.Item>
