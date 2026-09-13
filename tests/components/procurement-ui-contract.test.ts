@@ -22,10 +22,11 @@ describe("采购侧界面契约", () => {
     const comp = read("src/components/DocTransitionActions.tsx");
     // 与 transitionPO / transitionWO 的 requireAnyRole(user, "pmc", "ops") 同口径
     expect(comp).toContain('hasAnyRole(me, "pmc", "ops")');
-    expect(comp).toContain("/transition");
-    expect(comp).toContain('action, version: doc.version');
+    const recovery = read("src/components/doc-transition-recovery.ts");
+    expect(recovery).toContain("/transition");
+    expect(comp).toContain('postClosingAction(base, action, doc.version, reason)');
     // 短关必须填原因：按钮在原因为空时禁用（服务端 schema 也强制，这里只是别让人白跑一趟）
-    expect(comp).toContain("disabled: reason.trim().length === 0");
+    expect(comp).toContain('action === "short_close" && reason.trim().length === 0');
     // 状态机边（docflow/state.ts）：complete 只从 in_progress，short_close 从 approved / in_progress
     expect(comp).toContain('return status === "in_progress";');
     expect(comp).toContain('return status === "approved" || status === "in_progress";');

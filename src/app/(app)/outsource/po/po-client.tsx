@@ -90,6 +90,7 @@ interface PoDetail {
   docNo: string;
   status: string;
   remark: string | null;
+  closedReason: string | null;
   version: number;
   woId: number | null;
   supplierId: number;
@@ -453,17 +454,6 @@ function PoInner() {
           生成供应商确认链接
         </Button>
       ) : null}
-      {/* 手工收口（完成 / 短关）：服务与路由早就有，此前没有任何按钮——
-          少送尾数的 PO 永久停在「执行中」，把 OTIF 的 pending 桶越撑越大 */}
-      <DocTransitionActions
-        docType="po"
-        doc={detail}
-        onChanged={refresh}
-        labels={{
-          completeHint: "标记本采购订单已履约完成：剩余未收数量不再期待到货。",
-          shortCloseHint: "短关＝供应商不再补齐剩余数量（少送尾数/取消尾单）。已收部分保持不变，仅停止后续到货预期，OTIF 也不再把它算作待收。",
-        }}
-      />
       {detail.status !== "draft" ? (
         <Button onClick={() => window.open(`/outsource/po/${detail.id}/print`, "_blank")}>打印采购单</Button>
       ) : null}
@@ -534,6 +524,10 @@ function PoInner() {
         {detail ? (
           <div>
             <ChainStrip docType="po" id={detail.id} />
+            <DocTransitionActions docType="po" doc={detail} onChanged={refresh} labels={{
+              completeHint: "请先核对实际履约。本操作只标记本采购单完成、移除其未结供给；不补记收货、不修改已收数量，也不自动关闭关联工单。",
+              shortCloseHint: "供应商不再补齐余量时短关，并停止本采购单的后续到货预期。已收及库存事实保持不变；关联工单仍须另行核对处理。",
+            }} />
             {priceAlert ? (
               <Alert
                 type="warning"
@@ -571,6 +565,7 @@ function PoInner() {
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "—"}</Descriptions.Item>
+              {detail.closedReason ? <Descriptions.Item label="短关原因" span={{ xs: 1, sm: 2 }}>{detail.closedReason}</Descriptions.Item> : null}
             </Descriptions>
             <Typography.Title level={5}>明细行</Typography.Title>
             {hasRequestedLine ? <Alert showIcon style={{ marginBottom: 8 }}

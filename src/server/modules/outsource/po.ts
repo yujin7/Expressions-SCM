@@ -320,6 +320,7 @@ export async function getPo(id: number, dbArg?: AnyDb) {
       docNo: poDocs.docNo,
       status: poDocs.status,
       remark: poDocs.remark,
+      closedReason: poDocs.closedReason,
       version: poDocs.version,
       woId: poDocs.woId,
       supplierId: poDocs.supplierId,
@@ -577,22 +578,25 @@ export async function transitionPO(
   dbArg?: AnyDb,
 ): Promise<{ status: string; idempotent: boolean }> {
   const v = transitionDocSchema.parse(input);
-  if (v.action !== "void" && v.action !== "reopen") requireAnyRole(user, "pmc", "ops");
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      if (v.action !== "void" && v.action !== "reopen") requireAnyRole(actor, "pmc", "ops");
+      const [doc] = await tx.select({ id: poDocs.id }).from(poDocs).where(eq(poDocs.id, id)).for("update");
+      if (!doc) throw new ApiError(404, "单据不存在");
       const r = await transitionDoc(tx, {
         docType: "po",
         table: poDocs,
         docId: id,
-        user: { id: user.id, roles: user.roles },
+        user: actor,
         action: v.action,
         reason: v.reason,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
       await writeAudit(tx, {
-        userId: user.id, entity: "po", entityId: id, action: v.action,
+        userId: actor.id, entity: "po", entityId: id, action: v.action,
         after: { status: r.status, reason: v.reason ?? null },
       });
       return r;
