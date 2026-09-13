@@ -21,6 +21,7 @@ import { getDbAsync } from "@/db";
 import * as schema from "@/db/schema";
 import { ApiError } from "@/server/modules/master/common";
 import { num } from "@/server/core/svc";
+import { compareBatchIdentity } from "@/server/core/batch-order";
 import { latestStocktakeRows, loadLatestStocktakeDates } from "@/server/core/stock-view";
 import { shanghaiDayOf } from "@/server/core/business-day";
 import { documentHref, documentTargetPath } from "@/lib/document-links";
@@ -63,7 +64,7 @@ export async function registerBatchesFromReceipt(
   }
 
   // 跨PO的收货不共享PO锁；统一批次锁顺序，避免两张SH按相反行顺序补日期时死锁。
-  const ordered = [...byKey.values()].sort((a, b) => a.skuId - b.skuId || (a.batchNo < b.batchNo ? -1 : a.batchNo > b.batchNo ? 1 : 0));
+  const ordered = [...byKey.values()].sort(compareBatchIdentity);
   const idByKey = new Map<string, number>();
   for (const l of ordered) {
     const [registered]: { id: number }[] = await db

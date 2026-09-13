@@ -72,7 +72,7 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
   return db.transaction(async (tx: AnyDb) => {
     const actor = await currentMatflowActor(tx, user);
     requireAnyRole(actor, "warehouse");
-    const allocatedLines = await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines);
+    const allocatedLines = await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines, "return");
     const docNo = await nextDocNo(tx, "CT");
     const [doc]: CtRow[] = await tx
       .insert(ctDocs)

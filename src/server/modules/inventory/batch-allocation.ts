@@ -3,7 +3,7 @@
  *
  * `batch_posting_enabled=0` 时保持原单行，不改变现网余额维度；打开后：
  * - 未指定批次的出库行按 SKU 汇总后一次 FEFO 分配，再稳定拆回原业务行；
- * - 显式批次必须属于该 SKU、未过期且库存足够；
+ * - 显式批次必须属于该 SKU、库存足够；正常使用须未过期，受控退回/报废例外；
  * - 同一 SKU 不允许混用显式批次和自动分配，避免双重占用；
  * - 批次库存不足时拒绝建单，不生成“部分可执行”草稿。
  */
@@ -32,6 +32,8 @@ export async function expandOutboundLinesForBatchPosting<T extends BatchAllocata
   db: AnyDb,
   warehouseId: number,
   input: T[],
+  // Internal service purpose only, never forward an unvalidated HTTP flag. Automatic FEFO stays unchanged.
+  purpose: "use" | "return" | "reviewed_scrap" = "use",
 ): Promise<Array<Omit<T, "qty" | "batchId"> & { qty: string; batchId: number | null }>> {
   const normalized = input.map((line) => ({
     ...line,
@@ -66,7 +68,7 @@ export async function expandOutboundLinesForBatchPosting<T extends BatchAllocata
         if (!batch || batch.skuId !== skuId) {
           throw new ApiError(400, `批次不存在或不属于该 SKU: batch#${batchId} / sku#${skuId}`);
         }
-        if (batch.expiryDate != null && batch.expiryDate <= today) {
+        if (purpose === "use" && batch.expiryDate != null && batch.expiryDate <= today) {
           throw new ApiError(409, `过期批次不可出库: batch#${batchId}（效期 ${batch.expiryDate}）`);
         }
         qtyByBatch.set(batchId, dAdd(qtyByBatch.get(batchId) ?? "0", line.qty));

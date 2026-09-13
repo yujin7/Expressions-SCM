@@ -60,7 +60,7 @@ export async function createTl(user: SessionUser, input: unknown, dbArg?: AnyDb)
     if (!activeSku.has(sid)) throw new ApiError(400, `SKU 不存在或已停用: #${sid}`);
   }
 
-    const allocatedLines = await expandOutboundLinesForBatchPosting(tx, fromWh.id, v.lines);
+    const allocatedLines = await expandOutboundLinesForBatchPosting(tx, fromWh.id, v.lines, "return");
     const docNo = await nextDocNo(tx, "TL");
     const [doc]: TlRow[] = await tx
       .insert(tlDocs)
