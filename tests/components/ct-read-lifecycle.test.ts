@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import CtClient from "@/app/(app)/matflow/ct/ct-client";
 
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
-  q: "", detailId: null as number | null, approver: false, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
+  q: "", detailId: null as number | null, actorId: 1, roles: ["warehouse"], rootKey: null as string | null, approver: false, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
 vi.mock("antd", () => ({ App: { useApp: () => ({ message: h.message }) }, Alert: "alert", Button: "button", Modal: "modal", Space: "space", Table: "table", Tabs: "tabs", Popconfirm: "confirm", Select: "select", InputNumber: "number",
   Input: Object.assign("input", { TextArea: "textarea" }), Descriptions: Object.assign("descriptions", { Item: "item" }), Typography: { Title: "title", Paragraph: "paragraph", Link: "a" } }));
 vi.mock("@ant-design/icons", () => ({ PlusOutlined: "plus", ReloadOutlined: "reload" }));
@@ -15,7 +15,7 @@ vi.mock("@/components/DocumentDrawer", () => ({ default: "drawer" }));
 vi.mock("@/components/ChainStrip", () => ({ default: "chain" }));
 vi.mock("@/components/DocStatusTag", () => ({ default: "status" }));
 vi.mock("@/components/ApprovalTimeline", () => ({ default: "timeline" }));
-vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 1, roles: ["warehouse"], isApprover: h.approver }), hasAnyRole: () => true }));
+vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: h.actorId, roles: h.roles, isApprover: h.approver }), hasAnyRole: () => true }));
 vi.mock("@/components/useDocumentTarget", () => ({ useDocumentTarget: () => ({ id: h.detailId, setId: vi.fn(), present: h.detailId != null }) }));
 vi.mock("@/components/useListState", () => ({ useListState: () => ({ filters: { q: h.q, status: "" }, page: 1, pageSize: 20, tableSize: "small", paginationProps: (v: unknown) => v }) }));
 vi.mock("react", async original => ({ ...await original<typeof import("react")>(),
@@ -29,7 +29,10 @@ vi.mock("react", async original => ({ ...await original<typeof import("react")>(
 }));
 type Node = React.ReactElement<Record<string, unknown> & { children?: ReactNode }>;
 const nodes = (v: ReactNode): Node[] => Array.isArray(v) ? v.flatMap(nodes) : isValidElement<Node["props"]>(v) ? [v, ...nodes(v.props.children)] : [];
-function render(effects = true) { for (let i = 0; i < 12; i++) { h.cursor = 0; h.changed = false; const tree = CtClient(); if (!effects) return tree;
+// Execute the keyed workspace boundary explicitly; the harness does not mount arbitrary React children.
+function render(effects = true) { for (let i = 0; i < 12; i++) { h.cursor = 0; h.changed = false; const root = CtClient();
+  if (h.rootKey !== root.key) { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); h.slots = []; h.effects = []; h.rootKey = root.key; }
+  const tree = (root.type as (props: unknown) => ReactNode)(root.props); if (!effects) return tree;
   for (const fn of h.effects.splice(0)) fn(); if (!h.changed) return tree; } throw Error("render did not settle"); }
 const props = (type: string) => nodes(render()).find(n => n.type === type)!.props;
 const fetchMock = vi.fn<typeof fetch>();
@@ -40,7 +43,7 @@ const create = () => nodes(render()).find(n => n.type === "modal" && n.props.tit
 const lines = () => nodes(create()).find(n => n.type === "table")!.props;
 function open() { const button = nodes(props("toolbar").primaryActions as ReactNode).find(n => n.props.children === "新建退货单")!; (button.props.onClick as () => void)(); render(); }
 function select(id: number) { const p = nodes(create()).find(n => n.props.placeholder === "选择采购订单")!.props; (p.onChange as (v: number) => void)(id); render(); }
-beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.detailId = null; h.approver = false; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
+beforeEach(() => { h.cursor = 0; h.slots = []; h.effects = []; h.changed = false; h.q = ""; h.detailId = null; h.actorId = 1; h.roles = ["warehouse"]; h.rootKey = null; h.approver = false; vi.clearAllMocks(); fetchMock.mockReset(); vi.useFakeTimers(); vi.stubGlobal("React", React); vi.stubGlobal("fetch", fetchMock); });
 afterEach(() => { for (const fn of h.cleanups.values()) fn(); h.cleanups.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it("list query changes withdraw old rows before effects, and reject late responses", async () => {
@@ -99,13 +102,28 @@ it("warehouse clear removes physical lots and quantities, disabling creation", a
   expect(lines().dataSource).toMatchObject([{ qty: "0", batchId: undefined }]);
   expect(cell("batch").disabled).toBe(true); expect(create().props.okButtonProps).toMatchObject({ disabled: true });
 });
-it.each([1, 2, undefined])("pending approval buttons require a known different maker (%s)", async createdBy => {
+it.each([true, false, undefined])("pending approval controls follow the server qualification (%s), not the local role", async allowed => {
   h.detailId = 1; h.approver = true;
-  fetchMock.mockImplementation(async url => String(url).endsWith("/ct/1") ? Response.json({ id: 1, createdBy, docNo: "CT-1", status: "pending", lines: [], approvals: [] }) : Response.json({ rows: [], total: 0 }));
+  fetchMock.mockImplementation(async url => String(url).endsWith("/ct/1") ? Response.json({ id: 1, createdBy: 2, docNo: "CT-1", status: "pending", lines: [], approvals: [],
+    actions: allowed === undefined ? undefined : { approve: allowed, reject: allowed, edit: false, submit: false, reason: "当前服务端资格" } }) : Response.json({ rows: [], total: 0 }));
   render(); await flush();
   const buttons = nodes(props("drawer").extra as ReactNode).filter(n => n.type === "button").map(n => n.props.children);
-  expect(buttons.includes("审批通过")).toBe(createdBy === 2);
-  expect(buttons.includes("驳回")).toBe(createdBy === 2);
+  expect(buttons.includes("审批通过")).toBe(allowed === true);
+  expect(buttons.includes("驳回")).toBe(allowed === true);
+});
+it("a quantity block disables approval while keeping independent rejection available", async () => {
+  h.detailId = 1;
+  fetchMock.mockImplementation(async url => String(url).endsWith("/ct/1") ? Response.json({ id: 1, createdBy: 2, docNo: "CT-1", status: "pending", lines: [], approvals: [],
+    actions: { approve: false, reject: true, edit: false, submit: false, reason: "退货量超过已收数；仍可驳回" } }) : Response.json({ rows: [], total: 0 }));
+  render(); await flush();
+  const buttons = nodes(props("drawer").extra as ReactNode).filter(n => n.type === "button");
+  expect(buttons.find(n => n.props.children === "审批通过")?.props.disabled).toBe(true);
+  expect(buttons.some(n => n.props.children === "驳回")).toBe(true);
+});
+it.each(["identity", "roles"])("%s change remounts the workspace and clears another actor's open form", async change => {
+  await prepared(); expect(create().props.open).toBe(true);
+  if (change === "identity") h.actorId = 2; else h.roles = ["ops"];
+  render(); expect(create().props.open).toBe(false); expect(lines().dataSource).toEqual([]);
 });
 it("split batches preserve PO line identity and reject combined over-return before POST", async () => {
   await prepared(); (cell("batch").onChange as (v: number) => void)(3); render(); (cell("qty").onChange as (v: string) => void)("1.5"); render();
