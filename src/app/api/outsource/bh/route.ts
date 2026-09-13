@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { errorResponse, guardRead, parseListQuery, readJson } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
-import { createBh, listBhs } from "@/server/modules/outsource/bh";
+import { listBhs } from "@/server/modules/outsource/bh";
+import { createBhRequest } from "@/server/modules/outsource/bh-create-request";
 import { parseSelectedValues } from "@/server/core/selected-options";
 
 export async function GET(req: NextRequest) {
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await guardFreshWrite(); // 角色（ops）在 service 内校验
-    return NextResponse.json(await createBh(user, await readJson(req)), { status: 201 });
+    return NextResponse.json(await createBhRequest(user, await readJson(req), "manual"), { status: 201 });
   } catch (e) {
     return errorResponse(e);
   }

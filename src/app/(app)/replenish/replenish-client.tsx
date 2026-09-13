@@ -25,12 +25,13 @@ import {
 } from "antd";
 import type { ColumnsType, TableProps } from "antd/es/table";
 import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import ProjectionDrawer from "@/components/ProjectionDrawer";
 import CaliberNote from "@/components/CaliberNote";
 import { useListState } from "@/components/useListState";
-import { hasAnyRole, useMe } from "@/components/useMe";
+import { hasAnyRole, useMe, type Me } from "@/components/useMe";
+import BhCreateRecovery, { useBhCreateRecovery } from "@/components/BhCreateRecovery";
 import { DECLINE_REASON_LABELS, type DeclineReasonCode } from "@/lib/replenish-decline-reasons";
 import { HELD_QTY_LABEL, replenishDraftItems, type ReplenishDraftItem } from "@/lib/replenish-draft";
 import { metricTooltip } from "@/components/metrics";
@@ -337,6 +338,11 @@ function PlanEventsPanel({ skuId }: { skuId: number }) {
 }
 
 export default function ReplenishClient() {
+  const me = useMe();
+  return <ReplenishWorkspace key={`${me?.id}:${me?.roles.join(",")}`} me={me} />;
+}
+
+function ReplenishWorkspace({ me }: { me: Me | null }) {
   const { message } = App.useApp();
   const listState = useListState({
     key: "replenish",
@@ -413,10 +419,9 @@ export default function ReplenishClient() {
   }, [selectedRows]);
   const [remark, setRemark] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [createdDocNo, setCreatedDocNo] = useState<string | null>(null);
+  const [editingRequest, setEditingRequest] = useState(false);
   const [projSku, setProjSku] = useState<string | null>(null);
   // 闭环审计 #12：「不采纳」（pmc/admin；服务端 requireAnyRole 仍是权威）
-  const me = useMe();
   const canDecline = hasAnyRole(me, "pmc");
   const [declineTarget, setDeclineTarget] = useState<DeclineTarget | null>(null);
   const [declined, setDeclined] = useState<Record<number, DeclineResult>>({});
@@ -454,6 +459,7 @@ export default function ReplenishClient() {
       if (readRequest.isCurrent()) { setLoading(false); }
     }
   }, [beginLoadRead, coverDays, minCover, q, page, pageSize, sortBy, sortOrder, tier, ownership, hideTierC, message]);
+  const recovery = useBhCreateRecovery(me?.id ?? null, hasAnyRole(me, "ops", "pmc"), () => void load());
 
   useEffect(() => {
     void load();
@@ -488,19 +494,22 @@ export default function ReplenishClient() {
   }, [data]);
 
   const handleSubmit = async () => {
-    if (selectedRows.length === 0) return;
+    if (draftItems.length === 0 || submitting) return;
+    if (draftItems.length > 200) { message.warning("一张备货申请最多200项，请减少勾选后分批确认；尚未提交"); return; }
     setSubmitting(true);
     try {
-      const res = await postJson<{ id: number; docNo: string }>("/api/replenish/draft", {
+      const res = await recovery.submit({
+        source: "replenish",
         remark: remark.trim() || undefined,
         // 与弹窗同源（@/lib/replenish-draft）：显示的数就是提交的数
-        items: draftItems.slice(0, 200).map((r) => ({ skuId: r.skuId, qty: r.qty })),
-      });
-      setCreatedDocNo(res.docNo);
+        lines: draftItems.map((r) => ({ skuId: r.skuId, qty: r.qty })),
+      }, editingRequest);
+      if (!res?.document) return;
       setConfirmOpen(false);
+      setEditingRequest(false);
       setSelectedRows([]);
       setRemark("");
-      message.success(`备货申请草稿已生成：${res.docNo}`);
+      message.success(`已确认原备货申请：${res.document.docNo}，请核对当前状态`);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -1045,21 +1054,10 @@ export default function ReplenishClient() {
           </Button>
         }
       />
-      {createdDocNo ? (
-        <Alert
-          type="success"
-          showIcon
-          closable
-          onClose={() => setCreatedDocNo(null)}
-          style={{ marginBottom: 16 }}
-          message={
-            <span>
-              备货申请草稿 {createdDocNo} 已生成，
-              <Link href="/outsource/bh">前往备货申请列表提交审批 →</Link>
-            </span>
-          }
-        />
-      ) : null}
+      <BhCreateRecovery recovery={recovery} onEdit={recovery.request?.source === "replenish" && hasAnyRole(me, "pmc") ? request => {
+        if (!draftItems.length) { message.info("请先勾选修正后的建议行，再点击「修正原请求」；原请求仍保留"); return; }
+        setEditingRequest(true); setRemark(request.remark ?? ""); openConfirm();
+      } : undefined} />
       {loadError ? (
         <Alert
           type="error"
@@ -1117,8 +1115,8 @@ export default function ReplenishClient() {
           <Button
             type="primary"
             icon={<ThunderboltOutlined />}
-            disabled={selectedRows.length === 0 || sopFreeze?.frozen === true}
-            onClick={openConfirm}
+            disabled={selectedRows.length === 0 || sopFreeze?.frozen === true || !hasAnyRole(me, "pmc") || !recovery.ready || recovery.busy || !!recovery.request}
+            onClick={() => { setEditingRequest(false); openConfirm(); }}
           >
             生成备货申请草稿（BH）
           </Button>
@@ -1126,15 +1124,19 @@ export default function ReplenishClient() {
       </div>
 
       <Modal
-        title="确认生成备货申请草稿（BH）"
+        title={editingRequest ? "修正原补货创建请求（保留原请求编号）" : "确认生成备货申请草稿（BH）"}
         open={confirmOpen}
         onOk={() => void handleSubmit()}
-        onCancel={() => setConfirmOpen(false)}
+        onCancel={() => { if (!submitting) setConfirmOpen(false); }}
         confirmLoading={submitting}
+        closable={!submitting}
+        cancelButtonProps={{ disabled: submitting }}
+        okButtonProps={{ disabled: draftItems.length === 0 || draftItems.length > 200 || !recovery.ready || recovery.busy || (!!recovery.request && !editingRequest) }}
         okText="生成草稿"
         cancelText="取消"
         width="min(640px, 100vw)"
       >
+        {recovery.error && <Alert type="error" showIcon message={recovery.error} description="原请求已保留。可关闭弹窗，使用「核对原单」或「重试原请求」。" style={{ marginBottom: 12 }} />}
         <Alert
           type="warning"
           showIcon
@@ -1176,7 +1178,7 @@ export default function ReplenishClient() {
             type="warning"
             showIcon
             style={{ marginBottom: 12 }}
-            message={`一张 BH 最多 200 项，当前 ${draftItems.length} 项——将只生成前 200 项，其余请分批。`}
+            message={`一张 BH 最多 200 项，当前 ${draftItems.length} 项——尚未提交，请减少勾选后分批确认。`}
           />
         ) : null}
         {selectedRows.length > draftItems.length ? (

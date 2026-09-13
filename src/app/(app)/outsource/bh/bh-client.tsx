@@ -24,6 +24,8 @@ import { useListState } from "@/components/useListState";
 import { ORDER_TYPE_LABELS, formatOrderType, toOptions } from "@/components/labels";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import styles from "./bh-editor.module.css";
+import { useMe, hasAnyRole, type Me } from "@/components/useMe";
+import BhCreateRecovery, { useBhCreateRecovery } from "@/components/BhCreateRecovery";
 
 interface BhRow {
   id: number;
@@ -266,7 +268,7 @@ function BhActions({
   return null;
 }
 
-function BhInner() {
+function BhInner({ me }: { me: Me | null }) {
   const { message } = App.useApp();
   const [form] = Form.useForm<CreateFormValues>();
   // 列表页状态平台（E6-P1）：筛选/分页进 URL，密度与已保存视图存本地
@@ -282,6 +284,7 @@ function BhInner() {
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [editTarget, setEditTarget] = useState<BhDetail | null>(null);
+  const [editingRequest, setEditingRequest] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<{ id: number; message: string | null } | null>(null);
 
@@ -296,6 +299,7 @@ function BhInner() {
   const total = listRead.data?.total ?? 0;
   const loading = listRead.phase === "loading";
   const load = listRead.retry;
+  const recovery = useBhCreateRecovery(me?.id ?? null, hasAnyRole(me, "ops", "pmc"), () => void load());
   const detailRead = useDocumentRead<BhDetail>(detailId == null ? null : `/api/outsource/bh/${detailId}`);
   const detail = detailRead.data;
   const detailLoading = detailRead.phase === "loading";
@@ -323,10 +327,12 @@ function BhInner() {
       };
       const result = editTarget
         ? await putJson<{ id: number }>(`/api/outsource/bh/${editTarget.id}`, { ...body, version: editTarget.version, reason: values.reason?.trim() })
-        : await postJson<{ id: number }>("/api/outsource/bh", body);
-      message.success(editTarget ? "草稿已修正，可核对后重新提交" : "备货申请已创建（草稿）");
+        : (await recovery.submit({ ...body, source: "manual" }, editingRequest))?.document;
+      if (!result) return;
+      message.success(editTarget ? "草稿已修正，可核对后重新提交" : "已确认原备货申请，请核对当前状态");
       setCreateOpen(false);
       setEditTarget(null);
+      setEditingRequest(false);
       form.resetFields();
       setDetailId(result.id);
       detailRead.retry();
@@ -408,9 +414,11 @@ function BhInner() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
+              disabled={!hasAnyRole(me, "ops") || !recovery.ready || recovery.busy || !!recovery.request}
               onClick={() => {
                 form.resetFields();
                 setEditTarget(null);
+                setEditingRequest(false);
                 setSaveError(null);
                 setCreateOpen(true);
               }}
@@ -433,6 +441,12 @@ function BhInner() {
           </>
         }
       />
+      <BhCreateRecovery recovery={recovery} onEdit={recovery.request?.source === "manual" && hasAnyRole(me, "ops") ? request => {
+        form.resetFields(); setEditTarget(null); setEditingRequest(true); setSaveError(null);
+        form.setFieldsValue({ orderType: request.orderType, remark: request.remark,
+          lines: request.lines.map(l => ({ ...l, expectDate: l.expectDate ? dayjs(l.expectDate) : null })) });
+        setCreateOpen(true);
+      } : undefined} />
       <LoadErrorAlert error={listRead.error} onRetry={load} subject="备货申请列表" />
       <Table<BhRow>
         rowKey="id"
@@ -445,7 +459,7 @@ function BhInner() {
       />
 
       <Modal
-        title={editTarget ? `修改草稿 · ${editTarget.docNo}` : "新建备货申请"}
+        title={editTarget ? `修改草稿 · ${editTarget.docNo}` : editingRequest ? "修正原创建请求（保留原请求编号）" : "新建备货申请"}
         className={styles.editor}
         style={{ top: 24, paddingBottom: 24 }}
         open={createOpen}
@@ -456,7 +470,7 @@ function BhInner() {
           if (editTarget) setDetailId(editTarget.id);
         }}
         confirmLoading={saving}
-        okButtonProps={{ "aria-label": "保存草稿", "aria-busy": saving }}
+        okButtonProps={{ "aria-label": "保存草稿", "aria-busy": saving, disabled: !editTarget && (!recovery.ready || recovery.busy || (!!recovery.request && !editingRequest)) }}
         width={720}
         forceRender
         maskClosable={false}
@@ -465,6 +479,7 @@ function BhInner() {
         okText="保存草稿"
         cancelText="取消"
       >
+        {!editTarget && recovery.error && <Alert type="error" showIcon message={recovery.error} description="输入和原请求已保留。可关闭弹窗，使用「核对原单」或「重试原请求」。" style={{ marginBottom: 12 }} />}
         {saveError && <Alert type="error" showIcon message="保存未完成确认，输入已保留" description={<>
           {saveError}
           {editTarget && <div><Button type="link" onClick={() => {
@@ -562,7 +577,7 @@ function BhInner() {
               key={`${detail.id}:${detail.version}`}
               doc={detail}
               onEdit={() => {
-                setEditTarget(detail); setSaveError(null); form.resetFields();
+                setEditTarget(detail); setEditingRequest(false); setSaveError(null); form.resetFields();
                 form.setFieldsValue({ orderType: detail.orderType ?? undefined, remark: detail.remark ?? "", reason: "",
                   lines: detail.lines.map(l => ({ skuId: l.skuId, qty: l.qty, expectDate: l.expectDate ? dayjs(l.expectDate) : null })) });
                 setDetailId(null);
@@ -620,10 +635,11 @@ function BhInner() {
 }
 
 export default function BhClient() {
+  const me = useMe();
   // useListState 读 useSearchParams，需要 Suspense 边界
   return (
     <Suspense>
-      <BhInner />
+      <BhInner key={`${me?.id}:${me?.roles.join(",")}`} me={me} />
     </Suspense>
   );
 }
