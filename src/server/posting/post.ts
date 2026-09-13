@@ -110,12 +110,16 @@ export async function post(db: AnyDb, event: PostingEvent): Promise<{ posted: bo
     // 2) 排序防死锁（CLAUDE.md）
     const lines = [...event.lines].sort(compareLines);
 
-    // 3) 仓库 kind 一次性取齐（每事件一次，不逐行查）
+    // 3) Lock before reading execution identity. A pre-lock kind can become stale while
+    // waiting for a concurrent master-data edit, bypassing snapshot/negative-stock rules.
+    // The same ordered locks also serialize bin operations and warehouse identity edits.
     const whIds = [...new Set(lines.map((l) => l.warehouseId))];
     const whRows: { id: number; kind: string }[] = await tx
       .select({ id: warehouses.id, kind: warehouses.kind })
       .from(warehouses)
-      .where(inArray(warehouses.id, whIds));
+      .where(inArray(warehouses.id, whIds))
+      .orderBy(warehouses.id)
+      .for("update");
     const kindByWh = new Map(whRows.map((w) => [w.id, w.kind]));
 
     // 快照仓（保税/E/云）只吃 snapshot 导入，任何 ledger 过账都是错误
@@ -126,12 +130,6 @@ export async function post(db: AnyDb, event: PostingEvent): Promise<{ posted: bo
           `快照仓(warehouse#${l.warehouseId})禁止过账——快照导入只覆写 stock_snapshots，不触 ledger`,
         );
       }
-    }
-
-    // 库位作业与库存过账共用仓库主档行锁。否则“定位未定位量”和“出库扣总账”
-    // 可在两个事务中同时通过检查，提交后制造 Σ库位 > 仓库余额。
-    for (const warehouseId of [...whIds].sort((a, b) => a - b)) {
-      await tx.execute(sql`select id from warehouses where id = ${warehouseId} for update`);
     }
 
     // 4) 插入流水（按排序后顺序，一行一条；dQty 兼做十进制校验与规格化）

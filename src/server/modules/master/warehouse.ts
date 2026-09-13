@@ -51,7 +51,30 @@ export async function getWarehouse(id: number, dbArg?: AnyTx) {
   const db: AnyTx = dbArg ?? (await getDbAsync());
   const [row] = await db.select().from(schema.warehouses).where(eq(schema.warehouses.id, id));
   if (!row) throw new ApiError(404, "仓库不存在");
-  return row;
+  return { ...row, identityUsage: await warehouseIdentityUsage(db, id) };
+}
+
+/** Warehouse execution identity belongs to existing evidence, including unposted drafts.
+ * This is not a quantity total: zero/negative balances and closed documents still bind identity.
+ * On update the caller holds the warehouse row lock, shared with posting and FK insertions.
+ */
+async function warehouseIdentityUsage(db: AnyTx, id: number): Promise<string[]> {
+  const result = await db.execute(sql`
+    select '库存余额' evidence where exists(select 1 from stock_balances where warehouse_id=${id})
+    union all select '库存流水' where exists(select 1 from stock_ledger where warehouse_id=${id})
+    union all select '库存快照' where exists(select 1 from stock_snapshots where warehouse_id=${id})
+    union all select '效期参考' where exists(select 1 from batch_stocks where warehouse_id=${id})
+    union all select '库位' where exists(select 1 from bins where warehouse_id=${id})
+    union all select '库位流水' where exists(select 1 from bin_movements where warehouse_id=${id})
+    union all select '发料单' where exists(select 1 from fl_docs where from_warehouse_id=${id} or to_warehouse_id=${id})
+    union all select '退料单' where exists(select 1 from tl_docs where from_warehouse_id=${id} or to_warehouse_id=${id})
+    union all select '收货单' where exists(select 1 from sh_docs where warehouse_id=${id})
+    union all select '采购退货单' where exists(select 1 from ct_docs where warehouse_id=${id})
+    union all select '库存单据' where exists(select 1 from stock_doc_lines where warehouse_id=${id} or to_warehouse_id=${id})
+    union all select '盘点单' where exists(select 1 from pd_docs where warehouse_id=${id})
+    union all select '质量案件' where exists(select 1 from quality_cases where warehouse_id=${id})
+  `);
+  return result.rows.map((row: { evidence: string }) => row.evidence);
 }
 
 /**
@@ -151,36 +174,16 @@ export async function updateWarehouse(id: number, input: unknown, actor?: Sessio
   const v = warehouseSchema.parse(input);
   const db: AnyTx = dbArg ?? (await getDbAsync());
   return db.transaction(async (tx: AnyTx) => {
-  const [existing] = await tx.select().from(schema.warehouses).where(eq(schema.warehouses.id, id));
+  const [existing] = await tx.select().from(schema.warehouses).where(eq(schema.warehouses.id, id)).for("update");
   if (!existing) throw new ApiError(404, "仓库不存在");
   await assertValidParent(tx, id, v.parentId ?? null);
   await assertWarehouseCapacity(tx, id, { kind: v.kind, active: v.active });
   const nextAccountingMode = v.kind === "snapshot" ? "snapshot" : "realtime";
-  if (nextAccountingMode !== existing.accountingMode) {
-    const [balanceUsage]: { total: number }[] = await tx
-      .select({ total: sql<number>`count(*)::int` })
-      .from(schema.stockBalances)
-      .where(eq(schema.stockBalances.warehouseId, id));
-    const [snapshotUsage]: { total: number }[] = await tx
-      .select({ total: sql<number>`count(*)::int` })
-      .from(schema.stockSnapshots)
-      .where(eq(schema.stockSnapshots.warehouseId, id));
-    const [ledgerUsage]: { total: number }[] = await tx
-      .select({ total: sql<number>`count(*)::int` })
-      .from(schema.stockLedger)
-      .where(eq(schema.stockLedger.warehouseId, id));
-    const [binUsage]: { total: number }[] = await tx
-      .select({ total: sql<number>`count(*)::int` })
-      .from(schema.bins)
-      .where(eq(schema.bins.warehouseId, id));
-    const evidenceCount =
-      Number(balanceUsage?.total ?? 0)
-      + Number(snapshotUsage?.total ?? 0)
-      + Number(ledgerUsage?.total ?? 0)
-      + Number(binUsage?.total ?? 0);
-    if (evidenceCount > 0) {
-      throw new ApiError(409, "已有库存、快照、流水或库位的仓库不能切换记账模式；请新建正确类型的仓库");
-    }
+  const nextSupplierId = v.kind === "outsource" ? (v.supplierId ?? null) : null;
+  if (v.kind !== existing.kind || nextAccountingMode !== existing.accountingMode || nextSupplierId !== existing.supplierId) {
+    const usage = await warehouseIdentityUsage(tx, id);
+    if (usage.length > 0) throw new ApiError(409,
+      `仓库已有${usage.join("、")}，不能切换记账模式，也不能更改类型或加工厂归属；请新建正确仓库，通过原单纠错或正式调拨处理，不可改主档转移历史库存。名称、层级、区域及启停仍可维护`);
   }
   const [updated] = await tx
     .update(schema.warehouses)
@@ -191,7 +194,7 @@ export async function updateWarehouse(id: number, input: unknown, actor?: Sessio
       accountingMode: nextAccountingMode,
       // 兼容迁移前客户端：更新未携带新字段时保留原区域，绝不静默重置为 CN。
       regionCode: v.regionCode ?? existing.regionCode,
-      supplierId: v.kind === "outsource" ? (v.supplierId ?? null) : null,
+      supplierId: nextSupplierId,
       parentId: v.parentId ?? null,
       active: v.active,
     })
