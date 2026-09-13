@@ -28,6 +28,7 @@ import TodoCreation from "./TodoCreation";
 import TodoHistoryDrawer from "./TodoHistoryDrawer";
 import TodoNoteRecovery from "./TodoNoteRecovery";
 import TodoMutationRecovery from "./TodoMutationRecovery";
+import TodoAssignDrawer from "./TodoAssignDrawer";
 import styles from "./todo-client.module.css";
 
 export interface WorkItemRow {
@@ -53,7 +54,6 @@ export interface WorkItemRow {
 }
 
 interface ListData { rows: WorkItemRow[]; total: number; today: string }
-interface Assignee { id: number; name: string; roles: string[] }
 
 const ROLE_OPTIONS = [
   { value: "ops", label: "运营" }, { value: "purchasing", label: "采购" }, { value: "warehouse", label: "仓管" },
@@ -101,15 +101,7 @@ function ItemStatus({ row }: { row: WorkItemRow }) {
 
 type Filters = { q?: string; status?: string; ownerRole?: string; overdue?: string; sortBy?: string; sortOrder?: string };
 
-function useAssignees(): Assignee[] {
-  const [list, setList] = useState<Assignee[]>([]);
-  useEffect(() => {
-    fetchJson<{ rows: Assignee[] }>("/api/todo/assignees").then((r) => setList(r.rows)).catch(() => setList([]));
-  }, []);
-  return list;
-}
-
-export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { view: "mine" | "all"; prefix: string; assignees: Assignee[]; refreshKey: number; onChanged: () => void }) {
+export function ItemTable({ view, prefix, refreshKey, onChanged }: { view: "mine" | "all"; prefix: string; refreshKey: number; onChanged: () => void }) {
   const { message } = App.useApp();
   const me = useMe();
   const [data, setData] = useState<ListData | null>(null);
@@ -134,6 +126,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
     return () => { window.removeEventListener(TODO_MUTATION_CHANGED, reconciled); window.removeEventListener("storage", reconciled); };
   }, [actorId]);
   const [historyItem, setHistoryItem] = useState<WorkItemRow | null>(null);
+  const [assignRow, setAssignRow] = useState<WorkItemRow | null>(null);
   const listState = useListState<Filters>({
     key: `todo-${view}`,
     defaults: { q: "", status: view === "mine" ? "active" : "", ownerRole: "", overdue: "", sortBy: "", sortOrder: "" },
@@ -171,8 +164,9 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
   }, [load, refreshKey]);
 
   const act = async (row: WorkItemRow, patch: { status?: string; assigneeId?: number }) => {
-    if (!me || !mutationLife.current || pendingIds.current.has(row.id) || loading || loadError) return;
+    if (!me || !mutationLife.current || pendingIds.current.has(row.id) || loading || loadError) return false;
     const generation = mutationLife.current, isCurrent = () => mutationLife.current === generation;
+    let confirmed = false;
     pendingIds.current.add(row.id);
     setBusyIds(new Set(pendingIds.current));
     try {
@@ -188,6 +182,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
         if (suspicious) message.warning("创建后不足 10 分钟即关闭，已标记为「可疑」（仅提示，不影响状态）");
         else message.success("原操作已保存");
         setFeedback({ row, text: suspicious ? "完成操作已保存；创建不足10分钟即关闭，已标记可疑（仅提示）" : "原操作已保存，请以刷新后的当前任务状态为准", type: suspicious ? "warning" : "success" });
+        confirmed = true;
         onChanged();
       });
     } catch (e) {
@@ -200,6 +195,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
     } finally {
       if (isCurrent()) { pendingIds.current.delete(row.id); setBusyIds(new Set(pendingIds.current)); }
     }
+    return confirmed && isCurrent();
   };
 
   const canManage = (r: WorkItemRow) =>
@@ -245,7 +241,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
                 trigger={["click"]}
                 disabled={disabled}
                 menu={{ items: [
-                  { key: "assign", label: "改派给", disabled: assignees.every((a) => a.id === r.assigneeId), children: assignees.filter((a) => a.id !== r.assigneeId).map((a) => ({ key: `assign-${a.id}`, label: a.name, onClick: () => void act(r, { assigneeId: a.id }) })) },
+                  { key: "assign", label: "改派给…", onClick: () => { setFeedback(null); setAssignRow(r); } },
                   { type: "divider" },
                   { key: "cancel", label: "取消待办", danger: true, onClick: () => void act(r, { status: "cancelled" }) },
                 ] }}
@@ -338,6 +334,12 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
       </div>
       <div className={styles.pagination}><Pagination {...listState.paginationProps({ total: data?.total ?? 0 })} size="small" responsive /></div>
       {historyItem ? <TodoHistoryDrawer key={historyItem.id} id={historyItem.id} title={historyItem.title} onClose={() => setHistoryItem(null)} /> : null}
+      {assignRow ? <TodoAssignDrawer key={`${assignRow.id}:${assignRow.version}`} row={assignRow} busy={busyIds.has(assignRow.id)}
+        error={feedback?.row.id === assignRow.id && feedback.type === "error" ? feedback.text : undefined}
+        recoverable={feedback?.row.id === assignRow.id && feedback.recoverable}
+        onClose={() => { if (!pendingIds.current.has(assignRow.id)) setAssignRow(null); }}
+        onConfirm={id => { void act(assignRow, { assigneeId: id }).then(saved => { if (saved) setAssignRow(null); }); }}
+        onRecover={() => { setAssignRow(null); window.dispatchEvent(new CustomEvent(TODO_MUTATION_OPEN, { detail: me?.id })); }} /> : null}
     </section>
   );
 }
@@ -485,21 +487,19 @@ export default function TodoClient() {
   const searchParams = useSearchParams();
   const activeTab = todoTabFromQuery(searchParams.toString());
   const me = useMe();
-  const assignees = useAssignees();
   const [tick, setTick] = useState(0);
   const bump = useCallback(() => setTick((t) => t + 1), []);
   const actorKey = me ? `${me.id}:${me.roles.join(",")}` : "loading";
 
   const items = useMemo(() => [
-    { key: "mine", label: "我的待办", children: <ItemTable key={actorKey} view="mine" prefix="mine" assignees={assignees} refreshKey={tick} onChanged={bump} /> },
-    { key: "all", label: "全部待办", children: <ItemTable key={actorKey} view="all" prefix="all" assignees={assignees} refreshKey={tick} onChanged={bump} /> },
+    { key: "mine", label: "我的待办", children: <ItemTable key={actorKey} view="mine" prefix="mine" refreshKey={tick} onChanged={bump} /> },
+    { key: "all", label: "全部待办", children: <ItemTable key={actorKey} view="all" prefix="all" refreshKey={tick} onChanged={bump} /> },
     { key: "stats", label: "完成率", children: <StatsTab refreshKey={tick} /> },
-  ], [assignees, tick, bump, actorKey]);
+  ], [tick, bump, actorKey]);
 
   return (
     <div>
       {me ? <TodoCreation key={`${me.id}:${me.roles.join(",")}`} actorId={me.id} defaultAssigneeId={me.id}
-        assigneeOptions={assignees.map(a => ({ value: a.id, label: `${a.name}（${a.roles.map(r => ROLE_LABEL[r] ?? r).join("/")}）` }))}
         roleOptions={ROLE_OPTIONS} priorityOptions={Object.entries(PRIORITY_LABEL).map(([value, label]) => ({ value, label }))} onChanged={bump} /> : null}
       <CaliberNote
         summary="系统告警 / 复核项自动生成待办（同来源只建一条）；手工待办不计入完成率。单据审批在「待我审批」。"
