@@ -54,7 +54,8 @@ import { salesSpikeEvidenceCurrent } from "@/server/rules/sales-spike";
  *   改为绑启用成品的行数/最大 id/已维护 near_expiry_days 的个数与其合计/最大 updated_at。
  */
 // v9：外部逐序列7/15/30日覆盖与T+1准入；历史完整数可看，不作当前主需求。
-export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v9";
+// v10：批次参考临期小计改用定点十进制求和，失效旧浮点聚合缓存。
+export const INVENTORY_ALERTS_CACHE_KEY = "inventory-alerts/v10";
 
 export type DailySource = "external" | "internal" | "ledger";
 

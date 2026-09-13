@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse, guardRead } from "@/server/modules/master/common";
+import { ApiError, errorResponse, guardRead } from "@/server/modules/master/common";
 import { expiryCheck } from "@/server/modules/replenish/expiry";
 
 /**
@@ -10,14 +10,21 @@ export async function GET(req: NextRequest) {
   try {
     await guardRead();
     const sp = new URL(req.url).searchParams;
-    const skuIds = (sp.get("skuIds") ?? "")
-      .split(",")
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isInteger(n) && n > 0);
-    const whRaw = Number(sp.get("warehouseId"));
-    const warehouseId = Number.isInteger(whRaw) && whRaw > 0 ? whRaw : null;
-    return NextResponse.json(await expiryCheck({ skuIds, warehouseId }));
+    if ([...sp.keys()].some(k => !["skuIds", "warehouseId"].includes(k)) || sp.getAll("skuIds").length !== 1 || sp.getAll("warehouseId").length > 1) {
+      throw new ApiError(400, "效期检查参数重复或不支持，请重新选择 SKU 和仓库");
+    }
+    const id = (value: string) => {
+      if (!/^[1-9]\d*$/.test(value) || Number(value) > 2147483647) throw new ApiError(400, "SKU 或仓库编号无效，请重新选择");
+      return Number(value);
+    };
+    const parts = sp.get("skuIds")!.split(",");
+    if (parts.length > 200) throw new ApiError(400, "效期检查每批最多 200 个 SKU，请分批查询");
+    const skuIds = [...new Set(parts.map(s => id(s.trim())))];
+    const warehouseId = sp.has("warehouseId") ? id(sp.get("warehouseId")!) : null;
+    return NextResponse.json(await expiryCheck({ skuIds, warehouseId }), { headers: { "Cache-Control": "no-store" } });
   } catch (e) {
-    return errorResponse(e);
+    const response = errorResponse(e, { path: "/api/inventory/expiry-check", method: "GET" });
+    response.headers.set("Cache-Control", "no-store");
+    return response;
   }
 }
