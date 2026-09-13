@@ -1,6 +1,6 @@
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
-   batches, ctDocs, ctLines, poDocs, poLines, skus, users, warehouses,
+   approvalConfigs, batches, ctDocs, ctLines, poDocs, poLines, skus, stockLedger, users, warehouses,
 } from "@/db/schema";
 import { dAdd, dCmp, dNeg, dQty, dSub } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -15,7 +15,9 @@ import {
 } from "@/server/modules/outsource/common";
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import { completeApprovedDoc, lockMatflowWarehouses, requireRealtimeWarehouse } from "./common-notes";
-import { createCtSchema } from "./schemas";
+import { createCtSchema, updateCtSchema } from "./schemas";
+import { canEditMaterialDraft, materialTaskActions } from "./task-actions";
+import { outboundBatchBlock } from "@/server/posting/batch-eligibility";
 import { requirePurchaseReturnStatus, resolveReturnPhysicalLines } from "./return-lots";
 import { skuLineMatch } from "@/server/core/doc-search";
 import { lockPurchaseReceipt } from "./purchase-receipt-lock";
@@ -98,6 +100,57 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
       after: { docNo: doc.docNo, poId: v.poId, lineCount: allocatedLines.length },
     });
     return doc;
+  });
+}
+
+// ---------- 原草稿纠正：不换来源、仓、物料或实物批次 ----------
+
+export async function updateCt(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<CtRow> {
+  const v = updateCtSchema.parse(input), db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentMatflowActor(tx, user);
+    requireAnyRole(actor, "warehouse");
+    const [doc]: CtRow[] = await tx.select().from(ctDocs).where(eq(ctDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "采购退货单不存在");
+    if (doc.status !== "draft") throw new ApiError(409, "仅草稿或已驳回的退货单可修改；待审批先驳回，已生效单据不可改写");
+    if (!canEditMaterialDraft(actor, doc)) throw new ApiError(403, "仅当前具备仓管权限的制单人或管理员可修改原草稿");
+    if (doc.version !== v.version) throw new ApiError(409, "单据版本已变化，请重新读取核对，未覆盖他人的修改");
+    const [posted] = await tx.select({ id: stockLedger.id }).from(stockLedger)
+      .where(and(eq(stockLedger.sourceDocType, "ct_return"), eq(stockLedger.sourceDocId, id))).limit(1);
+    if (posted) throw new ApiError(409, "原单已有库存流水，不可按草稿改写；请联系仓管核对纠错");
+    const { po, lines: sourceLines } = await lockPurchaseReceipt(tx, doc.poId);
+    requirePurchaseReturnStatus(po.status);
+    await lockMatflowWarehouses(tx, [doc.warehouseId]);
+    await requireRealtimeWarehouse(tx, doc.warehouseId, "原退货出库仓");
+    const beforeLines: CtLineRow[] = await tx.select().from(ctLines).where(eq(ctLines.ctId, id)).orderBy(ctLines.id);
+    const byId = new Map(beforeLines.map(line => [line.id, line]));
+    const sourceById = new Map(sourceLines.map(line => [line.id, line]));
+    const totals = new Map<number, string>();
+    const afterLines = v.lines.map(line => {
+      const original = byId.get(line.id);
+      if (!original) throw new ApiError(409, "退货行不属于当前原单，请重新读取；不可借用其他单据行");
+      const source = sourceById.get(original.poLineId);
+      if (!source || source.skuId !== original.skuId) throw new ApiError(409, "原退货行与采购来源不匹配，请核对原采购行身份");
+      totals.set(source.id, dAdd(totals.get(source.id) ?? "0", line.qty));
+      return { ...original, qty: dQty(line.qty), reason: line.reason ?? null };
+    });
+    assertWithinReceived(totals, sourceById);
+    const block = await outboundBatchBlock(tx, { sourceDocType: "ct_return", sourceDocId: id, action: "post",
+      lines: afterLines.map(line => ({ sourceLineId: line.id, skuId: line.skuId, warehouseId: doc.warehouseId, batchId: line.batchId, qtyDelta: dNeg(line.qty) })) });
+    if (block) throw new PostingError(block.code, block.message);
+    await resolveReturnPhysicalLines(tx, doc.warehouseId, afterLines);
+    const [saved]: CtRow[] = await tx.update(ctDocs).set({ remark: v.remark ?? null,
+      version: sql`${ctDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(ctDocs.id, id), eq(ctDocs.status, "draft"), eq(ctDocs.version, v.version))).returning();
+    if (!saved) throw new ApiError(409, "版本冲突，请重新读取核对");
+    const retained = new Set(afterLines.map(line => line.id)), removed = beforeLines.filter(line => !retained.has(line.id)).map(line => line.id);
+    if (removed.length) await tx.delete(ctLines).where(and(eq(ctLines.ctId, id), inArray(ctLines.id, removed)));
+    for (const line of afterLines) await tx.update(ctLines).set({ qty: line.qty, reason: line.reason })
+      .where(and(eq(ctLines.ctId, id), eq(ctLines.id, line.id)));
+    await writeAudit(tx, { userId: actor.id, entity: "ct", entityId: id, action: "update_draft",
+      before: { version: doc.version, remark: doc.remark, lines: beforeLines },
+      after: { version: saved.version, remark: saved.remark, lines: afterLines } });
+    return saved;
   });
 }
 
@@ -213,7 +266,7 @@ export async function approveCt(
 
 // ---------- 查询 ----------
 
-export async function getCt(id: number, dbArg?: AnyDb) {
+export async function getCt(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const [doc] = await db
     .select({
@@ -253,13 +306,38 @@ export async function getCt(id: number, dbArg?: AnyDb) {
     })
     .from(ctLines)
     .innerJoin(skus, eq(ctLines.skuId, skus.id))
-    .leftJoin(batches, eq(ctLines.batchId, batches.id))
+    .leftJoin(batches, and(eq(ctLines.batchId, batches.id), eq(ctLines.skuId, batches.skuId)))
     .where(eq(ctLines.ctId, id))
     .orderBy(ctLines.id);
 
   const approvalRows = await loadApprovalHistory(db, "ct", id);
 
-  return { ...doc, lines, approvals: approvalRows };
+  let actions;
+  if (user) {
+    const [cfg] = await db.select({ role: approvalConfigs.approverRole }).from(approvalConfigs).where(eq(approvalConfigs.docType, "ct"));
+    let sourceBlock: string | null = null, quantityBlock: string | null = null;
+    try {
+      const [po] = await db.select({ status: poDocs.status }).from(poDocs).where(eq(poDocs.id, doc.poId));
+      if (!po) throw new ApiError(409, "来源采购订单不存在，请核对");
+      requirePurchaseReturnStatus(po.status);
+      await requireRealtimeWarehouse(db, doc.warehouseId, "原退货出库仓");
+    } catch (e) { if (e instanceof ApiError && e.status < 500) sourceBlock = e.message; else throw e; }
+    const sourceLines = await db.select().from(poLines).where(eq(poLines.poId, doc.poId));
+    const sourceById = new Map(sourceLines.map(line => [line.id, line]));
+    const totals = new Map<number, string>();
+    for (const line of lines) {
+      if (sourceById.get(line.poLineId)?.skuId !== line.skuId) quantityBlock = "退货行与原采购行身份不一致，请核对";
+      totals.set(line.poLineId, dAdd(totals.get(line.poLineId) ?? "0", line.qty));
+    }
+    if (!lines.length) quantityBlock = "采购退货单无明细，请核对";
+    if (!quantityBlock) try { assertWithinReceived(totals, sourceById); }
+    catch (e) { if (e instanceof ApiError && e.status < 500) quantityBlock = e.message; else throw e; }
+    const [posted] = await db.select({ id: stockLedger.id }).from(stockLedger)
+      .where(and(eq(stockLedger.sourceDocType, "ct_return"), eq(stockLedger.sourceDocId, id))).limit(1);
+    actions = { ...materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock),
+      edit: canEditMaterialDraft(user, doc) && !sourceBlock && !posted };
+  }
+  return { ...doc, lines, approvals: approvalRows, actions };
 }
 
 export async function listCts(

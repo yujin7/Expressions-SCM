@@ -143,3 +143,14 @@ export const createCtSchema = z.object({
     .min(1, "至少需要一行"),
 });
 export type CreateCtInput = z.infer<typeof createCtSchema>;
+
+/** Original PO, physical warehouse/SKU/batch and retained line IDs are immutable during repair. */
+export const updateCtSchema = z.object({
+  version: z.number().int().positive(),
+  remark: z.string().trim().max(500).optional(),
+  lines: z.array(z.object({
+    id: z.number().int().positive(), qty: returnQtyPositive,
+    reason: z.string().trim().max(200).optional(),
+  }).strict()).min(1, "至少保留一行采购退货明细")
+    .refine(lines => new Set(lines.map(line => line.id)).size === lines.length, "退货行不可重复"),
+}).strict();
