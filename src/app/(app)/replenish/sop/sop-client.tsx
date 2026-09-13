@@ -26,12 +26,13 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import CaliberNote from "@/components/CaliberNote";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { useMe, type Me } from "@/components/useMe";
 import { useSopExecutionRequest } from "@/components/useSopExecutionRequest";
+import { useSopCycleRequest } from "@/components/useSopCycleRequest";
 import DocStatusTag from "@/components/DocStatusTag";
 import { formatQty } from "@/components/format";
 import { documentHref } from "@/lib/document-links";
@@ -141,17 +142,21 @@ function SopWorkspace({ me }: { me: Me | null }) {
   const [month, setMonth] = useState<Dayjs>(dayjs());
   const [name, setName] = useState(`${dayjs().format("YYYY年MM月")} 数量供需计划`);
   const [planId, setPlanId] = useState<number | null>(null);
+  const [editCreate, setEditCreate] = useState(false);
+  const createRecovery = useSopCycleRequest(me?.id ?? null, canManage);
+  const exactCycle = useRef<number | null>(null);
 
   const beginLoadRead = useLatestRead();
-  const load = useCallback(async () => {
+  const load = useCallback(async (targetId?: number) => {
+    if (targetId !== undefined) exactCycle.current = targetId;
     const readRequest = beginLoadRead();
     setLoading(true);
     setLoadError(null);
     try {
-      const next = await fetchJson<Workspace>("/api/replenish/sop", { signal: readRequest.signal });
+      const next = await fetchJson<Workspace>(`/api/replenish/sop${exactCycle.current ? `?workspaceCycleId=${exactCycle.current}` : ""}`, { signal: readRequest.signal });
       if (!readRequest.isCurrent()) return;
       setData(next);
-      setSelectedId((current) =>
+      setSelectedId((current) => targetId && next.cycles.some(cycle => cycle.id === targetId) ? targetId :
         current && next.cycles.some((cycle) => cycle.id === current)
           ? current
           : next.cycles[0]?.id ?? null);
@@ -171,6 +176,14 @@ function SopWorkspace({ me }: { me: Me | null }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const confirmedCycleId = createRecovery.result?.cycle?.id;
+  useEffect(() => {
+    if (!confirmedCycleId) return;
+    setCreateOpen(false);
+    setEditCreate(false);
+    void load(confirmedCycleId);
+  }, [confirmedCycleId, load]);
 
   const cycle = data?.cycles.find((item) => item.id === selectedId) ?? null;
   const currentAgreements = cycle
@@ -195,15 +208,12 @@ function SopWorkspace({ me }: { me: Me | null }) {
   };
 
   const createCycle = async () => {
-    if (!planId || name.trim().length < 2) return;
-    const ok = await mutate({
-      action: "create",
+    if (!planId || name.trim().length < 2 || createRecovery.busy) return;
+    await createRecovery.submit({
       month: month.format("YYYY-MM"),
       name: name.trim(),
       planningVersionId: planId,
-      idempotencyKey: crypto.randomUUID(),
-    }, "S&OP 周期已创建，进入三方共识");
-    if (ok) setCreateOpen(false);
+    }, editCreate);
   };
 
   const decide = (role: SopRole, decision: "agree" | "reject") => {
@@ -391,9 +401,36 @@ function SopWorkspace({ me }: { me: Me | null }) {
             onChange={setSelectedId}
           />
           <Button loading={loading} onClick={() => void load()}>刷新</Button>
-          {canManage ? <Button type="primary" disabled={!data?.versions.length} onClick={() => setCreateOpen(true)}>新建周期</Button> : null}
+          {canManage ? <Button type="primary" disabled={!data?.versions.length || !createRecovery.ready || createRecovery.busy || Boolean(createRecovery.request)} onClick={() => { setEditCreate(false); setCreateOpen(true); }}>新建周期</Button> : null}
         </Space>
       </Flex>
+
+      {canManage && (createRecovery.request || createRecovery.error) ? <Alert showIcon
+        type={createRecovery.error ? "error" : createRecovery.result?.cycle ? "success" : "warning"}
+        style={{ marginBottom: 16 }}
+        message={createRecovery.result?.cycle ? `已找回周期 #${createRecovery.result.cycle.id} · ${createRecovery.result.cycle.name}` : "周期创建结果待核对"}
+        description={<Space direction="vertical" size={8} style={{ width: "100%" }}>
+          <span>{createRecovery.error ?? (createRecovery.result?.cycle === null
+            ? "暂未找到已创建周期；可以重试原请求。若内容有误，明确修正后仍使用原编号，不能直接另建。"
+            : "原请求保存在当前账号、浏览器和站点；刷新不自动重发。核对仅查询，不签认、不冻结计划。")}</span>
+          {createRecovery.request ? <>
+            <span style={{ overflowWrap: "anywhere" }}>原请求：{createRecovery.request.month} · {createRecovery.request.name} · 原计划 #{createRecovery.request.planningVersionId}</span>
+            {createRecovery.result?.cycle ? <span>当前：{STATUS_META[createRecovery.result.cycle.status].label} · 第 {createRecovery.result.cycle.version} 轮 · 计划 #{createRecovery.result.cycle.planningVersionId}。换计划不改变原创建依据。</span> : null}
+            {createRecovery.result?.cycle && !createRecovery.result.originalIntent ? <span>历史创建审计缺失或冲突，原意无法验证；请人工核对，不把当前计划当作原计划。</span> : null}
+            <Space wrap size={[8, 8]}>
+              <Button loading={createRecovery.busy} onClick={() => void createRecovery.lookup()}>核对周期结果</Button>
+              {!createRecovery.result?.cycle ? <Button disabled={createRecovery.busy} onClick={() => void createRecovery.submit()}>重试原创建请求</Button> : <>
+                <Button disabled={loading || createRecovery.busy} onClick={() => void load(createRecovery.result!.cycle!.id)}>查看原周期</Button>
+                <Button disabled={createRecovery.busy} onClick={() => void createRecovery.acknowledge()}>已核对，完成创建恢复</Button>
+              </>}
+              {createRecovery.result?.cycle === null ? <Button disabled={createRecovery.busy} onClick={() => {
+                const original = createRecovery.request!;
+                setMonth(dayjs(`${original.month}-01`)); setName(original.name); setPlanId(original.planningVersionId);
+                setEditCreate(true); setCreateOpen(true);
+              }}>修正原创建内容</Button> : null}
+            </Space>
+          </> : null}
+        </Space>} /> : null}
 
       <Alert
         type="info"
@@ -624,19 +661,27 @@ function SopWorkspace({ me }: { me: Me | null }) {
       ) : null}
 
       <Modal
-        title="新建月度 S&OP 周期"
+        title={editCreate ? "修正原周期创建请求（保留原编号）" : "新建月度 S&OP 周期"}
         open={createOpen}
-        okText="创建并进入共识"
-        confirmLoading={saving}
-        okButtonProps={{ disabled: !planId || name.trim().length < 2 }}
+        okText={editCreate ? "核对后修正并重试" : "创建并进入共识"}
+        confirmLoading={createRecovery.busy}
+        okButtonProps={{ disabled: !planId || name.trim().length < 2 || !createRecovery.ready || Boolean(createRecovery.request && !editCreate) }}
         onOk={() => void createCycle()}
-        onCancel={() => setCreateOpen(false)}
+        closable={!createRecovery.busy}
+        maskClosable={!createRecovery.busy}
+        keyboard={!createRecovery.busy}
+        cancelButtonProps={{ disabled: createRecovery.busy }}
+        onCancel={() => { if (!createRecovery.busy) setCreateOpen(false); }}
       >
         <Space direction="vertical" size={14} style={{ width: "100%" }}>
-          <DatePicker picker="month" allowClear={false} value={month} onChange={(value) => value && setMonth(value)} style={{ width: "100%" }} />
-          <Input value={name} maxLength={100} placeholder="周期名称" onChange={(event) => setName(event.target.value)} />
+          {createRecovery.error ? <Alert type="error" showIcon message={createRecovery.error} description="输入已保留。可关闭窗口，使用页面上的核对或重试原请求；不要另外创建。" /> : null}
+          {editCreate ? <Alert type="info" showIcon message="先查询原编号；原周期若已成功，只找回它，不提交改动。尚未成功才使用同一编号提交修正内容。" /> : null}
+          <DatePicker aria-label="周期月份" disabled={createRecovery.busy || Boolean(createRecovery.request && !editCreate)} picker="month" allowClear={false} value={month} onChange={(value) => value && setMonth(value)} style={{ width: "100%" }} />
+          <Input aria-label="周期名称" disabled={createRecovery.busy || Boolean(createRecovery.request && !editCreate)} value={name} maxLength={100} placeholder="周期名称" onChange={(event) => setName(event.target.value)} />
           <Select
             value={planId}
+            aria-label="源计划版本"
+            disabled={createRecovery.busy || Boolean(createRecovery.request && !editCreate)}
             style={{ width: "100%" }}
             placeholder="选择不可变计划版本"
             options={data?.versions.map((version) => ({

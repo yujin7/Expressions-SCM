@@ -17,13 +17,13 @@ export type SopRole = (typeof SOP_ROLES)[number];
 export type SopStatus = "consensus" | "frozen" | "executing" | "closed";
 export type SopDecisionValue = "agree" | "reject";
 
-const monthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "月份格式须为 YYYY-MM");
+const monthSchema = z.string().regex(/^(?!0000)\d{4}-(0[1-9]|1[0-2])$/, "月份须为有效的 YYYY-MM");
 
 export const createSopCycleSchema = z.object({
   month: monthSchema,
   name: z.string().trim().min(2).max(100),
   planningVersionId: z.number().int().positive(),
-  idempotencyKey: z.string().uuid(),
+  idempotencyKey: z.string().uuid().transform(key => key.toLowerCase()),
 });
 
 export const changeSopPlanSchema = z.object({
@@ -307,7 +307,7 @@ async function currentDecisions(cycleId: number, version: number, db: AnyDb) {
   return { rows, latest };
 }
 
-export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb): Promise<SopWorkspace> {
+export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb, cycleSelection?: { id: number; only: boolean }): Promise<SopWorkspace> {
   requireAnyRole(user, "pmc", "purchasing", "ops", "finance");
   const db = await resolveDb(dbArg);
   const [versions, cycleRows] = await Promise.all([
@@ -328,9 +328,15 @@ export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb): Promise
     db
       .select()
       .from(schema.sopCycles)
+      .where(cycleSelection?.only ? eq(schema.sopCycles.id, cycleSelection.id) : undefined)
       .orderBy(desc(schema.sopCycles.month), desc(schema.sopCycles.id))
       .limit(24),
   ]);
+  if (cycleSelection && !cycleRows.some(row => row.id === cycleSelection.id)) {
+    const [exact] = await db.select().from(schema.sopCycles).where(eq(schema.sopCycles.id, cycleSelection.id));
+    if (!exact) throw new ApiError(404, "S&OP 周期不存在");
+    cycleRows.push(exact);
+  }
   const versionById = new Map(versions.map((version) => [version.id, version]));
   const cycles: SopCycle[] = [];
   for (const row of cycleRows) {
@@ -387,6 +393,45 @@ export async function getSopWorkspace(user: SessionUser, dbArg?: AnyDb): Promise
   };
 }
 
+const cycleCreationIntentSchema = createSopCycleSchema.omit({ idempotencyKey: true }).extend({
+  planDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+/** Original creation audit is append-only; current planningVersionId can legitimately change. */
+async function originalCycleIntent(db: AnyDb, cycle: typeof schema.sopCycles.$inferSelect) {
+  const rows = await db.select({ userId: schema.auditLogs.userId, after: schema.auditLogs.after })
+    .from(schema.auditLogs).where(and(eq(schema.auditLogs.entity, "sop_cycle"),
+      eq(schema.auditLogs.entityId, cycle.id), eq(schema.auditLogs.action, "create"))).limit(2);
+  if (rows.length !== 1 || rows[0].userId !== cycle.createdBy) return null;
+  const intent = cycleCreationIntentSchema.safeParse(rows[0].after);
+  return intent.success ? intent.data : null;
+}
+
+async function ownedCreationCycle(db: AnyDb, actor: SessionUser, requestKey: string) {
+  const rows: (typeof schema.sopCycles.$inferSelect)[] = await db.select().from(schema.sopCycles)
+    .where(sql`lower(${schema.sopCycles.idempotencyKey}) = ${requestKey}`).limit(2);
+  if (rows.length > 1) throw new ApiError(409, "创建请求编号存在历史歧义，请人工核对周期；未创建新周期");
+  const cycle = rows[0];
+  if (cycle && cycle.createdBy !== actor.id) throw new ApiError(403, "只能核对本人发起的周期创建请求");
+  return cycle ?? null;
+}
+
+/** Same request lock as POST: an in-flight commit cannot be mistaken for a missing request. */
+export async function getSopCycleCreationResult(user: SessionUser, requestKey: string, dbArg?: AnyDb) {
+  const key = z.string().uuid().parse(requestKey).toLowerCase();
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('sop-create'), hashtext(${key}))`);
+    const cycle = await ownedCreationCycle(tx, actor, key);
+    if (!cycle) return { requestKey: key, cycle: null, originalIntent: null };
+    return { requestKey: key, cycle: { id: cycle.id, month: cycle.month, name: cycle.name,
+      status: cycle.status, version: cycle.version, planningVersionId: cycle.planningVersionId },
+      originalIntent: await originalCycleIntent(tx, cycle) };
+  });
+}
+
 export async function createSopCycle(
   user: SessionUser,
   input: unknown,
@@ -402,10 +447,13 @@ export async function createSopCycle(
       actor = await currentWriteActor(tx, user);
       requireAnyRole(actor, "pmc");
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('sop-create'), hashtext(${value.idempotencyKey}))`);
-      const [existing] = await tx.select().from(schema.sopCycles)
-        .where(eq(schema.sopCycles.idempotencyKey, value.idempotencyKey));
+      const existing = await ownedCreationCycle(tx, actor, value.idempotencyKey);
       if (existing) {
-        if (existing.createdBy !== actor.id) throw new ApiError(409, "该创建请求已由其他用户使用，请刷新后核对周期");
+        const intent = await originalCycleIntent(tx, existing);
+        if (!intent) throw new ApiError(409, "原周期创建依据缺失或冲突，请核对原周期；不能把当前计划当作原创建内容");
+        if (intent.month !== value.month || intent.name !== value.name || intent.planningVersionId !== value.planningVersionId) {
+          throw new ApiError(409, "同一创建请求的月份、名称或原始计划已变化，请核对原周期；未创建或修改周期");
+        }
         id = existing.id;
         replayed = true;
         return;
@@ -434,8 +482,10 @@ export async function createSopCycle(
     }
     throw error;
   }
-  const workspace = await getSopWorkspace(actor, db);
-  const created = workspace.cycles.find((cycle) => cycle.id === id)!;
+  // Exact lookup: recovery must not depend on the latest-24 workspace preview.
+  const workspace = await getSopWorkspace(actor, db, { id, only: true });
+  const created = workspace.cycles.find(cycle => cycle.id === id);
+  if (!created) throw new ApiError(409, "周期创建结果待核对，请用原请求编号核对；不要重新创建");
   // W2-#5：新周期一开就得让三方知道要签认，否则它从第一天起就停在「等某个人」上
   if (!replayed) await notifySop(db, awaitingItems(created, pendingRoles(created.currentDecisions, created.planDigest)));
   return created;
