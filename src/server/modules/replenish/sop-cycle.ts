@@ -865,13 +865,12 @@ export async function executeFrozenPlan(
   }
   if (picked.length > 200) throw new ApiError(400, "一次最多 200 项，请分批开单");
 
-  const { createBh } = await import("@/server/modules/outsource/bh");
-  const delegate: SessionUser = user.roles.includes("ops") ? user : { ...user, roles: [...user.roles, "ops"] };
+  const { createDerivedBh } = await import("@/server/modules/outsource/bh");
   const skuIds = picked.map((l) => l.skuId);
   let doc: { id: number; docNo: string };
   try {
-    doc = await createBh(
-      delegate,
+    doc = await createDerivedBh(
+      user, "sop",
       {
         remark: value.remark?.trim() || `按冻结 S&OP 计划开单（${cycle.name}／版本 #${plan.id}，人工确认）`,
         lines: picked.map((l) => ({ skuId: l.skuId, qty: l.suggestedQty })),

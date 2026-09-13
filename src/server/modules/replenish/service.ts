@@ -33,7 +33,7 @@ import { backtest } from "@/server/rules/backtest";
 import { classifyAbc } from "@/server/rules/abc";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { createBh } from "@/server/modules/outsource/bh";
+import { createDerivedBh } from "@/server/modules/outsource/bh";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { todayShanghai } from "@/server/modules/master/common";
 import { lastMonths } from "@/server/core/velocity";
@@ -1279,9 +1279,8 @@ export const createReplenishDraftSchema = z.object({
 export type CreateReplenishDraftInput = z.infer<typeof createReplenishDraftSchema>;
 
 /**
- * 将勾选的补货建议生成 ONE 张 BH 备货申请草稿（复用 outsource/bh.createBh，走正常审批流）。
- * 权限：pmc（admin 兜底）——本函数即人工闸的授权边界；createBh 内的 ops 门针对 BH 直录路径，
- * 故以补充 ops 角色的委托身份调用（审计仍记真实 userId，另落 replenish 来源审计）。
+ * 将勾选的补货建议生成一张BH草稿，走正常审批流。
+ * 派生入口事务内回查真实PMC/admin身份；来源审计与单据同成同败，不补造ops角色。
  */
 export async function createReplenishDraft(
   user: SessionUser,
@@ -1294,24 +1293,19 @@ export async function createReplenishDraft(
   const { assertLiveSuggestionsWritable } = await import("./sop-cycle");
   await assertLiveSuggestionsWritable(db);
 
-  const delegate: SessionUser = user.roles.includes("ops")
-    ? user
-    : { ...user, roles: [...user.roles, "ops"] };
-  const doc = await createBh(
-    delegate,
+  const doc = await createDerivedBh(
+    user, "replenish",
     {
       remark: v.remark?.trim() ? v.remark.trim() : "由补货建议页生成（R11，人工确认）",
       lines: v.items.map((i) => ({ skuId: i.skuId, qty: i.qty })),
     },
     db,
+    { inTx: async (tx, created) => {
+      await writeAudit(tx, {
+        userId: user.id, entity: "replenish", entityId: created.id, action: "draft_bh",
+        after: { docNo: created.docNo, lineCount: v.items.length, source: "replenish_suggestion" },
+      });
+    } },
   );
-  // createBh 内已按 bh 实体留痕；此处补一条来源审计（replenish → bh）
-  await writeAudit(db, {
-    userId: user.id,
-    entity: "replenish",
-    entityId: doc.id,
-    action: "draft_bh",
-    after: { docNo: doc.docNo, lineCount: v.items.length, source: "replenish_suggestion" },
-  });
   return { id: doc.id, docNo: doc.docNo };
 }
