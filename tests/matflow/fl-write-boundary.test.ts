@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import * as s from "@/db/schema";
 import * as audit from "@/server/core/audit";
-import { createFl, submitFl } from "@/server/modules/matflow/fl";
+import { createFl, submitFl, updateFl } from "@/server/modules/matflow/fl";
 import { createTestDb } from "../helpers/db";
 
 let f: Awaited<ReturnType<typeof createTestDb>>, product: number, material: number, supplier: number, warehouse: number, wo: number, maker: number, seq = 0;
@@ -37,36 +37,36 @@ async function snapshot() {
     counters: await f.db.select().from(s.docCounters), audit: await f.db.select().from(s.auditLogs),
     ledger: await f.db.select().from(s.stockLedger), balances: await f.db.select().from(s.stockBalances) };
 }
-for (const kind of ["create", "submit"] as const) {
+for (const kind of ["create", "submit", "update"] as const) {
   it(`${kind}: audit failure rolls back header, lines, number, status and version; deliberate retry commits once`, async () => {
-    const a = await setup(), doc = kind === "submit" ? await createFl(a.user, a.input, f.db) : null;
-    const run = () => doc ? submitFl(a.user, doc.id, doc.version, f.db) : createFl(a.user, a.input, f.db);
+    const a = await setup(), doc = kind !== "create" ? await createFl(a.user, a.input, f.db) : null;
+    const run = () => doc ? kind === "update" ? updateFl(a.user, doc.id, { version: doc.version, fromWarehouseId: doc.fromWarehouseId, toWarehouseId: doc.toWarehouseId, lines: [{ skuId: material, qty: "1.2345", batchId: null }] }, f.db) : submitFl(a.user, doc.id, doc.version, f.db) : createFl(a.user, a.input, f.db);
     const before = await snapshot();
     vi.spyOn(audit, "writeAudit").mockRejectedValueOnce(Error("FL audit unavailable"));
     await expect(run()).rejects.toThrow("FL audit unavailable");
     expect(await snapshot()).toEqual(before);
-    const saved = await run(); expect(saved.status).toBe(doc ? "pending" : "draft");
+    const saved = await run(); expect(saved.status).toBe(kind === "submit" ? "pending" : "draft");
     expect((await f.db.select().from(s.flLines).where(eq(s.flLines.flId, saved.id)))[0].qty).toBe("1.2345");
     expect(await f.db.select().from(s.stockLedger)).toHaveLength(0);
     if (doc) {
       await expect(run()).rejects.toMatchObject({ status: 409 });
-      expect(await f.db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "fl"), eq(s.auditLogs.entityId, doc.id), eq(s.auditLogs.action, "submit")))).toHaveLength(1);
+      expect(await f.db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "fl"), eq(s.auditLogs.entityId, doc.id), eq(s.auditLogs.action, kind === "update" ? "update_draft" : "submit")))).toHaveLength(1);
     }
   });
   it.each(["disabled", "session", "role"])(`${kind}: current %s restriction overrides stale caller identity`, async reason => {
-    const a = await setup(), doc = kind === "submit" ? await createFl(a.user, a.input, f.db) : null;
+    const a = await setup(), doc = kind !== "create" ? await createFl(a.user, a.input, f.db) : null;
     if (doc && reason === "role") await f.db.update(s.flDocs).set({ createdBy: maker }).where(eq(s.flDocs.id, doc.id));
     await f.db.update(s.users).set(reason === "disabled" ? { active: false } : reason === "session"
       ? { sessionVersion: a.user.sessionVersion + 1 } : { roles: ["ops"] }).where(eq(s.users.id, a.user.id));
     const before = await snapshot();
-    await expect(doc ? submitFl(a.user, doc.id, doc.version, f.db) : createFl(a.user, a.input, f.db)).rejects.toMatchObject({ status: reason === "session" ? 401 : 403 });
+    await expect(doc ? kind === "update" ? updateFl(a.user, doc.id, { version: doc.version, fromWarehouseId: doc.fromWarehouseId, toWarehouseId: doc.toWarehouseId, lines: [{ skuId: material, qty: "1", batchId: null }] }, f.db) : submitFl(a.user, doc.id, doc.version, f.db) : createFl(a.user, a.input, f.db)).rejects.toMatchObject({ status: reason === "session" ? 401 : 403 });
     expect(await snapshot()).toEqual(before);
   });
   it.each(["draft", "pending", "completed", "closed", "void"] as const)(`${kind}: JG %s cannot introduce another issue request`, async status => {
-    const a = await setup(), doc = kind === "submit" ? await createFl(a.user, a.input, f.db) : null;
+    const a = await setup(), doc = kind !== "create" ? await createFl(a.user, a.input, f.db) : null;
     await f.db.update(s.jgDocs).set({ status }).where(eq(s.jgDocs.id, a.jg.id));
     const before = await snapshot();
-    await expect(doc ? submitFl(a.user, doc.id, doc.version, f.db) : createFl(a.user, a.input, f.db)).rejects.toMatchObject({ status: 409 });
+    await expect(doc ? kind === "update" ? updateFl(a.user, doc.id, { version: doc.version, fromWarehouseId: doc.fromWarehouseId, toWarehouseId: doc.toWarehouseId, lines: [{ skuId: material, qty: "1", batchId: null }] }, f.db) : submitFl(a.user, doc.id, doc.version, f.db) : createFl(a.user, a.input, f.db)).rejects.toMatchObject({ status: 409 });
     expect(await snapshot()).toEqual(before);
   });
 }

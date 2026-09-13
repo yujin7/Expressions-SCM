@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
-   approvalConfigs, batches, flDocs, flLines, jgDocs, skus, users, warehouses, woLines,
+   approvalConfigs, batches, flDocs, flLines, jgDocs, skus, stockLedger, users, warehouses, woLines,
 } from "@/db/schema";
 import { dAdd, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -20,10 +20,11 @@ import {
   ACTIVE_DOC_STATUSES, completeApprovedDoc, getJgForMatflow, getOutsourceWarehouseOf,
   requireRealtimeWarehouse, lockMatflowJg, lockMatflowWarehouses, matflowSourceBlock,
 } from "./common-notes";
-import { createFlSchema } from "./schemas";
+import { createFlSchema, updateFlSchema } from "./schemas";
+import { outboundBatchBlock } from "@/server/posting/batch-eligibility";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
 import { skuLineMatch } from "@/server/core/doc-search";
-import { materialExcess, materialTaskActions } from "./task-actions";
+import { canEditFlDraft, materialExcess, materialTaskActions } from "./task-actions";
 
 /**
  * 发料单 FL（《01》§3/§4）：自有仓 → 委外仓，按 wo_line 预填；
@@ -86,6 +87,49 @@ export async function createFl(user: SessionUser, input: unknown, dbArg?: AnyDb)
       after: { docNo: doc.docNo, jgId: jg.id, toWarehouseId: toWh.id, lineCount: allocatedLines.length },
     });
     return doc;
+  });
+}
+
+// ---------- 草稿纠正：原单/原审批历史保留，不过账、不自动换批 ----------
+
+export async function updateFl(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<FlRow> {
+  const v = updateFlSchema.parse(input), db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "warehouse");
+    const [source]: FlRow[] = await tx.select().from(flDocs).where(eq(flDocs.id, id));
+    if (!source) throw new ApiError(404, "发料单不存在");
+    await lockMatflowJg(tx, source.jgId);
+    const [doc]: FlRow[] = await tx.select().from(flDocs).where(eq(flDocs.id, id)).for("update");
+    if (!doc || doc.jgId !== source.jgId) throw new ApiError(409, "发料来源已变化，请重新读取核对");
+    if (doc.status !== "draft") throw new ApiError(409, "仅草稿或已驳回的发料单可修改；待审批先驳回，已生效单据不可改写");
+    if (!canEditFlDraft(actor, doc)) throw new ApiError(403, "仅当前具备仓管权限的制单人或管理员可修改发料草稿");
+    if (doc.version !== v.version) throw new ApiError(409, "单据版本已变化，请重新读取核对，未覆盖他人的修改");
+    const [posted] = await tx.select({ id: stockLedger.id }).from(stockLedger)
+      .where(and(eq(stockLedger.sourceDocType, "fl_issue"), eq(stockLedger.sourceDocId, id))).limit(1);
+    if (posted) throw new ApiError(409, "原单已有库存流水，不可按草稿改写；请联系仓管核对纠错");
+    const jg = await getJgForMatflow(tx, doc.jgId);
+    await lockMatflowWarehouses(tx, [doc.fromWarehouseId, doc.toWarehouseId, v.fromWarehouseId, v.toWarehouseId]);
+    await requireRealtimeWarehouse(tx, v.fromWarehouseId, "发料源仓");
+    await getOutsourceWarehouseOf(tx, jg.supplierId, v.toWarehouseId);
+    const ids = [...new Set(v.lines.map(line => line.skuId))];
+    const eligible: { id: number }[] = await tx.select({ id: skus.id }).from(skus).where(and(inArray(skus.id, ids), eq(skus.active, true)));
+    if (eligible.length !== ids.length) throw new ApiError(409, "明细包含不存在或已停用的SKU，请重新核对");
+    const lines = v.lines.map(line => ({ skuId: line.skuId, qty: dQty(line.qty), batchId: line.batchId }));
+    const block = await outboundBatchBlock(tx, { sourceDocType: "fl_issue", sourceDocId: id, action: "post",
+      lines: lines.map((line, index) => ({ ...line, sourceLineId: index + 1, warehouseId: v.fromWarehouseId, qtyDelta: dNeg(line.qty) })) });
+    if (block) throw new PostingError(block.code, block.message);
+    const beforeLines: FlLineRow[] = await tx.select().from(flLines).where(eq(flLines.flId, id)).orderBy(flLines.id);
+    const [saved]: FlRow[] = await tx.update(flDocs).set({ fromWarehouseId: v.fromWarehouseId, toWarehouseId: v.toWarehouseId,
+      remark: v.remark ?? null, version: sql`${flDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(flDocs.id, id), eq(flDocs.status, "draft"), eq(flDocs.version, v.version))).returning();
+    if (!saved) throw new ApiError(409, "版本冲突，请重新读取核对");
+    await tx.delete(flLines).where(eq(flLines.flId, id));
+    const afterLines: FlLineRow[] = await tx.insert(flLines).values(lines.map(line => ({ ...line, flId: id }))).returning();
+    await writeAudit(tx, { userId: actor.id, entity: "fl", entityId: id, action: "update_draft",
+      before: { version: doc.version, fromWarehouseId: doc.fromWarehouseId, toWarehouseId: doc.toWarehouseId, remark: doc.remark, lines: beforeLines },
+      after: { version: saved.version, fromWarehouseId: saved.fromWarehouseId, toWarehouseId: saved.toWarehouseId, remark: saved.remark, lines: afterLines } });
+    return saved;
   });
 }
 
@@ -237,6 +281,7 @@ export async function getFl(id: number, dbArg?: AnyDb, user?: SessionUser) {
       version: flDocs.version,
       jgId: flDocs.jgId,
       jgDocNo: jgDocs.docNo,
+      supplierId: jgDocs.supplierId,
       fromWarehouseId: flDocs.fromWarehouseId,
       fromWarehouseName: fromWh.name,
       toWarehouseId: flDocs.toWarehouseId,
@@ -267,7 +312,7 @@ export async function getFl(id: number, dbArg?: AnyDb, user?: SessionUser) {
     })
     .from(flLines)
     .innerJoin(skus, eq(flLines.skuId, skus.id))
-    .leftJoin(batches, eq(flLines.batchId, batches.id))
+    .leftJoin(batches, and(eq(flLines.batchId, batches.id), eq(flLines.skuId, batches.skuId)))
     .where(eq(flLines.flId, id))
     .orderBy(flLines.id);
 
@@ -293,7 +338,8 @@ export async function getFl(id: number, dbArg?: AnyDb, user?: SessionUser) {
     const relevantCum = new Map(lines.map(l => [l.skuId, cum.get(l.skuId) ?? "0"]));
     const quantityBlock = !lines.length ? "发料单无明细，请核对单据。"
       : materialExcess(lines, relevantCum, gross) && !user.roles.includes("admin") ? "本单会超出工单毛需求，超发需管理员审批。" : null;
-    actions = materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock);
+    actions = { ...materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock),
+      edit: canEditFlDraft(user, doc) && !sourceBlock };
   }
   return { ...doc, lines, requirements, approvals: approvalRows, actions };
 }

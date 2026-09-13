@@ -6,6 +6,11 @@ export function canCreateMaterialDoc(user: SessionUser) {
   return user.roles.includes("admin") || user.roles.includes("warehouse");
 }
 
+export function canEditFlDraft(user: SessionUser, doc: { status: string; createdBy: number | null }) {
+  return doc.status === "draft" && canCreateMaterialDoc(user)
+    && (doc.createdBy === user.id || user.roles.includes("admin"));
+}
+
 /** Same per-SKU predicate for action hints and transactional approval; no cross-material netting. */
 export function materialExcess(lines: readonly { skuId: number; qty: string }[], cumulative: ReadonlyMap<number, string>, limits: ReadonlyMap<number, string>) {
   const totals = new Map(cumulative);
