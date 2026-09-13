@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
@@ -30,6 +30,11 @@ beforeAll(async () => {
   factoryId = factory.id;
 });
 afterAll(async () => client?.close());
+afterEach(async () => {
+  deps.fail = false;
+  await db.update(schema.users).set({ active: true, roles: ["pmc"], sessionVersion: 1 }).where(eq(schema.users.id, actor.id));
+  await db.delete(schema.userDataScopes).where(eq(schema.userDataScopes.userId, actor.id));
+});
 async function fixture(category = "inventory_cover") {
   const key = randomUUID();
   const [spu] = await db.insert(schema.spus).values({ code: `CAP-SPU-${key}`, nameCn: "合成产能产品" }).returning();
@@ -91,19 +96,20 @@ it("refuses a different task source, reassigned/closed task or inactive owner wi
   const empty = await getCapacityCheck(actor, f.query, db); expect(empty.handoff?.items).toEqual([]);
   await db.update(schema.workItems).set({ status: "open", completedAt: null }).where(eq(schema.workItems.id, f.item.id));
   await db.update(schema.users).set({ active: false }).where(eq(schema.users.id, actor.id));
-  try { await expect(attachCapacityCheck(f.input, actor, db)).rejects.toMatchObject({ status: 409 }); }
+  try { await expect(attachCapacityCheck(f.input, actor, db)).rejects.toMatchObject({ status: 403 }); }
   finally { await db.update(schema.users).set({ active: true }).where(eq(schema.users.id, actor.id)); }
 });
 it("task access cannot grant source access; revoked channel scope blocks replay and redacts historical evidence", async () => {
   const f = await fixture("sales_spike"); await attachCapacityCheck(f.input, actor, db);
   const limited = { ...actor, channelScope: [2147483647] };
   await expect(getCapacityCheck(limited, f.query, db)).rejects.toMatchObject({ status: 404 });
+  await db.insert(schema.userDataScopes).values({ userId: actor.id, scopeKind: "channel", targetId: 2147483647, createdBy: actor.id });
   await expect(attachCapacityCheck(f.input, limited, db)).rejects.toMatchObject({ status: 404 });
   const history = await listWorkItemHistory(f.item.id, {}, limited, db);
   expect(history.rows[0].note).toContain("当前无权读取");
   expect(JSON.stringify(history)).not.toContain(f.sku.code);
   await expect(attachCapacityCheck(f.input, stranger, db)).rejects.toMatchObject({ status: 403 });
-  await expect(attachCapacityCheck(f.input, { ...stranger, roles: ["purchasing"] }, db)).rejects.toMatchObject({ status: 404 });
+  await expect(attachCapacityCheck(f.input, { ...stranger, roles: ["purchasing"] }, db)).rejects.toMatchObject({ status: 403 });
 });
 it("historical channel scope stays frozen when the current alert or shop attribution narrows", async () => {
   const f = await fixture("sales_spike"), key = randomUUID();
@@ -164,4 +170,66 @@ it("audit failure rolls back, explicit retry persists once, and the API rejects 
   expect((await POST(request(f.input))).status).toBe(200);
   expect((await GET(new NextRequest(`http://localhost/api/outsource/sourcing-aid?mode=capacity&skuId=${f.sku.id}&alertId=${f.alert.id}&alertId=${f.alert.id}`))).status).toBe(400);
   deps.user.mockResolvedValue(stranger); expect((await POST(request(f.input))).status).toBe(403);
+});
+
+it.each([
+  ["new", "disabled", 403], ["replay", "disabled", 403],
+  ["new", "role", 403], ["replay", "role", 403],
+  ["new", "session", 401], ["replay", "session", 401],
+] as const)("%s evidence rejects a %s actor even when the caller retains the old identity", async (mode, change, status) => {
+  const f = await fixture();
+  const [person] = await db.select().from(schema.users).where(eq(schema.users.id, actor.id));
+  const stale = { ...actor, sessionVersion: person.sessionVersion };
+  if (mode === "replay") await attachCapacityCheck(f.input, stale, db);
+  const before = await db.select().from(schema.auditLogs);
+  await db.update(schema.users).set(change === "disabled" ? { active: false }
+    : change === "role" ? { roles: ["warehouse"] } : { sessionVersion: person.sessionVersion + 1 })
+    .where(eq(schema.users.id, actor.id));
+  await expect(attachCapacityCheck(f.input, stale, db)).rejects.toMatchObject({ status });
+  expect(await db.select().from(schema.auditLogs)).toEqual(before);
+  expect((await db.select().from(schema.workItems).where(eq(schema.workItems.id, f.item.id)))[0]).toEqual(f.item);
+});
+
+it.each(["new", "replay"])("%s evidence loads current channel scope rather than trusting unbounded caller scope", async mode => {
+  const f = await fixture("sales_spike");
+  if (mode === "replay") await attachCapacityCheck(f.input, actor, db);
+  const before = await db.select().from(schema.auditLogs);
+  await db.insert(schema.userDataScopes).values({ userId: actor.id, scopeKind: "channel", targetId: 2147483647, createdBy: actor.id });
+  await expect(attachCapacityCheck(f.input, { ...actor, channelScope: null }, db)).rejects.toMatchObject({ status: 404 });
+  expect(await db.select().from(schema.auditLogs)).toEqual(before);
+});
+
+it("a missing identity and a forged caller admin role cannot append an event", async () => {
+  const f = await fixture(), before = await db.select().from(schema.auditLogs);
+  await expect(attachCapacityCheck(f.input, { ...actor, id: 2147483647, roles: ["admin"] }, db)).rejects.toMatchObject({ status: 403 });
+  await expect(attachCapacityCheck(f.input, { ...stranger, roles: ["admin"] }, db)).rejects.toMatchObject({ status: 403 });
+  expect(await db.select().from(schema.auditLogs)).toEqual(before);
+});
+
+it("current database role permits the legitimate writer without borrowing stale caller roles", async () => {
+  const f = await fixture();
+  const saved = await attachCapacityCheck(f.input, { ...actor, roles: ["warehouse"] }, db);
+  expect(saved.replayed).toBe(false);
+  expect((await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.id, saved.eventId)))[0].userId).toBe(actor.id);
+});
+
+it("HTTP preflight identity cannot bypass a subsequent database role revocation", async () => {
+  const f = await fixture(); deps.user.mockResolvedValue(actor);
+  await db.update(schema.users).set({ roles: ["warehouse"] }).where(eq(schema.users.id, actor.id));
+  const response = await POST(new NextRequest("http://localhost/api/outsource/sourcing-aid", { method: "POST", body: JSON.stringify(f.input) }));
+  expect(response.status).toBe(403);
+  expect((await listWorkItemHistory(f.item.id, {}, actor, db)).rows).toHaveLength(0);
+});
+
+it.each(["disabled", "role"])("%s writer is rejected even when a different, qualified owner remains available", async change => {
+  const f = await fixture();
+  const [owner] = await db.insert(schema.users).values({ name: "仍在职的实际负责人", roles: ["pmc"] }).returning();
+  await db.update(schema.workItems).set({ assigneeId: owner.id }).where(eq(schema.workItems.id, f.item.id));
+  const fresh = await getCapacityCheck(actor, f.query, db);
+  expect(fresh.handoff?.items[0].assigneeId).toBe(owner.id);
+  const input = { ...f.input, assigneeId: owner.id, evidenceKey: fresh.evidenceKey! };
+  const before = await db.select().from(schema.auditLogs);
+  await db.update(schema.users).set(change === "disabled" ? { active: false } : { roles: ["warehouse"] }).where(eq(schema.users.id, actor.id));
+  await expect(attachCapacityCheck(input, actor, db)).rejects.toMatchObject({ status: 403 });
+  expect(await db.select().from(schema.auditLogs)).toEqual(before);
 });

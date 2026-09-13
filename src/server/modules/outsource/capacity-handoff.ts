@@ -2,6 +2,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { auditLogs, workItems } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
+import { currentWriteActor } from "@/server/core/current-write-actor";
+import { loadUserScopes } from "@/server/core/data-scope";
 import type { SessionUser } from "@/server/core/dto";
 import { ApiError } from "@/server/modules/master/common";
 import { isWorkItemVisible } from "@/server/modules/todo/service";
@@ -17,11 +19,15 @@ export const capacityHandoffSchema = z.object({
 }).strict();
 
 /** Append evidence only, to the explicitly confirmed existing owner. No task projection or dispatch. */
-export async function attachCapacityCheck(raw: unknown, actor: SessionUser, dbArg?: AnyDb) {
-  requireAnyRole(actor, "purchasing", "pmc", "ops");
+export async function attachCapacityCheck(raw: unknown, user: SessionUser, dbArg?: AnyDb) {
   const input = capacityHandoffSchema.parse(raw);
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
+    // HTTP authentication can precede a concurrent role/scope change. Authorize the
+    // actual writer inside the owning transaction, including original-receipt replay.
+    const current = await currentWriteActor(tx, user);
+    requireAnyRole(current, "purchasing", "pmc", "ops");
+    const actor: SessionUser = { ...current, ...await loadUserScopes(tx, current.id) };
     const [item] = await tx.select().from(workItems).where(eq(workItems.id, input.workItemId)).for("update");
     if (!item || !isWorkItemVisible(item, actor)) throw new ApiError(404, "承接待办不存在或不可见");
     // Source authorization precedes replay too: a previous receipt must not bypass revoked scope.
