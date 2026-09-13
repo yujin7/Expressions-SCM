@@ -11,7 +11,8 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { fetchJson, patchJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
+import { clearTodoMutation, loadTodoMutation, prepareTodoMutation, submitTodoMutation, TODO_MUTATION_CHANGED, TODO_MUTATION_OPEN, withTodoMutationLock } from "@/components/todo-mutation-request";
 import CaliberNote from "@/components/CaliberNote";
 import { exportCsv } from "@/components/exportCsv";
 import ListToolbar from "@/components/ListToolbar";
@@ -26,6 +27,7 @@ import TodoProgressCard from "./TodoProgressCard";
 import TodoCreation from "./TodoCreation";
 import TodoHistoryDrawer from "./TodoHistoryDrawer";
 import TodoNoteRecovery from "./TodoNoteRecovery";
+import TodoMutationRecovery from "./TodoMutationRecovery";
 import styles from "./todo-client.module.css";
 
 export interface WorkItemRow {
@@ -115,8 +117,22 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
   const [loadError, setLoadError] = useState<string | null>(null);
   const loadRequest = useRef<AbortController | null>(null);
   const pendingIds = useRef(new Set<number>());
+  const mutationLife = useRef(0);
+  useEffect(() => { const generation = ++mutationLife.current; return () => { mutationLife.current = generation + 1; }; }, []);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set());
-  const [feedback, setFeedback] = useState<{ row: WorkItemRow; text: string; type: "success" | "warning" | "error" } | null>(null);
+  const [feedback, setFeedback] = useState<{ row: WorkItemRow; text: string; type: "success" | "warning" | "error"; recoverable?: boolean } | null>(null);
+  const actorId = me?.id;
+  useEffect(() => {
+    if (!actorId) return;
+    const reconciled = () => {
+      try {
+        if (!loadTodoMutation(localStorage, actorId)) setFeedback(prior => prior?.recoverable ? null : prior);
+      } catch { /* The independent recovery entry reports unreadable storage; keep the warning. */ }
+    };
+    window.addEventListener(TODO_MUTATION_CHANGED, reconciled);
+    window.addEventListener("storage", reconciled);
+    return () => { window.removeEventListener(TODO_MUTATION_CHANGED, reconciled); window.removeEventListener("storage", reconciled); };
+  }, [actorId]);
   const [historyItem, setHistoryItem] = useState<WorkItemRow | null>(null);
   const listState = useListState<Filters>({
     key: `todo-${view}`,
@@ -155,23 +171,34 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
   }, [load, refreshKey]);
 
   const act = async (row: WorkItemRow, patch: { status?: string; assigneeId?: number }) => {
-    if (pendingIds.current.has(row.id) || loading || loadError) return;
+    if (!me || !mutationLife.current || pendingIds.current.has(row.id) || loading || loadError) return;
+    const generation = mutationLife.current, isCurrent = () => mutationLife.current === generation;
     pendingIds.current.add(row.id);
     setBusyIds(new Set(pendingIds.current));
     try {
-      const r = await patchJson<WorkItemRow>(`/api/todo/${row.id}`, { ...patch, requestId: crypto.randomUUID(), expectedVersion: row.version });
-      if (r.suspicious && patch.status === "done") message.warning("创建后不足 10 分钟即关闭，已标记为「可疑」（仅提示，不影响状态）");
-      else if (patch.status === "done") message.success("待办已完成");
-      else message.success("已更新");
-      setFeedback({ row, text: r.suspicious && patch.status === "done" ? "完成操作已保存；创建不足10分钟即关闭，已标记可疑（仅提示）" : patch.status === "done" ? "完成待办的操作已保存" : "更新操作已保存", type: r.suspicious && patch.status === "done" ? "warning" : "success" });
-      onChanged();
+      await withTodoMutationLock(me.id, async () => {
+        if (!isCurrent()) return;
+        const request = prepareTodoMutation(localStorage, me.id, row, patch);
+        window.dispatchEvent(new Event(TODO_MUTATION_CHANGED));
+        const result = await submitTodoMutation(request);
+        if (!isCurrent()) return;
+        clearTodoMutation(localStorage, me.id, request.requestId);
+        window.dispatchEvent(new Event(TODO_MUTATION_CHANGED));
+        const suspicious = result.receipt!.originalResult.suspicious && patch.status === "done";
+        if (suspicious) message.warning("创建后不足 10 分钟即关闭，已标记为「可疑」（仅提示，不影响状态）");
+        else message.success("原操作已保存");
+        setFeedback({ row, text: suspicious ? "完成操作已保存；创建不足10分钟即关闭，已标记可疑（仅提示）" : "原操作已保存，请以刷新后的当前任务状态为准", type: suspicious ? "warning" : "success" });
+        onChanged();
+      });
     } catch (e) {
       const text = e instanceof Error ? e.message : "更新结果未确认，请先核对待办，勿重复提交";
-      message.error(text);
-      setFeedback({ row, text, type: "error" });
+      if (isCurrent()) {
+        let recoverable = false;
+        try { recoverable = !!loadTodoMutation(localStorage, me.id); } catch { /* Storage failure is already visible; never erase it. */ }
+        message.error(text); setFeedback({ row, text, type: "error", recoverable });
+      }
     } finally {
-      pendingIds.current.delete(row.id);
-      setBusyIds(new Set(pendingIds.current));
+      if (isCurrent()) { pendingIds.current.delete(row.id); setBusyIds(new Set(pendingIds.current)); }
     }
   };
 
@@ -279,7 +306,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="待办列表" retrying={loading} />
       {feedback ? <Alert className={styles.feedback} type={feedback.type} showIcon closable onClose={() => setFeedback(null)}
         message={`#${feedback.row.id} ${feedback.row.title}：${feedback.text}`}
-        description={<span><a href={todoItemHref(feedback.row.id)}>核对该待办</a>{feedbackSource ? <> · {feedbackSource.completionHint} <a href={feedbackSource.href}>{feedbackSource.label}</a></> : null}</span>} /> : null}
+        description={<span>{feedback.recoverable ? <Button type="link" size="small" onClick={() => window.dispatchEvent(new CustomEvent(TODO_MUTATION_OPEN, { detail: me?.id }))}>恢复待核对操作</Button> : null}<a href={todoItemHref(feedback.row.id)}>核对该待办</a>{feedbackSource ? <> · {feedbackSource.completionHint} <a href={feedbackSource.href}>{feedbackSource.label}</a></> : null}</span>} /> : null}
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
         排序作用于当前筛选下的全部可见待办；未设截止日期排最后。清除排序后恢复状态 → 优先级 → 截止日期顺序。
       </Typography.Paragraph>
@@ -461,12 +488,13 @@ export default function TodoClient() {
   const assignees = useAssignees();
   const [tick, setTick] = useState(0);
   const bump = useCallback(() => setTick((t) => t + 1), []);
+  const actorKey = me ? `${me.id}:${me.roles.join(",")}` : "loading";
 
   const items = useMemo(() => [
-    { key: "mine", label: "我的待办", children: <ItemTable view="mine" prefix="mine" assignees={assignees} refreshKey={tick} onChanged={bump} /> },
-    { key: "all", label: "全部待办", children: <ItemTable view="all" prefix="all" assignees={assignees} refreshKey={tick} onChanged={bump} /> },
+    { key: "mine", label: "我的待办", children: <ItemTable key={actorKey} view="mine" prefix="mine" assignees={assignees} refreshKey={tick} onChanged={bump} /> },
+    { key: "all", label: "全部待办", children: <ItemTable key={actorKey} view="all" prefix="all" assignees={assignees} refreshKey={tick} onChanged={bump} /> },
     { key: "stats", label: "完成率", children: <StatsTab refreshKey={tick} /> },
-  ], [assignees, tick, bump]);
+  ], [assignees, tick, bump, actorKey]);
 
   return (
     <div>
@@ -479,6 +507,7 @@ export default function TodoClient() {
       />
       <div style={{ marginBottom: 12 }}><TodoProgressCard refreshKey={tick} /></div>
       {me ? <TodoNoteRecovery key={`${me.id}:${me.roles.join(",")}`} actorId={me.id} /> : null}
+      {me ? <TodoMutationRecovery key={actorKey} actorId={me.id} onChanged={bump} /> : null}
       <Tabs
         activeKey={activeTab}
         onChange={(tab) => router.push(todoTabHref(searchParams.toString(), tab), { scroll: false })}
