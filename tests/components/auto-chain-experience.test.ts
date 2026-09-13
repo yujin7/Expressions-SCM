@@ -159,7 +159,7 @@ it("renders exact large capacity and decimal suggested quantities without float 
   await begin();
   const columns = table().columns as Column[];
   const row = (table().dataSource as Row[])[0];
-  const capacity = columns.find(c => c.title === "到料可产")!.render!("999999999999980000000000", row);
+  const capacity = columns.find(c => c.title === "采购已收折算")!.render!("999999999999980000000000", row);
   expect(nodes(capacity)[0].props.children).toBe("999999999999980000000000");
   const suggested = columns.find(c => c.title === "建议新批")!.render!;
   expect(nodes(suggested("9.9000", row))[0].props.children).toBe("9.9");

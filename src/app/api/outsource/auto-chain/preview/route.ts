@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getFreshSessionUser, requireRole } from "@/server/core/dto";
+import { getFreshSessionUser } from "@/server/core/dto";
+import { requireAnyRole } from "@/server/modules/outsource/common";
 import { errorResponse } from "@/server/modules/master/common";
 import { previewAutoChain } from "@/server/modules/outsource/auto-chain";
 import { getNumParam } from "@/server/core/params";
@@ -8,7 +9,7 @@ import { getNumParam } from "@/server/core/params";
 export async function GET() {
   try {
     const user = await getFreshSessionUser();
-    requireRole(user, "pmc");
+    requireAnyRole(user, "pmc");
     const data = await previewAutoChain(undefined, user);
     const flags = {
       autoWoOnBh: (await getNumParam("auto_wo_on_bh", 0)) === 1,
