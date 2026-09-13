@@ -19,6 +19,7 @@ import { requireAnyRole } from "@/server/modules/outsource/common";
 import { appendPoPromiseRevisions, capturePoPromiseSnapshot } from "@/server/modules/outsource/po-promise";
 import type { SessionUser } from "@/server/core/dto";
 import { resolveDb } from "@/server/core/svc";
+import { currentWriteActor } from "@/server/core/current-write-actor";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle PGlite/Postgres structural compatibility is narrowed by the surrounding service contract
 type AnyDb = any;
@@ -31,23 +32,26 @@ export async function generateConfirmToken(
   poId: number,
   dbArg?: AnyDb,
 ): Promise<{ token: string; path: string }> {
-  requireAnyRole(user, "purchasing", "pmc");
   const db = await resolveDb(dbArg);
-  const [doc] = await db.select({ id: schema.poDocs.id, status: schema.poDocs.status }).from(schema.poDocs).where(eq(schema.poDocs.id, poId));
-  if (!doc) throw new ApiError(404, "采购单不存在");
-  if (!["approved", "in_progress"].includes(doc.status)) throw new ApiError(409, "仅已审批/执行中的采购单可生成供应商确认链接");
-  const token = randomUUID();
-  await db
-    .update(schema.poDocs)
-    .set({
-      confirmToken: token,
-      confirmTokenExpiresAt: new Date(Date.now() + CONFIRM_TOKEN_TTL_MS),
-      confirmTokenUsedAt: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.poDocs.id, poId));
-  await writeAudit(db, { userId: user.id, entity: "po", entityId: poId, action: "gen_confirm_token", after: { hasToken: true } });
-  return { token, path: `/supplier/confirm/${token}` };
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "purchasing", "pmc");
+    const [doc] = await tx.select({ id: schema.poDocs.id, status: schema.poDocs.status }).from(schema.poDocs).where(eq(schema.poDocs.id, poId)).for("update");
+    if (!doc) throw new ApiError(404, "采购单不存在");
+    if (!["approved", "in_progress"].includes(doc.status)) throw new ApiError(409, "仅已审批/执行中的采购单可生成供应商确认链接");
+    const token = randomUUID();
+    await tx
+      .update(schema.poDocs)
+      .set({
+        confirmToken: token,
+        confirmTokenExpiresAt: new Date(Date.now() + CONFIRM_TOKEN_TTL_MS),
+        confirmTokenUsedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.poDocs.id, poId));
+    await writeAudit(tx, { userId: actor.id, entity: "po", entityId: poId, action: "gen_confirm_token", after: { hasToken: true } });
+    return { token, path: `/supplier/confirm/${token}` };
+  });
 }
 
 export interface PublicPoView {

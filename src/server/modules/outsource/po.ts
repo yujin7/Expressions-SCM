@@ -19,6 +19,7 @@ import { skuLineMatch } from "@/server/core/doc-search";
 import { transitionDoc } from "@/server/docflow/transition";
 import { currentPriceListRow } from "./price-list";
 import { currentWriteActor } from "@/server/core/current-write-actor";
+import { loadPoTaskActions } from "./po-task-actions";
 import { assertJgFeeMutable } from "@/server/core/jg-fee-boundary";
 import { SELECTED_OPTIONS_LIMIT, selectedOptionsPredicate, type SelectedOptionValue } from "@/server/core/selected-options";
 
@@ -82,94 +83,104 @@ async function findBaseline(db: AnyDb, supplierId: number, skuId: number, exclud
 
 export async function submitPo(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<PoRow> {
   const db = await resolveDb(dbArg);
-  const [doc]: PoRow[] = await db.select().from(poDocs).where(eq(poDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("purchasing") && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人/采购/管理员可提交");
-  }
-  if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-
-  const lines: PoLineRow[] = await db.select().from(poLines).where(eq(poLines.poId, id)).orderBy(poLines.id);
-  if (lines.length === 0) throw new ApiError(409, "PO 无行，不可提交");
-  // D63/D64 OTIF 前置：承诺交期必填（sys_params po_expected_date_required=1 开启；表头或逐行任一有值即可）
-  if ((await getNumParam("po_expected_date_required", 0, db)) >= 1 && !doc.expectedDate) {
-    const missing = lines.filter((l) => !l.expectedDate).length;
-    if (missing > 0) {
-      throw new ApiError(409, `承诺交期必填：表头未填预计交期且 ${missing} 行缺行交期（运行参数 po_expected_date_required 可关闭）`);
+  const result: { document?: PoRow; blocking?: string[] } = await db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    const [doc]: PoRow[] = await tx.select().from(poDocs).where(eq(poDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== actor.id && !actor.roles.includes("purchasing") && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人/采购/管理员可提交");
     }
-  }
-  const tolerancePct = await getTolerancePct(db);
+    if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+    if (doc.version !== version) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
 
-  // 逐行 R1：异动行需有「同价已批 PC」放行，否则挂/建 PC
-  const blocking: string[] = []; // 阻塞提交的 PC 单号（已存在 pending 或本次新建）
-  const toCreate: { line: PoLineRow; baseline: string | null; newBaseNet: string; deviationPct: string | null }[] = [];
-  for (const line of lines) {
-    const newBaseNet = normalizeToBaseNet({
-      price: line.price,
-      taxIncluded: line.taxIncluded,
-      taxRatePct: line.taxRatePct,
-      uomFactor: line.uomFactor,
-    });
-    const baseline = await findBaseline(db, doc.supplierId, line.skuId, id);
-    const r = checkPriceDeviation({ baselineBaseNet: baseline, newBaseNet, tolerancePct });
-    if (!r.requiresPc) continue; // 首购免检 / 容差内
-
-    const linePcs: PcRow[] = await db
-      .select()
-      .from(pcDocs)
-      .where(and(eq(pcDocs.target, "po_line"), eq(pcDocs.poLineId, line.id)));
-    // 放行条件：该行已有「审批通过且 newPrice=本次归一价」的 PC（视为价格变更已核准）
-    const cleared = linePcs.some((p) => p.status === "approved" && dCmp(p.newPrice, newBaseNet) === 0);
-    if (cleared) continue;
-    const open = linePcs.find((p) => p.status === "pending" && dCmp(p.newPrice, newBaseNet) === 0);
-    if (open) {
-      blocking.push(open.docNo); // 已有同价待审 PC——不重复建
-      continue;
-    }
-    toCreate.push({ line, baseline, newBaseNet, deviationPct: r.deviationPct });
-  }
-
-  if (toCreate.length > 0 || blocking.length > 0) {
-    // PC 创建须落库（独立事务提交后再抛 409——PO 保持草稿，是刻意行为而非回滚遗漏）
-    const created: string[] = await db.transaction(async (tx: AnyDb) => {
-      const nos: string[] = [];
-      for (const c of toCreate) {
-        const docNo = await nextDocNo(tx, "PC");
-        const [pc]: PcRow[] = await tx
-          .insert(pcDocs)
-          .values({
-            docNo,
-            status: "pending", // PC 直接进入待审批（由提交动作触发，无草稿态）
-            target: "po_line",
-            poLineId: c.line.id,
-            oldPrice: c.baseline ?? "0", // 首购不会走到这（requiresPc=false）；0 基准=数据异常强制复核
-            newPrice: c.newBaseNet,
-            deviationPct: c.deviationPct ?? "0",
-            scope: "unreceived_only", // MVP：提交时点未收货，PoC 固定仅未收
-            createdBy: user.id,
-          })
-          .returning();
-        await writeAudit(tx, {
-          userId: user.id, entity: "pc", entityId: pc.id, action: "create",
-          after: { docNo: pc.docNo, poId: id, poLineId: c.line.id, oldPrice: pc.oldPrice, newPrice: pc.newPrice, deviationPct: pc.deviationPct },
-        });
-        nos.push(pc.docNo);
+    const lines: PoLineRow[] = await tx.select().from(poLines).where(eq(poLines.poId, id)).orderBy(poLines.id).for("share");
+    if (lines.length === 0) throw new ApiError(409, "PO 无行，不可提交");
+    // D63/D64 OTIF 前置：承诺交期必填（sys_params po_expected_date_required=1 开启；表头或逐行任一有值即可）
+    if ((await getNumParam("po_expected_date_required", 0, tx)) >= 1 && !doc.expectedDate) {
+      const missing = lines.filter((l) => !l.expectedDate).length;
+      if (missing > 0) {
+        throw new ApiError(409, `承诺交期必填：表头未填预计交期且 ${missing} 行缺行交期（运行参数 po_expected_date_required 可关闭）`);
       }
-      return nos;
-    });
-    const all = [...blocking, ...created];
-    // PoC-honest：PO 提交被整单阻塞，直至其全部未决 PC 审批通过后重新提交
-    throw new ApiError(409, `存在价格异动，已生成价格变更申请 ${all.join("、")}，审批通过后方可提交`);
-  }
+    }
+    const tolerancePct = await getTolerancePct(tx);
 
-  const updated: PoRow[] = await db
-    .update(poDocs)
-    .set({ status: "pending", version: sql`${poDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(poDocs.id, id), eq(poDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "po", entityId: id, action: "submit" });
-  return updated[0];
+    // 逐行 R1：异动行需有「同价已批 PC」放行，否则挂/建 PC
+    const blocking: string[] = []; // 阻塞提交的 PC 单号（已存在 pending 或本次新建）
+    const toCreate: { line: PoLineRow; baseline: string | null; newBaseNet: string; deviationPct: string | null }[] = [];
+    for (const line of lines) {
+      const newBaseNet = normalizeToBaseNet({
+        price: line.price,
+        taxIncluded: line.taxIncluded,
+        taxRatePct: line.taxRatePct,
+        uomFactor: line.uomFactor,
+      });
+      const baseline = await findBaseline(tx, doc.supplierId, line.skuId, id);
+      const r = checkPriceDeviation({ baselineBaseNet: baseline, newBaseNet, tolerancePct });
+      if (!r.requiresPc) continue; // 首购免检 / 容差内
+
+      const linePcs: PcRow[] = await tx
+        .select()
+        .from(pcDocs)
+        .where(and(eq(pcDocs.target, "po_line"), eq(pcDocs.poLineId, line.id)));
+      // 放行条件：该行已有「审批通过且 newPrice=本次归一价」的 PC（视为价格变更已核准）
+      const cleared = linePcs.some((p) => p.status === "approved" && dCmp(p.newPrice, newBaseNet) === 0);
+      if (cleared) continue;
+      const open = linePcs.find((p) => p.status === "pending" && dCmp(p.newPrice, newBaseNet) === 0);
+      if (open) {
+        blocking.push(open.docNo); // 已有同价待审 PC——不重复建
+        continue;
+      }
+      toCreate.push({ line, baseline, newBaseNet, deviationPct: r.deviationPct });
+    }
+
+    if (toCreate.length > 0 || blocking.length > 0) {
+      // Commit the locked decision and its PC/audit effects, then report the deliberate 409 outside.
+      const created: string[] = await (async () => {
+        const nos: string[] = [];
+        for (const c of toCreate) {
+          const docNo = await nextDocNo(tx, "PC");
+          const [pc]: PcRow[] = await tx
+            .insert(pcDocs)
+            .values({
+              docNo,
+              status: "pending", // PC 直接进入待审批（由提交动作触发，无草稿态）
+              target: "po_line",
+              poLineId: c.line.id,
+              oldPrice: c.baseline ?? "0", // 首购不会走到这（requiresPc=false）；0 基准=数据异常强制复核
+              newPrice: c.newBaseNet,
+              deviationPct: c.deviationPct ?? "0",
+              scope: "unreceived_only", // MVP：提交时点未收货，PoC 固定仅未收
+              createdBy: actor.id,
+            })
+            .returning();
+          await writeAudit(tx, {
+            userId: actor.id, entity: "pc", entityId: pc.id, action: "create",
+            after: { docNo: pc.docNo, poId: id, poLineId: c.line.id, oldPrice: pc.oldPrice, newPrice: pc.newPrice, deviationPct: pc.deviationPct },
+          });
+          nos.push(pc.docNo);
+        }
+        return nos;
+      })();
+      const all = [...blocking, ...created];
+      // PoC-honest：PO 提交被整单阻塞，直至其全部未决 PC 审批通过后重新提交
+      return { blocking: all };
+    }
+
+    const updated: PoRow[] = await tx
+      .update(poDocs)
+      .set({ status: "pending", version: sql`${poDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(poDocs.id, id), eq(poDocs.version, version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, { userId: actor.id, entity: "po", entityId: id, action: "submit" });
+    return { document: updated[0] };
+  });
+  if (result.blocking) {
+    const error = new ApiError(409, `存在价格异动，已生成价格变更申请 ${result.blocking.join("、")}，审批通过后方可提交`);
+    error.code = "PO_PRICE_REVIEW_REQUIRED";
+    throw error;
+  }
+  return result.document!;
 }
 
 // ---------- 审批 ----------
@@ -184,18 +195,24 @@ export async function approvePo(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      const [doc] = await tx.select({ id: poDocs.id }).from(poDocs).where(eq(poDocs.id, id)).for("update");
+      if (!doc) throw new ApiError(404, "单据不存在");
       const r = await approveDoc(tx, {
         docType: "po",
         table: poDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
+      if (v.action === "approve" && !canSeePrices(actor.roles)) {
+        throw new ApiError(403, "当前角色不可查看采购价格，不能批准；请由具备金额可见权限的合格审批人核对，或驳回申请。");
+      }
       await writeAudit(tx, {
-        userId: user.id, entity: "po", entityId: id, action: v.action,
+        userId: actor.id, entity: "po", entityId: id, action: v.action,
         after: { comment: v.comment ?? null },
       });
       return r;
@@ -277,42 +294,45 @@ export async function approvePc(
 // ---------- 供应商确认（内部代录）：approved → in_progress ----------
 
 export async function confirmPo(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<PoRow> {
-  requireAnyRole(user, "purchasing", "pmc");
   const v = confirmDocSchema.parse(input);
   const db = await resolveDb(dbArg);
-  const [doc]: PoRow[] = await db.select().from(poDocs).where(eq(poDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  let target: DocStatus;
-  try {
-    target = nextStatus(doc.status as DocStatus, "confirm");
-  } catch (e) {
-    if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可确认: ${doc.status}`);
-    throw e;
-  }
-  const now = new Date();
-  const updated: PoRow[] = await db
-    .update(poDocs)
-    .set({
-      status: target,
-      confirmedAt: now,
-      confirmedBy: user.id,
-      confirmNote: v.note ?? null,
-      version: sql`${poDocs.version} + 1`,
-      updatedAt: now,
-    })
-    .where(and(eq(poDocs.id, id), eq(poDocs.version, v.version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${v.version} 已过期`);
-  await writeAudit(db, {
-    userId: user.id, entity: "po", entityId: id, action: "confirm",
-    after: { note: v.note ?? null },
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "purchasing", "pmc");
+    const [doc]: PoRow[] = await tx.select().from(poDocs).where(eq(poDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    let target: DocStatus;
+    try {
+      target = nextStatus(doc.status as DocStatus, "confirm");
+    } catch (e) {
+      if (e instanceof TransitionError) throw new ApiError(409, `当前状态不可确认: ${doc.status}`);
+      throw e;
+    }
+    const now = new Date();
+    const updated: PoRow[] = await tx
+      .update(poDocs)
+      .set({
+        status: target,
+        confirmedAt: now,
+        confirmedBy: actor.id,
+        confirmNote: v.note ?? null,
+        version: sql`${poDocs.version} + 1`,
+        updatedAt: now,
+      })
+      .where(and(eq(poDocs.id, id), eq(poDocs.version, v.version)))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${v.version} 已过期`);
+    await writeAudit(tx, {
+      userId: actor.id, entity: "po", entityId: id, action: "confirm",
+      after: { note: v.note ?? null },
+    });
+    return updated[0];
   });
-  return updated[0];
 }
 
 // ---------- 查询 ----------
 
-export async function getPo(id: number, dbArg?: AnyDb) {
+export async function getPo(id: number, dbArg?: AnyDb, user?: SessionUser) {
   const db = await resolveDb(dbArg);
   const [doc] = await db
     .select({
@@ -362,12 +382,13 @@ export async function getPo(id: number, dbArg?: AnyDb) {
     .where(eq(poLines.poId, id))
     .orderBy(poLines.id);
 
-  const [approvalRows, promiseRevisions] = await Promise.all([
+  const [approvalRows, promiseRevisions, taskActions] = await Promise.all([
     loadApprovalHistory(db, "po", id),
     listPoPromiseRevisions(db, id),
+    loadPoTaskActions(db, doc, user),
   ]);
 
-  return { ...doc, lines, approvals: approvalRows, promiseRevisions };
+  return { ...doc, lines, approvals: approvalRows, promiseRevisions, taskActions };
 }
 
 export interface PoPromiseRevisionRow {
@@ -550,15 +571,18 @@ export async function withdrawPO(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      const [doc] = await tx.select({ id: poDocs.id }).from(poDocs).where(eq(poDocs.id, id)).for("update");
+      if (!doc) throw new ApiError(404, "单据不存在");
       const r = await withdrawDoc(tx, {
         docType: "po",
         table: poDocs,
         docId: id,
-        user: { id: user.id, roles: user.roles },
+        user: actor,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
-      await writeAudit(tx, { userId: user.id, entity: "po", entityId: id, action: "withdraw" });
+      await writeAudit(tx, { userId: actor.id, entity: "po", entityId: id, action: "withdraw" });
       return r;
     });
   } catch (e) {

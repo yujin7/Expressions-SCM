@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { errorResponse } from "@/server/modules/master/common";
+import { errorResponse, parseId } from "@/server/modules/master/common";
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { generateConfirmToken } from "@/server/modules/outsource/po-confirm";
 
@@ -8,7 +8,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   try {
     const user = await guardFreshWrite();
     const { id } = await params;
-    return NextResponse.json(await generateConfirmToken(user, Number(id)), { status: 201 });
+    return NextResponse.json(await generateConfirmToken(user, parseId(id)), { status: 201, headers: { "Cache-Control": "private, no-store" } });
   } catch (e) {
     return errorResponse(e);
   }
