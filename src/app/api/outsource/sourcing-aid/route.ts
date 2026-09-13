@@ -4,7 +4,7 @@ import { ApiError, errorResponse, readJson } from "@/server/modules/master/commo
 import { guardFreshWrite } from "@/server/modules/outsource/common";
 import { getSourcingAid } from "@/server/modules/outsource/sourcing-aid";
 import { getCapacityCheck } from "@/server/modules/outsource/capacity-check";
-import { attachCapacityCheck } from "@/server/modules/outsource/capacity-handoff";
+import { attachCapacityCheck, getCapacityHandoffResult } from "@/server/modules/outsource/capacity-handoff";
 
 /**
  * 选源决策辅助（W2 审计 6）：`/outsource/wo`「生成单据」旁的只读事实面板。
@@ -17,6 +17,13 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     if (url.searchParams.getAll("mode").length > 1) throw new ApiError(400, "选源参考模式不能重复");
     const mode = url.searchParams.get("mode");
+    if (mode === "capacity-result") {
+      for (const key of url.searchParams.keys()) {
+        if (!["mode", "workItemId", "requestId"].includes(key) || url.searchParams.getAll(key).length !== 1) throw new ApiError(400, "产能回执查询参数未知或重复");
+      }
+      const result = await getCapacityHandoffResult({ workItemId: url.searchParams.get("workItemId"), requestId: url.searchParams.get("requestId") }, user);
+      return NextResponse.json(result, { headers: { "Cache-Control": "private, no-store" } });
+    }
     if (mode === "capacity") {
       for (const key of url.searchParams.keys()) {
         if (!["mode", "skuId", "supplierId", "dueDate", "candidateQty", "alertId"].includes(key) || url.searchParams.getAll(key).length !== 1) {
