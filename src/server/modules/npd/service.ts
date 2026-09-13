@@ -15,7 +15,7 @@ import type { SessionUser } from "@/server/core/dto";
 import { requireAnyRole } from "@/server/modules/outsource/common";
 import { ApiError, todayShanghai } from "@/server/modules/master/common";
 import { scheduleNpd, type NpdTemplateNode } from "@/server/rules/npd-schedule";
-import { createBh } from "@/server/modules/outsource/bh";
+import { createDerivedBh } from "@/server/modules/outsource/bh";
 import { createBhSchema } from "@/server/modules/outsource/schemas";
 import { dQty } from "@/server/core/decimal";
 import { shanghaiDay } from "@/server/core/business-day";
@@ -444,12 +444,11 @@ export async function createNpdFirstOrder(user: SessionUser, input: unknown, dbA
       if (!sku) throw new ApiError(400, `目标 SKU「${proj.skuCode}」未建档或无此别名`);
       // Keep active/type validation in createBh stable through its nested transaction.
       await tx.select({ id: schema.skus.id }).from(schema.skus).where(eq(schema.skus.id, sku.id)).for("share");
-      const delegate: SessionUser = user.roles.includes("ops") ? user : { ...user, roles: [...user.roles, "ops"] };
       /* 审计必须在 createBh 的**事务内**（CLAUDE.md 写路径纪律）：
          此前 writeAudit 写在 createBh 之后、事务之外——BH 已提交而审计失败，
          就留下一张没人知道从哪来的 NPD 首单草稿。走 inTx 钩子，抛错即整单回滚。 */
-      const doc = await createBh(
-        delegate,
+      const doc = await createDerivedBh(
+        user, "npd",
         { remark: `NPD 首单：项目《${proj.name}》#${proj.id}（新品首单，人工确认后提交审批）`, lines: [{ skuId: sku.id, qty: v.qty }] },
         tx,
         {

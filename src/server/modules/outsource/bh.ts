@@ -1,6 +1,8 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { approvalConfigs, bhDocs, bhLines, skus, users, woDocs } from "@/db/schema";
 import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
+import { currentWriteActor } from "@/server/core/current-write-actor";
+import { loadUserScopes } from "@/server/core/data-scope";
 import { dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
@@ -31,21 +33,33 @@ export interface CreateBhHooks {
 }
 
 export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb, hooks?: CreateBhHooks): Promise<BhRow> {
-  requireAnyRole(user, "ops");
+  return createBhWithAuthority(user, input, ["ops"], dbArg, hooks);
+}
+
+/** Internal source workflows retain their own authority; never fabricate an ops role. */
+export async function createDerivedBh(
+  user: SessionUser, source: "npd" | "replenish" | "sop", input: unknown,
+  dbArg: AnyDb, hooks: Required<CreateBhHooks>,
+): Promise<BhRow> {
+  return createBhWithAuthority(user, input, source === "npd" ? ["pmc", "ops"] : ["pmc"], dbArg, hooks);
+}
+
+async function createBhWithAuthority(
+  user: SessionUser, input: unknown, roles: string[], dbArg?: AnyDb, hooks?: CreateBhHooks,
+): Promise<BhRow> {
   const v = createBhSchema.parse(input);
   const db = await resolveDb(dbArg);
-
-  const skuIds = [...new Set(v.lines.map((l) => l.skuId))];
-  const skuRows: { id: number; active: boolean }[] = await db
-    .select({ id: skus.id, active: skus.active })
-    .from(skus)
-    .where(inArray(skus.id, skuIds));
-  const activeSku = new Set(skuRows.filter((s) => s.active).map((s) => s.id));
-  for (const sid of skuIds) {
-    if (!activeSku.has(sid)) throw new ApiError(400, `SKU 不存在或已停用: #${sid}`);
-  }
-
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, ...roles);
+    const skuIds = [...new Set(v.lines.map((l) => l.skuId))].sort((a, b) => a - b);
+    const skuRows: { id: number; active: boolean }[] = await tx
+      .select({ id: skus.id, active: skus.active }).from(skus)
+      .where(inArray(skus.id, skuIds)).orderBy(skus.id).for("share");
+    const activeSku = new Set(skuRows.filter((s) => s.active).map((s) => s.id));
+    for (const sid of skuIds) {
+      if (!activeSku.has(sid)) throw new ApiError(400, `SKU 不存在或已停用: #${sid}`);
+    }
     const docNo = await nextDocNo(tx, "BH");
     const [doc]: BhRow[] = await tx
       .insert(bhDocs)
@@ -54,7 +68,7 @@ export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb,
         remark: v.remark ?? null,
         // 集成阶段如需独立列再迁移（诚实标注，勿当正式口径）。
         orderType: v.orderType ?? null,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await tx.insert(bhLines).values(
@@ -66,7 +80,7 @@ export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb,
       })),
     );
     await writeAudit(tx, {
-      userId: user.id, entity: "bh", entityId: doc.id, action: "create",
+      userId: actor.id, entity: "bh", entityId: doc.id, action: "create",
       after: { docNo: doc.docNo, lineCount: v.lines.length, orderType: v.orderType ?? null },
     });
     await hooks?.inTx?.(tx, doc);
@@ -74,12 +88,23 @@ export async function createBh(user: SessionUser, input: unknown, dbArg?: AnyDb,
   });
 }
 
+/** Shared source lock also serializes draft edits, closure and automatic line generation. */
+async function lockWritableBh(tx: AnyDb, actor: SessionUser, id: number): Promise<BhRow> {
+  if (!Number.isSafeInteger(id) || id <= 0 || id > 2147483647) throw new ApiError(400, "备货申请编号无效");
+  const scopes = await loadUserScopes(tx, actor.id);
+  const [doc]: BhRow[] = await tx.select().from(bhDocs)
+    .where(and(eq(bhDocs.id, id), bhReadScope(tx, { ...actor, ...scopes }))).for("update");
+  if (!doc) throw new ApiError(404, "单据不存在或不在当前可读范围");
+  return doc;
+}
+
 export async function submitBh(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<BhRow> {
+  if (!Number.isSafeInteger(version) || version <= 0 || version > 2147483647) throw new ApiError(400, "备货申请版本无效");
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    const [doc]: BhRow[] = await tx.select().from(bhDocs).where(eq(bhDocs.id, id));
-    if (!doc) throw new ApiError(404, "单据不存在");
-    if (doc.createdBy !== user.id && !user.roles.includes("admin")) {
+    const actor = await currentWriteActor(tx, user);
+    const doc = await lockWritableBh(tx, actor, id);
+    if (doc.createdBy !== actor.id && !actor.roles.includes("admin")) {
       throw new ApiError(403, "仅制单人或管理员可提交");
     }
     let target: DocStatus;
@@ -95,7 +120,7 @@ export async function submitBh(user: SessionUser, id: number, version: number, d
       .where(and(eq(bhDocs.id, id), eq(bhDocs.version, version), eq(bhDocs.status, "draft")))
       .returning();
     if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-    await writeAudit(tx, { userId: user.id, entity: "bh", entityId: id, action: "submit" });
+    await writeAudit(tx, { userId: actor.id, entity: "bh", entityId: id, action: "submit" });
     return updated[0];
   });
 }
@@ -104,10 +129,9 @@ export async function updateBh(user: SessionUser, id: number, input: unknown, db
   const v = updateBhSchema.parse(input);
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {
-    // Lock the header before touching lines. Competing edit/submit uses the same version predicate.
-    const [doc]: BhRow[] = await tx.select().from(bhDocs).where(eq(bhDocs.id, id)).for("update");
-    if (!doc) throw new ApiError(404, "单据不存在");
-    if (doc.createdBy !== user.id && !user.roles.includes("admin")) throw new ApiError(403, "仅制单人或管理员可修改草稿");
+    const actor = await currentWriteActor(tx, user);
+    const doc = await lockWritableBh(tx, actor, id);
+    if (doc.createdBy !== actor.id && !actor.roles.includes("admin")) throw new ApiError(403, "仅制单人或管理员可修改草稿");
     if (doc.status !== "draft") throw new ApiError(409, "仅草稿可修改，请先撤回或由审批人驳回");
     if (doc.version !== v.version) throw new ApiError(409, "版本已更新，请重新加载后核对，勿覆盖他人修改");
     const [downstream] = await tx.select({ id: woDocs.id }).from(woDocs).where(eq(woDocs.bhId, id)).limit(1);
@@ -117,7 +141,7 @@ export async function updateBh(user: SessionUser, id: number, input: unknown, db
     const identity = (lines: { skuId: number }[]) => lines.map(l => l.skuId).sort((a, b) => a - b).join(",");
     if (sourceSkuLocked && identity(beforeLines) !== identity(v.lines)) throw new ApiError(409, "来源SKU已绑定计划或新品首单，不可增删/替换；请在来源流程重新发起需求");
     const skuIds = [...new Set(v.lines.map(l => l.skuId))];
-    const available: { id: number }[] = await tx.select({ id: skus.id }).from(skus).where(and(inArray(skus.id, skuIds), eq(skus.active, true))).for("share");
+    const available: { id: number }[] = await tx.select({ id: skus.id }).from(skus).where(and(inArray(skus.id, skuIds), eq(skus.active, true))).orderBy(skus.id).for("share");
     if (available.length !== skuIds.length) throw new ApiError(400, "明细存在不存在或已停用的SKU，请重新选择");
     const [updated]: BhRow[] = await tx.update(bhDocs).set({
       remark: v.remark ?? null, orderType: v.orderType ?? null, purpose: null,
@@ -127,7 +151,7 @@ export async function updateBh(user: SessionUser, id: number, input: unknown, db
     await tx.delete(bhLines).where(eq(bhLines.bhId, id));
     const lines = v.lines.map(l => ({ bhId: id, skuId: l.skuId, qty: dQty(l.qty), expectDate: l.expectDate ?? null }));
     await tx.insert(bhLines).values(lines);
-    await writeAudit(tx, { userId: user.id, entity: "bh", entityId: id, action: "update_draft",
+    await writeAudit(tx, { userId: actor.id, entity: "bh", entityId: id, action: "update_draft",
       before: { version: doc.version, remark: doc.remark, orderType: doc.orderType ?? doc.purpose, lines: beforeLines },
       after: { reason: v.reason, version: updated.version, remark: updated.remark, orderType: updated.orderType, sourceSkuLocked, lines } });
     return updated;
@@ -144,18 +168,20 @@ export async function approveBh(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      await lockWritableBh(tx, actor, id);
       const r = await approveDoc(tx, {
         docType: "bh",
         table: bhDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
       await writeAudit(tx, {
-        userId: user.id, entity: "bh", entityId: id, action: v.action,
+        userId: actor.id, entity: "bh", entityId: id, action: v.action,
         after: { comment: v.comment ?? null },
       });
       return r;
@@ -300,15 +326,17 @@ export async function withdrawBH(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      await lockWritableBh(tx, actor, id);
       const r = await withdrawDoc(tx, {
         docType: "bh",
         table: bhDocs,
         docId: id,
-        user: { id: user.id, roles: user.roles },
+        user: actor,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
-      await writeAudit(tx, { userId: user.id, entity: "bh", entityId: id, action: "withdraw" });
+      await writeAudit(tx, { userId: actor.id, entity: "bh", entityId: id, action: "withdraw" });
       return r;
     });
   } catch (e) {
@@ -328,22 +356,24 @@ export async function transitionBH(
   dbArg?: AnyDb,
 ): Promise<{ status: string; idempotent: boolean }> {
   const v = transitionDocSchema.parse(input);
-  if (v.action !== "void" && v.action !== "reopen") requireAnyRole(user, "pmc", "ops");
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      if (v.action !== "void" && v.action !== "reopen") requireAnyRole(actor, "pmc", "ops");
+      await lockWritableBh(tx, actor, id);
       const r = await transitionDoc(tx, {
         docType: "bh",
         table: bhDocs,
         docId: id,
-        user: { id: user.id, roles: user.roles },
+        user: actor,
         action: v.action,
         reason: v.reason,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r;
       await writeAudit(tx, {
-        userId: user.id, entity: "bh", entityId: id, action: v.action,
+        userId: actor.id, entity: "bh", entityId: id, action: v.action,
         after: { status: r.status, reason: v.reason ?? null },
       });
       return r;
