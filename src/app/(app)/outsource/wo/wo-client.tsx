@@ -35,6 +35,7 @@ import ListToolbar from "@/components/ListToolbar";
 import { useListState } from "@/components/useListState";
 import { ORDER_TYPE_LABELS, formatOrderType, toOptions } from "@/components/labels";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
+import type { WoTaskActions } from "@/server/modules/outsource/wo-task-actions";
 
 interface WoRow {
   id: number;
@@ -72,6 +73,7 @@ interface DocApproval {
 }
 
 interface WoDetail {
+  taskActions: WoTaskActions | null;
   id: number;
   docNo: string;
   status: string;
@@ -125,34 +127,47 @@ const STATUS_TABS = [
   { key: "closed", label: "已短关" },
 ];
 
-function WoActions({
+export function WoActions({
   doc,
   onChanged,
+  onError,
+  blocked,
 }: {
-  doc: { id: number; status: string; version: number };
+  doc: { id: number; status: string; version: number; taskActions: WoTaskActions | null };
   onChanged: () => void;
+  onError: (message: string) => void;
+  blocked: boolean;
 }) {
   const { message } = App.useApp();
   const [loading, setLoading] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
+  const pending = useRef(false), failed = useRef(false), alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
-  const post = async (path: string, body: unknown, successText: string) => {
+  const post = async (path: "submit" | "approve" | "withdraw", body: { version: number; action?: "approve" | "reject"; comment?: string }, successText: string) => {
+    const permission = path === "approve" ? body.action === "reject" ? "reject" : "approve" : path;
+    if (pending.current || failed.current || blocked || !doc.taskActions?.[permission]) return false;
+    pending.current = true;
     setLoading(true);
     try {
       await postJson(`/api/outsource/wo/${doc.id}/${path}`, body);
+      if (!alive.current) return false;
       message.success(successText);
       onChanged();
       return true;
     } catch (e) {
-      message.error((e as Error).message);
+      failed.current = true;
+      if (alive.current) onError(`${e instanceof Error ? e.message : "未取得处理结果"}。请先刷新核对当前单据状态与审批记录，勿重复提交。`);
       return false;
     } finally {
-      setLoading(false);
+      pending.current = false;
+      if (alive.current) setLoading(false);
     }
   };
 
-  if (doc.status === "draft") {
+  if (!doc.taskActions || blocked) return null;
+  if (doc.status === "draft" && doc.taskActions.submit) {
     return (
       <Popconfirm
         title="确认提交审批？"
@@ -168,7 +183,7 @@ function WoActions({
   }
 
   // 已审批之后没有任何「收口」动作时，工单永远停在半路（在办量只增不减）——补手工完成/短关
-  if (doc.status === "approved" || doc.status === "in_progress") {
+  if (doc.taskActions.manage) {
     return (
       <DocTransitionActions
         docType="wo"
@@ -184,9 +199,9 @@ function WoActions({
 
   if (doc.status === "pending") {
     return (
-      <Space>
-        <Popconfirm
-          title="确认审批通过？通过后将按生效 BOM 生成需求快照。"
+      <Space wrap>
+        {doc.taskActions.approve ? <Popconfirm
+          title="确认审批通过？通过后将按本工单BOM冻结需求快照。"
           okText="通过"
           cancelText="取消"
           onConfirm={() =>
@@ -196,12 +211,12 @@ function WoActions({
           <Button type="primary" loading={loading}>
             审批通过
           </Button>
-        </Popconfirm>
-        <Button danger loading={loading} onClick={() => setRejectOpen(true)}>
+        </Popconfirm> : null}
+        {doc.taskActions.reject ? <Button danger loading={loading} onClick={() => setRejectOpen(true)}>
           驳回
-        </Button>
+        </Button> : null}
         {/* 撤回：制单人收回自己的提交（服务端校验 createdBy，非制单人会被拒） */}
-        <Popconfirm
+        {doc.taskActions.withdraw ? <Popconfirm
           title="撤回本单？"
           description="撤回后回到草稿，可继续修改再提交。"
           okText="撤回"
@@ -209,15 +224,19 @@ function WoActions({
           onConfirm={() => void post("withdraw", { version: doc.version }, "已撤回，单据回到草稿")}
         >
           <Button loading={loading}>撤回</Button>
-        </Popconfirm>
+        </Popconfirm> : null}
         <Modal
           title="驳回单据"
-          open={rejectOpen}
+          open={rejectOpen && doc.taskActions.reject}
           okText="确认驳回"
           okButtonProps={{ danger: true }}
           cancelText="取消"
           confirmLoading={loading}
-          onCancel={() => setRejectOpen(false)}
+          zIndex={1100}
+          closable={!loading}
+          maskClosable={false}
+          cancelButtonProps={{ disabled: loading }}
+          onCancel={() => { if (!pending.current) setRejectOpen(false); }}
           onOk={() =>
             void post(
               "approve",
@@ -232,6 +251,7 @@ function WoActions({
           }
         >
           <Input.TextArea
+            disabled={loading}
             rows={3}
             maxLength={200}
             placeholder="驳回意见（可选）"
@@ -265,7 +285,6 @@ function WoInner() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [bhOptions, setBhOptions] = useState<{ value: number; label: string; orderType: string | null }[]>([]);
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
@@ -288,6 +307,7 @@ function WoInner() {
   const [generating, setGenerating] = useState(false);
   const generatingRef = useRef(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<{ id: number; message: string } | null>(null);
 
   const beginLoadRead = useLatestRead();
   const load = useCallback(async () => {
@@ -316,32 +336,6 @@ function WoInner() {
   }, [load]);
 
 
-
-  // 创建弹窗打开时拉取已审批 BH 供关联（委外链列表返回 {rows,total}，RemoteSelect 不适用）
-  useEffect(() => {
-    if (!createOpen) return;
-    let cancelled = false;
-    fetchJson<{ rows: { id: number; docNo: string; orderType: string | null }[]; total: number }>(
-      "/api/outsource/bh?status=approved&page=1&pageSize=999",
-    )
-      .then((res) => {
-        if (!cancelled) {
-          setBhOptions(
-            res.rows.map((r) => ({
-              value: r.id,
-              orderType: r.orderType,
-              label: `${r.docNo}${r.orderType ? `（${formatOrderType(r.orderType)}）` : ""}`,
-            })),
-          );
-        }
-      })
-      .catch(() => {
-        /* 下拉加载失败保持空 */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [createOpen]);
 
   const handleCreate = async () => {
     try {
@@ -514,6 +508,7 @@ function WoInner() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
+              disabled={!canGenerate}
               onClick={() => {
                 form.resetFields();
                 setCreateOpen(true);
@@ -561,8 +556,12 @@ function WoInner() {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="bhId" label="关联备货申请（可选，仅已审批）">
-            <Select allowClear showSearch optionFilterProp="label" options={bhOptions} placeholder="选择备货申请"
-              onChange={(id: number | undefined) => form.setFieldValue("orderType", bhOptions.find(b => b.value === id)?.orderType ?? undefined)} />
+            <RemoteSelect
+              api="/api/outsource/bh?status=approved"
+              getLabel={(r) => `${String(r.docNo)}${r.orderType ? `（${formatOrderType(String(r.orderType))}）` : ""}`}
+              placeholder="搜索已审批备货单号 / SKU"
+              onChange={() => form.setFieldValue("orderType", undefined)}
+            />
           </Form.Item>
           <Form.Item
             name="productSkuId"
@@ -630,13 +629,16 @@ function WoInner() {
         extra={
           detail ? (
             <Space>
-              {canGenerate && detail.status === "approved" && generatedKnown && existingJgNo == null ? (
+              {detail.taskActions?.generate && detail.status === "approved" && generatedKnown && existingJgNo == null ? (
                 <Button type="primary" disabled={generating} icon={<ThunderboltOutlined />} onClick={openGenerate}>
                   生成单据
                 </Button>
               ) : null}
               <WoActions
-                doc={{ id: detail.id, status: detail.status, version: detail.version }}
+                key={`${detail.id}:${detail.version}`}
+                doc={detail}
+                blocked={actionError?.id === detail.id}
+                onError={(message) => setActionError({ id: detail.id, message })}
                 onChanged={() => {
                   void loadDetail();
                   void load();
@@ -649,6 +651,10 @@ function WoInner() {
         {detail ? (
           <div>
             <ChainStrip docType="wo" id={detail.id} />
+            <Alert type={actionError?.id === detail.id ? "error" : detail.taskActions ? "info" : "warning"} showIcon style={{ marginBottom: 12 }}
+              message={actionError?.id === detail.id ? "处理结果需要核对" : "当前操作资格"}
+              description={actionError?.id === detail.id ? actionError.message : detail.taskActions?.reason ?? "当前无法确认操作资格，请刷新后核对；暂不显示写入按钮。"}
+              action={<Button onClick={() => { setActionError(null); loadDetail(); }}>刷新核对</Button>} />
             {detail.status === "approved" && !generatedKnown ? (
               <Alert type={generatedJg.phase === "loading" ? "info" : "warning"} showIcon
                 message={generatedJg.phase === "loading" ? "正在核对已生成单据…" : "暂不能核实是否已生成加工通知单"}
