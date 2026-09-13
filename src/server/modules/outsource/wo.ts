@@ -7,6 +7,7 @@ import { dAdd, dCmp, dDiv, dMoney, dMul, dQty, dSub } from "@/server/core/decima
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { currentWriteActor } from "@/server/core/current-write-actor";
+import { loadUserScopes } from "@/server/core/data-scope";
 import { bhReadScope } from "@/server/core/bh-read-scope";
 import {
   BomCycleError,
@@ -37,35 +38,37 @@ type JgRow = typeof jgDocs.$inferSelect;
 // ---------- 创建 ----------
 
 export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb): Promise<WoRow> {
-  requireAnyRole(user, "pmc");
   const v = createWoSchema.parse(input);
   const db = await resolveDb(dbArg);
 
-  // 成品校验：存在、启用、类型=成品
-  const [product] = await db.select().from(skus).where(eq(skus.id, v.productSkuId));
-  if (!product || !product.active) throw new ApiError(400, `成品 SKU 不存在或已停用: #${v.productSkuId}`);
-  if (product.skuType !== "finished") throw new ApiError(400, "委外工单只能针对成品 SKU");
-
-  // 生效 BOM（B15：引用于单头，审批时快照复制）
-  const [activeBom] = await db
-    .select()
-    .from(boms)
-    .where(and(eq(boms.productSkuId, v.productSkuId), eq(boms.status, "active")));
-  if (!activeBom) throw new ApiError(404, "该成品无生效 BOM");
-
-  // 加工厂：存在且可接新单（黑名单 / 整改暂停 = 禁新单，存量收尾；规则见 rules/supplier-status）
-  const [supplier] = await db.select().from(suppliers).where(eq(suppliers.id, v.supplierId));
-  if (!supplier) throw new ApiError(400, `供应商不存在: #${v.supplierId}`);
-  const block = supplierNewOrderBlock(supplier.status);
-  if (block.blocked) throw new ApiError(400, `供应商${block.label}，禁止新单: ${supplier.name}（${block.reason}）`);
-
   return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    // Hold creation eligibility through insert/audit; no inventory or approval effects.
+    const [product] = await tx.select().from(skus).where(eq(skus.id, v.productSkuId)).for("share");
+    if (!product || !product.active) throw new ApiError(400, `成品 SKU 不存在或已停用: #${v.productSkuId}`);
+    if (product.skuType !== "finished") throw new ApiError(400, "委外工单只能针对成品 SKU");
+
+    // 生效 BOM（B15：引用于单头，审批时快照复制）
+    const [activeBom] = await tx
+      .select()
+      .from(boms)
+      .where(and(eq(boms.productSkuId, v.productSkuId), eq(boms.status, "active"))).for("share");
+    if (!activeBom) throw new ApiError(404, "该成品无生效 BOM");
+
+    // 加工厂：存在且可接新单（黑名单 / 整改暂停 = 禁新单，存量收尾；规则见 rules/supplier-status）
+    const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, v.supplierId)).for("share");
+    if (!supplier) throw new ApiError(400, `供应商不存在: #${v.supplierId}`);
+    const block = supplierNewOrderBlock(supplier.status);
+    if (block.blocked) throw new ApiError(400, `供应商${block.label}，禁止新单: ${supplier.name}（${block.reason}）`);
+
     // Same transaction as insert/audit; a concurrent BH edit/withdraw must not change
     // the approved source underneath the derived WO. Historical regular is NOT repeat.
     let sourceOrderType: string | null = null;
     if (v.bhId != null) {
+      const scopes = await loadUserScopes(tx, actor.id);
       const [bh]: (typeof bhDocs.$inferSelect)[] = await tx.select().from(bhDocs)
-        .where(and(eq(bhDocs.id, v.bhId), bhReadScope(tx, user))).for("share");
+        .where(and(eq(bhDocs.id, v.bhId), bhReadScope(tx, { ...actor, ...scopes }))).for("share");
       if (!bh) throw new ApiError(404, "备货申请不存在或不可访问");
       if (bh.status !== "approved") throw new ApiError(409, "关联备货申请必须已审批，请重新核对来源状态");
       const [sourceLine] = await tx.select({ id: bhLines.id }).from(bhLines)
@@ -91,11 +94,11 @@ export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb)
         orderType,
         dueDate: v.dueDate ?? null,
         bomId: activeBom.id,
-        createdBy: user.id,
+        createdBy: actor.id,
       })
       .returning();
     await writeAudit(tx, {
-      userId: user.id, entity: "wo", entityId: doc.id, action: "create",
+      userId: actor.id, entity: "wo", entityId: doc.id, action: "create",
       after: { docNo: doc.docNo, productSkuId: v.productSkuId, qty: doc.qty, bomId: activeBom.id,
         bhId: v.bhId ?? null, orderType, orderTypeSource: sourceOrderType ? "bh" : v.orderType ? "manual" : "unclassified" },
     });
@@ -106,21 +109,26 @@ export async function createWo(user: SessionUser, input: unknown, dbArg?: AnyDb)
 // ---------- 提交 ----------
 
 export async function submitWo(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<WoRow> {
+  if (!Number.isSafeInteger(id) || id <= 0 || id > 2147483647) throw new ApiError(400, "工单编号无效");
+  if (!Number.isSafeInteger(version) || version <= 0 || version > 2147483647) throw new ApiError(400, "工单版本无效");
   const db = await resolveDb(dbArg);
-  const [doc]: WoRow[] = await db.select().from(woDocs).where(eq(woDocs.id, id));
-  if (!doc) throw new ApiError(404, "单据不存在");
-  if (doc.createdBy !== user.id && !user.roles.includes("admin")) {
-    throw new ApiError(403, "仅制单人或管理员可提交");
-  }
-  if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
-  const updated: WoRow[] = await db
-    .update(woDocs)
-    .set({ status: "pending", version: sql`${woDocs.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(woDocs.id, id), eq(woDocs.version, version)))
-    .returning();
-  if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
-  await writeAudit(db, { userId: user.id, entity: "wo", entityId: id, action: "submit" });
-  return updated[0];
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    const [doc]: WoRow[] = await tx.select().from(woDocs).where(eq(woDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "单据不存在");
+    if (doc.createdBy !== actor.id && !actor.roles.includes("admin")) {
+      throw new ApiError(403, "仅制单人或管理员可提交");
+    }
+    if (doc.status !== "draft") throw new ApiError(409, `当前状态不可提交: ${doc.status}`);
+    const updated: WoRow[] = await tx
+      .update(woDocs)
+      .set({ status: "pending", version: sql`${woDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(woDocs.id, id), eq(woDocs.version, version), eq(woDocs.status, "draft")))
+      .returning();
+    if (updated.length === 0) throw new ApiError(409, `版本冲突：期望版本 ${version} 已过期`);
+    await writeAudit(tx, { userId: actor.id, entity: "wo", entityId: id, action: "submit" });
+    return updated[0];
+  });
 }
 
 // ---------- 审批（通过时同事务构建 wo_line 快照，《01》§3 wo_line） ----------
@@ -135,26 +143,27 @@ export async function approveWo(
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
-      const [wo]: WoRow[] = await tx.select().from(woDocs).where(eq(woDocs.id, id));
+      const actor = await currentWriteActor(tx, user);
+      const [wo]: WoRow[] = await tx.select().from(woDocs).where(eq(woDocs.id, id)).for("update");
       if (!wo) throw new ApiError(404, "单据不存在");
 
       const r = await approveDoc(tx, {
         docType: "wo",
         table: woDocs,
         docId: id,
-        approver: { id: user.id, roles: user.roles, isApprover: user.isApprover },
+        approver: actor,
         action: v.action,
         comment: v.comment,
         expectedVersion: v.version,
       });
       if (r.idempotent) return r; // 重试短路：不重复快照
       await writeAudit(tx, {
-        userId: user.id, entity: "wo", entityId: id, action: v.action,
+        userId: actor.id, entity: "wo", entityId: id, action: v.action,
         after: { comment: v.comment ?? null },
       });
       if (v.action === "reject") return r;
 
-      await buildWoLineSnapshot(tx, wo, user.id);
+      await buildWoLineSnapshot(tx, wo, actor.id);
       return r;
     });
   } catch (e) {

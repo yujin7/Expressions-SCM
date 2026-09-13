@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { approvalConfigs, auditLogs, bhDocs, bomLines, boms, skus, spus, suppliers, users, woDocs } from "@/db/schema";
+import { approvalConfigs, auditLogs, bhDocs, bomLines, boms, skus, spus, suppliers, userDataScopes, users, woDocs } from "@/db/schema";
 import { ORDER_TYPES } from "@/server/core/constants";
 import { formatOrderType } from "@/components/labels";
 import type { SessionUser } from "@/server/core/dto";
@@ -100,7 +100,8 @@ describe("FS-R2 返单身份从人工申请到加工单，不从常规/采购历
   });
   it("跨渠道PMC不能通过工单建单认领不可访问申请；无来源也不泄漏其类型", async () => {
     const bh = await source("repeat");
-    const scoped: SessionUser = { ...approver, roles: ["pmc"], channelScope: [] };
+    const [scoped] = await db.insert(users).values({ name: "真实受限PMC", roles: ["pmc"] }).returning();
+    await db.insert(userDataScopes).values({ userId: scoped.id, scopeKind: "channel", targetId: 99, createdBy: maker.id });
     await expect(createWo(scoped, { ...input(), bhId: bh.id }, db)).rejects.toMatchObject({ status: 404 });
     await expect(createWo(maker, { ...input(), bhId: 99999999 }, db)).rejects.toMatchObject({ status: 404 });
   });
