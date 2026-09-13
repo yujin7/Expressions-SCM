@@ -80,6 +80,8 @@ interface DrawerProps {
 interface ElementProps {
   children?: ReactNode;
   description?: ReactNode;
+  tabIndex?: number;
+  ref?: { current: Pick<HTMLDivElement, "focus" | "scrollIntoView"> | null };
   form?: Instance["form"];
   disabled?: boolean;
   initialValues?: unknown;
@@ -166,6 +168,15 @@ afterEach(() => {
 });
 
 describe("TodoCreateDrawer submission lifecycle", () => {
+  it("brings an uncertain result into view after the form was submitted from its bottom fields", async () => {
+    const target = instance(); const initial = render(target, props);
+    const focus = vi.fn(), scrollIntoView = vi.fn();
+    find(initial.children, p => p.tabIndex === -1)!.ref!.current = { focus, scrollIntoView };
+    mocks.post.mockRejectedValueOnce(Error("原请求结果未确认"));
+    save(initial).onClick(); await flush(); render(target, props);
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "start" });
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: true }); expect(loadTodoCreate(localStorage, 1)).not.toBeNull();
+  });
   it("locks before async validation, ignores rapid clicks and blocks closing synchronously", async () => {
     const target = instance();
     const validation = deferred<typeof values>();

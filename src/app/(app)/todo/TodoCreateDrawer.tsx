@@ -43,6 +43,12 @@ export default function TodoCreateDrawer({ actorId, defaultAssigneeId, assigneeO
     window.addEventListener("storage", sync); window.addEventListener(TODO_CREATE_CHANGED, sync);
     return () => { session.active = false; session.version += 1; window.removeEventListener("storage", sync); window.removeEventListener(TODO_CREATE_CHANGED, sync); };
   }, [actorId, form]);
+  useLayoutEffect(() => {
+    if (submitError || found || missing) {
+      content.current?.focus({ preventScroll: true });
+      content.current?.scrollIntoView({ block: "start" });
+    }
+  }, [submitError, found, missing]);
 
   const submit = async (mode: "save" | "lookup" | "retry" | "edit" | "ack" = "save") => {
     const session = lifecycle.current;
