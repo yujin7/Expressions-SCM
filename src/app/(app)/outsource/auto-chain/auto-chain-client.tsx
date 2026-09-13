@@ -27,11 +27,14 @@ interface Batch {
   referenceReservedQty: string;
 }
 interface WoSug {
-  bhId: number; bhDocNo: string; skuId: number; skuCode: string; qty: string;
+  bhId: number; bhLineId: number; bhDocNo: string; skuId: number; skuCode: string; qty: string;
   supplierName: string | null; feeRatePlan: string | null; blockedReason: string | null;
+  expectDate: string | null;
+  generated: { id: number; docNo: string; status: string } | null;
+  legacyDocuments: { id: number; docNo: string }[];
 }
 interface Data { batches: Batch[]; wos: WoSug[]; flags: { autoWoOnBh: boolean; autoJgOnReady: boolean } }
-interface Receipt { source: string; docNo: string; href: string }
+interface Receipt { source: string; docNo: string; href: string; recovered: boolean }
 
 function validPreview(value: Data | null): value is Data {
   return !!value && Array.isArray(value.batches) && Array.isArray(value.wos)
@@ -67,18 +70,18 @@ export default function AutoChainClient() {
     if (writing.current || !data || loading || loadError || needsRefresh || row.blockedReason) return;
     writing.current = true;
     const batch = "woId" in row;
-    const source = batch ? row.woDocNo : `${row.bhDocNo} / ${row.skuCode}`;
-    setBusy(batch ? `batch:${row.woId}` : `wo:${row.bhId}:${row.skuId}`);
+    const source = batch ? row.woDocNo : `${row.bhDocNo} 明细#${row.bhLineId} / ${row.skuCode}`;
+    setBusy(batch ? `batch:${row.woId}` : `wo:${row.bhLineId}`);
     setWriteError(null);
     setReceipt(null);
     try {
-      const result = await postJson<{ id: number; docNo: string }>(`/api/outsource/auto-chain/${kind}`,
-        batch ? { woId: row.woId } : { bhId: row.bhId, skuId: row.skuId });
+      const result = await postJson<{ id: number; docNo: string; idempotent?: boolean }>(`/api/outsource/auto-chain/${kind}`,
+        batch ? { woId: row.woId } : { bhId: row.bhId, bhLineId: row.bhLineId, skuId: row.skuId });
       if (!result || !Number.isSafeInteger(result.id) || result.id <= 0 || typeof result.docNo !== "string" || !result.docNo.trim()) {
         throw new Error("未收到完整生成凭据；操作可能已完成，请先核对单据，勿重复生成");
       }
       if (!mounted.current) return;
-      setReceipt({ source, docNo: result.docNo, href: `/outsource/${batch ? "jg" : "wo"}?docId=${result.id}` });
+      setReceipt({ source, docNo: result.docNo, href: `/outsource/${batch ? "jg" : "wo"}?docId=${result.id}`, recovered: result.idempotent === true });
       setEvidence(null);
       read.retry();
     } catch (error) {
@@ -134,16 +137,18 @@ export default function AutoChainClient() {
     },
   ];
   const woCols: ColumnsType<WoSug> = [
-    { title: "备货申请", dataIndex: "bhDocNo", width: 170, render: (v: string, r) => <Link href={`/outsource/bh?docId=${r.bhId}`}>{v}</Link> },
+    { title: "备货申请", dataIndex: "bhDocNo", width: 170, render: (v: string, r) => <><Link href={`/outsource/bh?docId=${r.bhId}`}>{v}</Link><div style={{ fontSize: 12 }}>明细 #{r.bhLineId} · 期望 {r.expectDate ?? "未填"}</div></> },
     { title: "成品", dataIndex: "skuCode", width: 170, render: (v: string) => <span style={{ overflowWrap: "anywhere" }}>{v}</span> },
     { title: "数量", dataIndex: "qty", width: 90, align: "right", render: (v: string) => formatQty(v) },
     { title: "OEM 归属", dataIndex: "supplierName", width: 160, render: (v: string | null) => v ?? "—" },
     { title: "计划加工费", dataIndex: "feeRatePlan", width: 100, align: "right", render: (v: string | null) => v ?? "—" },
     {
       title: "操作", width: 140,
-      render: (_, r) => r.blockedReason
-        ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.blockedReason}</Typography.Text>
-        : <Button size="small" type="primary" loading={busy === `wo:${r.bhId}:${r.skuId}`} disabled={disabled} onClick={() => void generate("wo", r)}>生成工单草稿</Button>,
+      render: (_, r) => r.generated
+        ? <Link href={`/outsource/wo?docId=${r.generated.id}`}>打开已生成工单 {r.generated.docNo}</Link>
+        : r.blockedReason
+          ? <><Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.blockedReason}</Typography.Text>{r.legacyDocuments?.map(doc => <div key={doc.id}><Link href={`/outsource/wo?docId=${doc.id}`}>核对 {doc.docNo}</Link></div>)}</>
+          : <Button size="small" type="primary" loading={busy === `wo:${r.bhLineId}`} disabled={disabled} onClick={() => void generate("wo", r)}>生成工单草稿</Button>,
     },
   ];
 
@@ -162,13 +167,14 @@ export default function AutoChainClient() {
       <Space direction="vertical" size={12} style={{ width: "100%", minWidth: 0 }}>
         <LoadErrorAlert subject="自动链预演" error={loadError} onRetry={refresh} retrying={loading} />
         {writeError ? <Alert type="error" showIcon message="本次生成未获成功确认" description={<>{writeError}<div>先刷新预演并核对来源单据；刷新只读取，不会再次生成。</div></>} action={<Button size="small" onClick={refresh} disabled={busy !== null} loading={loading}>刷新核对</Button>} /> : null}
-        {receipt ? <Alert type="success" showIcon message={`已生成草稿 ${receipt.docNo}`} description={<><div>来源：{receipt.source}。本次仅创建，尚未提交审批。</div><Link href={receipt.href}>打开 {receipt.docNo} · 检查并提交</Link></>} /> : null}
+        {receipt ? <Alert type="success" showIcon message={`${receipt.recovered ? "已找回原工单" : "已生成草稿"} ${receipt.docNo}`} description={<><div>来源：{receipt.source}。{receipt.recovered ? "没有重复创建；请打开核对当前状态。" : "本次仅创建，尚未提交审批。"}</div><Link href={receipt.href}>打开 {receipt.docNo} · {receipt.recovered ? "核对当前状态" : "检查并提交"}</Link></>} /> : null}
         <Card size="small" title={`齐套批次建议（${count(batches.length, data?.batches.length)}）`}>
           <Table<Batch> rowKey="woId" size={list.tableSize} tableLayout="fixed" scroll={{ x: 1265 }} columns={batchCols} dataSource={batches} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "没有匹配的批次建议，请调整或清空筛选" : "当前没有带物料需求的已审批或执行中工单") : "尚未取得预演数据" }} />
         </Card>
         <Card size="small" title={`备货→工单建议（${count(wos.length, data?.wos.length)}）`}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>仅展示当前账号可见备货申请的建议；沿用备货列表的本人／共享渠道范围，无范围限制的账号按既有权限查看。未列出不等于申请不存在。</Typography.Paragraph>
-          <Table<WoSug> rowKey={(r) => `${r.bhId}-${r.skuId}`} size={list.tableSize} tableLayout="fixed" scroll={{ x: 830 }} columns={woCols} dataSource={wos} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "可见范围内没有匹配的工单建议，请调整或清空筛选" : "当前可见备货申请中没有转工单建议") : "尚未取得预演数据" }} />
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>每条原始明细分别生成，不按同成品合并。已生成行保留原单入口；网络中断或换设备后刷新即可找回。旧工单没有明细凭据时先核对，不自动分配。</Typography.Paragraph>
+          <Table<WoSug> rowKey="bhLineId" size={list.tableSize} tableLayout="fixed" scroll={{ x: 830 }} columns={woCols} dataSource={wos} loading={loading} pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }} locale={{ emptyText: data ? (needle ? "可见范围内没有匹配的工单建议，请调整或清空筛选" : "当前可见备货申请中没有转工单建议") : "尚未取得预演数据" }} />
         </Card>
       </Space>
       <Modal width={1080} style={{ top: 24 }} styles={{ body: { maxHeight: "calc(100dvh - 180px)", overflowY: "auto" } }} title={evidence ? `${evidence.woDocNo} · 齐套依据` : "齐套依据"} open={evidence !== null} onCancel={() => setEvidence(null)} footer={<Button onClick={() => setEvidence(null)}>关闭依据</Button>}>

@@ -31,7 +31,7 @@ const preview = () => ({ flags: { autoWoOnBh: false, autoJgOnReady: false }, bat
     kitDate: null, kitNote: "系统供给预测说明", kitBlockers: [{ materialSkuId: 8, shortBy: "3", readyDate: null }],
     kitBasis: [{ materialSkuId: 8, materialCode: "PK / 中文", materialName: "物料长名称", baseUom: "个", required: "100.0000", poReceived: "50.0000", networkOnHand: "2.0000", datedSupply: "95.0000", undatedSupply: "8.0000", excludedReference: "10.0000", forecastDate: null, shortBy: "3.0000" }], kitSnapshotDate: null,
     referenceKitDate: null, referenceKitNote: "仅旁证", referenceEvidenceCount: 1, referenceReservedQty: "2" },
-], wos: [{ bhId: 9, bhDocNo: "BH-9", skuId: 7, skuCode: "CP-7", qty: "10", supplierName: "合成OEM", feeRatePlan: "1", blockedReason: null }] });
+], wos: [{ bhId: 9, bhLineId: 19, bhDocNo: "BH-9", skuId: 7, skuCode: "CP-7", qty: "10", expectDate: "2026-10-01", generated: null, legacyDocuments: [], supplierName: "合成OEM", feeRatePlan: "1", blockedReason: null }] });
 type Row = ReturnType<typeof preview>["batches"][number] | ReturnType<typeof preview>["wos"][number];
 type Column = { title: string; width: number; render?: (v: unknown, row: Row) => ReactNode };
 const table = (i = 0) => all("table")[i].props;
@@ -104,7 +104,31 @@ it("unmount aborts only the read, never the business mutation or a post-unmount 
   expect(fetchMock).toHaveBeenCalledTimes(2); expect(fetchMock.mock.calls[1][1]?.signal).toBeUndefined();
 });
 it("source deep links preserve WO and BH identity", async () => {
-  await begin(); expect(nodes(cell("工单"))[0].props.href).toBe("/outsource/wo?docId=18"); expect(nodes(cell("备货申请", 1))[0].props.href).toBe("/outsource/bh?docId=9");
+  await begin(); expect(nodes(cell("工单"))[0].props.href).toBe("/outsource/wo?docId=18"); expect(nodes(cell("备货申请", 1)).find(n => n.type === "a")!.props.href).toBe("/outsource/bh?docId=9");
+});
+
+it("WO writes carry exact source line identity, not just a repeated SKU", async () => {
+  await begin(); (generate(1).props.onClick as () => void)();
+  const request = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
+  expect(JSON.parse(String(request[1]?.body))).toEqual({ bhId: 9, bhLineId: 19, skuId: 7 });
+  expect(table(1).rowKey).toBe("bhLineId");
+  expect(JSON.stringify(cell("备货申请", 1))).toContain("2026-10-01");
+});
+
+it("persisted generation shows the exact existing document instead of another create button", async () => {
+  const data = preview();
+  fetchMock.mockResolvedValue(Response.json({ ...data, wos: [{ ...data.wos[0], generated: { id: 207, docNo: "WO-207", status: "approved" }, blockedReason: "已生成" }] }));
+  render(); await flush();
+  expect(generate(1).type).toBe("a"); expect(generate(1).props.href).toBe("/outsource/wo?docId=207");
+  expect(JSON.stringify(cell("操作", 1))).not.toContain("生成工单草稿");
+});
+
+it("replay receipt does not falsely label an existing document as an unsubmitted draft", async () => {
+  await begin(); fetchMock.mockResolvedValueOnce(Response.json({ id: 207, docNo: "WO-207", idempotent: true }));
+  (generate(1).props.onClick as () => void)(); await flush(); await flush();
+  const receipt = all("alert").find(n => n.props.type === "success")!;
+  expect(receipt.props.message).toContain("已找回原工单");
+  expect(JSON.stringify(receipt.props.description)).not.toContain("尚未提交");
 });
 
 it("evidence separates source quantities, preserves units, and links the material purchase search", async () => {
