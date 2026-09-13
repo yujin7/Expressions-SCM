@@ -9,6 +9,8 @@ import { and, eq, inArray, or, sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { currentWriteActor } from "@/server/core/current-write-actor";
+import { bhReadScope, type BhReadUser } from "@/server/core/bh-read-scope";
+import { loadUserScopes } from "@/server/core/data-scope";
 import { dAdd, dCmp, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
 import { getMaterialReferenceLines } from "@/server/core/material-reference";
@@ -269,7 +271,7 @@ async function previewBatches(db: AnyDb, woId?: number): Promise<BatchSuggestion
   return batches;
 }
 
-export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchSuggestion[]; wos: WoSuggestion[] }> {
+export async function previewAutoChain(dbArg?: AnyDb, user?: BhReadUser): Promise<{ batches: BatchSuggestion[]; wos: WoSuggestion[] }> {
   const db = await resolveDb(dbArg);
   const batches = await previewBatches(db);
 
@@ -277,7 +279,7 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
   const bhs: { id: number; docNo: string }[] = await db
     .select({ id: schema.bhDocs.id, docNo: schema.bhDocs.docNo })
     .from(schema.bhDocs)
-    .where(eq(schema.bhDocs.status, "approved"));
+    .where(and(eq(schema.bhDocs.status, "approved"), bhReadScope(db, user)));
   const wosOut: WoSuggestion[] = [];
   for (const bh of bhs) {
     const [existWo] = await db.select({ id: schema.woDocs.id }).from(schema.woDocs).where(eq(schema.woDocs.bhId, bh.id));
@@ -327,7 +329,7 @@ export async function previewAutoChain(dbArg?: AnyDb): Promise<{ batches: BatchS
       let blockedReason: string | null = null;
       if (!activeBom) blockedReason = "无生效 BOM";
       else if (supplierId == null) blockedReason = "OEM 归属未解析（在途参考·OEM 归属页补认）";
-      else if (feeRatePlan == null || Number(feeRatePlan) <= 0) blockedReason = "无加工费参考价（加工费参考价页补录后自动可用）";
+      else if (feeRatePlan == null || dCmp(feeRatePlan, "0") <= 0) blockedReason = "无加工费参考价（加工费参考价页补录后自动可用）";
       wosOut.push({ bhId: bh.id, bhDocNo: bh.docNo, skuId: l.skuId, skuCode: l.code, qty: l.qty, supplierId, supplierName, feeRatePlan, blockedReason });
     }
   }
@@ -443,15 +445,17 @@ export async function hookAfterBhApprove(user: SessionUser, bhId: number, dbArg?
   try {
     const db = await resolveDb(dbArg);
     if ((await getNumParam("auto_wo_on_bh", 0, db)) !== 1) return;
-    const { wos } = await previewAutoChain(db);
+    // Approval hooks do not carry HTTP-loaded scopes. Load the same source visibility explicitly.
+    const scopes = await loadUserScopes(db, user.id);
+    const { wos } = await previewAutoChain(db, { ...user, ...scopes });
     const mine = wos.filter((w) => w.bhId === bhId && !w.blockedReason && w.supplierId != null && w.feeRatePlan != null);
     for (const w of mine) {
       const { createWo } = await import("./wo");
       await createWo(user, {
         productSkuId: w.skuId,
         supplierId: w.supplierId,
-        qty: Number(w.qty),
-        feeRatePlan: Number(w.feeRatePlan ?? 0),
+        qty: w.qty,
+        feeRatePlan: w.feeRatePlan,
         bhId: w.bhId,
         remark: `自动生成（D33 auto_wo_on_bh；来源 ${w.bhDocNo}）`,
       }, db);
