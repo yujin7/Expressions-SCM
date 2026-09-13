@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import * as s from "@/db/schema";
 import { createFl, submitFl, updateFl, approveFl, getFl } from "@/server/modules/matflow/fl";
+import { getJgMaterialBasis } from "@/server/modules/matflow/material-basis";
 import { post, getBalance } from "@/server/posting";
 import { createTestDb } from "../helpers/db";
 
@@ -112,4 +113,34 @@ it("detail cannot label a material with another SKU's batch metadata", async () 
   const [wrong] = await f.db.insert(s.batches).values({ skuId: x.product.id, batchNo: `OTHER-SKU-${seq}`, expiryDate: "2999-01-01" }).returning();
   await f.db.update(s.flLines).set({ batchId: wrong.id }).where(eq(s.flLines.flId, x.doc.id));
   expect((await getFl(x.doc.id, f.db)).lines[0]).toMatchObject({ batchId: wrong.id, batchNo: null, expiryDate: null });
+});
+it("split JGs share one whole-WO allowance in prefill, detail and approval; admin exception remains explicit", async () => {
+  const x = await fixture();
+  await f.db.insert(s.woLines).values({ woId: x.jg.woId, materialSkuId: x.material.id, qtyPer: "1", planLossRatePct: "0", grossReq: "10", suggestedQty: "10" });
+  const [checker] = await f.db.update(s.users).set({ isApprover: true }).where(eq(s.users.id, x.other.id)).returning();
+  const [sibling] = await f.db.insert(s.jgDocs).values({ docNo: `FL-SIBLING-${seq}`, woId: x.jg.woId, productSkuId: x.product.id,
+    supplierId: x.jg.supplierId, qty: "5", feeRateCurrent: "1", status: "in_progress", batchSeq: 2, createdBy: x.maker.id }).returning();
+  await post(f.db, { sourceDocType: "opening", sourceDocId: seq, action: "post", lines: [{ sourceLineId: 1, skuId: x.material.id, warehouseId: x.own.id, batchId: x.batch.id, qtyDelta: "20" }] });
+  const first = await updateFl(x.maker, x.doc.id, { ...x.input, lines: [{ ...x.input.lines[0], qty: "6" }] }, f.db);
+  const fp = await submitFl(x.maker, first.id, first.version, f.db);
+  await approveFl(checker, first.id, { action: "approve", version: fp.version }, f.db);
+  const basis = await getJgMaterialBasis(x.maker, sibling.id, f.db);
+  expect(basis.lines[0]).toMatchObject({ grossReq: "10.0000", issuedQty: "0", woIssuedQty: "6.0000", suggestedIssueQty: "4.0000" });
+  const second = await createFl(x.maker, { jgId: sibling.id, fromWarehouseId: x.own.id, toWarehouseId: x.out.id,
+    lines: [{ skuId: x.material.id, qty: "6", batchId: x.batch.id }] }, f.db);
+  const pending = await submitFl(x.maker, second.id, second.version, f.db);
+  const detail = await getFl(second.id, f.db, checker);
+  expect(detail.requirements[0]).toMatchObject({ issuedCum: "6.0000", grossReq: "10.0000" });
+  expect(detail.actions).toMatchObject({ approve: false, reject: true });
+  const before = await snapshot();
+  await expect(approveFl(checker, second.id, { action: "approve", version: pending.version }, f.db)).rejects.toMatchObject({ status: 403, message: expect.stringContaining("跨加工批次") });
+  expect(await snapshot()).toEqual(before);
+  const afterBasis = await getJgMaterialBasis(x.maker, x.jg.id, f.db);
+  expect(afterBasis.lines[0]).toMatchObject({ issuedQty: "6.0000", woPendingIssueQty: "6.0000", suggestedIssueQty: "0" });
+  expect(afterBasis.woOpenIssues).toEqual([{ kind: "fl", id: second.id, docNo: second.docNo, status: "pending", jgId: sibling.id, jgDocNo: sibling.docNo }]);
+  expect(afterBasis.openDocuments).toEqual([]);
+  await approveFl(x.admin, second.id, { action: "approve", version: pending.version }, f.db);
+  expect(await getBalance(f.db, x.material.id, x.out.id, x.batch.id)).toBe("12.0000");
+  const audit = (await f.db.select().from(s.auditLogs).where(eq(s.auditLogs.entityId, second.id))).find(r => r.entity === "fl" && r.action === "post_and_complete");
+  expect(audit?.after).toMatchObject({ overIssue: true });
 });

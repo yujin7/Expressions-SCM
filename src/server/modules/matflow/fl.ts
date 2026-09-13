@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import {
-   approvalConfigs, batches, flDocs, flLines, jgDocs, skus, stockLedger, users, warehouses, woLines,
+   approvalConfigs, batches, flDocs, flLines, jgDocs, skus, stockLedger, users, warehouses, woDocs, woLines,
 } from "@/db/schema";
 import { dAdd, dNeg, dQty } from "@/server/core/decimal";
 import type { SessionUser } from "@/server/core/dto";
@@ -174,14 +174,15 @@ async function grossReqBySku(db: AnyDb, woId: number): Promise<Map<number, strin
   return m;
 }
 
-/** 该 JG 已批准生效 FL 的逐物料累计发料（可排除某单——审批中的本单） */
-async function issuedCumBySku(db: AnyDb, jgId: number, excludeFlId?: number): Promise<Map<number, string>> {
-  const conds = [eq(flDocs.jgId, jgId), inArray(flDocs.status, [...ACTIVE_DOC_STATUSES])];
+/** WO毛需求是全单额度，累计须跨其全部JG；退料不自动恢复额度。 */
+async function issuedCumByWoSku(db: AnyDb, woId: number, excludeFlId?: number): Promise<Map<number, string>> {
+  const conds = [eq(jgDocs.woId, woId), inArray(flDocs.status, [...ACTIVE_DOC_STATUSES])];
   if (excludeFlId != null) conds.push(ne(flDocs.id, excludeFlId));
   const rows: { skuId: number; qty: string }[] = await db
     .select({ skuId: flLines.skuId, qty: flLines.qty })
     .from(flLines)
     .innerJoin(flDocs, eq(flLines.flId, flDocs.id))
+    .innerJoin(jgDocs, eq(flDocs.jgId, jgDocs.id))
     .where(and(...conds));
   const m = new Map<number, string>();
   for (const r of rows) m.set(r.skuId, dAdd(m.get(r.skuId) ?? "0", r.qty));
@@ -203,7 +204,15 @@ export async function approveFl(
       const actor = await currentWriteActor(tx, user);
       const [doc]: FlRow[] = await tx.select().from(flDocs).where(eq(flDocs.id, id));
       if (!doc) throw new ApiError(404, "单据不存在");
+      const [source]: { woId: number }[] = await tx.select({ woId: jgDocs.woId }).from(jgDocs).where(eq(jgDocs.id, doc.jgId));
+      if (!source) throw new ApiError(409, "加工通知单来源缺失，请核对");
+      // Serialize siblings before JG/FL/warehouse locks. Different source warehouses must
+      // not give two approvals independent snapshots of the same whole-WO allowance.
+      const [workOrder] = await tx.select({ id: woDocs.id }).from(woDocs).where(eq(woDocs.id, source.woId)).for("update");
+      if (!workOrder) throw new ApiError(409, "委外工单来源缺失，请核对");
       await lockMatflowJg(tx, doc.jgId);
+      const [lockedSource]: { woId: number }[] = await tx.select({ woId: jgDocs.woId }).from(jgDocs).where(eq(jgDocs.id, doc.jgId));
+      if (lockedSource?.woId !== source.woId) throw new ApiError(409, "加工通知单所属工单已变化，请重新读取");
 
       const r = await approveDoc(tx, {
         docType: "fl",
@@ -233,11 +242,11 @@ export async function approveFl(
       // 超发规则（《02》§3）：逐物料 (累计已批发料 + 本单) > wo_line 毛需求 → 仅管理员可批。
       // 校验失败整个事务回滚（审批记录一并撤销），管理员重批为新一次审批动作。
       const gross = await grossReqBySku(tx, jg.woId);
-      const cum = await issuedCumBySku(tx, doc.jgId, id);
+      const cum = await issuedCumByWoSku(tx, jg.woId, id);
       const relevantCum = new Map(lines.map(l => [l.skuId, cum.get(l.skuId) ?? "0"]));
       const overIssue = Boolean(materialExcess(lines, relevantCum, gross));
       if (overIssue && !actor.roles.includes("admin")) {
-        throw new ApiError(403, "超发需管理员审批");
+        throw new ApiError(403, "同工单跨加工批次累计超发需管理员审批，请核对其他批次已发量");
       }
 
       // 过账 fl_issue：一事件；每行两腿 from−（sourceLineId=行id）/ to+（sourceLineId=−行id）
@@ -322,7 +331,7 @@ export async function getFl(id: number, dbArg?: AnyDb, user?: SessionUser) {
     .from(jgDocs)
     .where(eq(jgDocs.id, doc.jgId));
   const gross = await grossReqBySku(db, jg.woId);
-  const cum = await issuedCumBySku(db, doc.jgId);
+  const cum = await issuedCumByWoSku(db, jg.woId);
   const requirements = [...new Set(lines.map((l) => l.skuId))].map((skuId) => ({
     skuId,
     grossReq: gross.get(skuId) ?? "0",

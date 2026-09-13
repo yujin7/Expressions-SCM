@@ -59,6 +59,19 @@ it("open documents are separate evidence and suppress repeated prefill only for 
   expect(await f.db.select().from(s.stockLedger)).toEqual([]);
   expect(await f.db.select().from(s.auditLogs)).toEqual([]);
 });
+it("sibling JG shares WO totals and open issue links without corrupting this JG return evidence", async () => {
+  const [sibling] = await f.db.insert(s.jgDocs).values({ docNo: "BASIS-SIBLING", woId: jg.woId, productSkuId: jg.productSkuId,
+    supplierId: jg.supplierId, qty: "0.5", feeRateCurrent: "0", status: "in_progress", batchSeq: 2, createdBy: actor.id }).returning();
+  await doc("fl", "completed", untouched, "3", sibling.id);
+  await doc("tl", "completed", untouched, "1", sibling.id);
+  let result = await getJgMaterialBasis(actor, jg.id, f.db);
+  expect(result.lines.find(l => l.materialSkuId === untouched)).toMatchObject({ issuedQty: "0", returnedQty: "0", woIssuedQty: "3.0000", suggestedIssueQty: "2.0000" });
+  const pending = await doc("fl", "pending", untouched, "2", sibling.id);
+  result = await getJgMaterialBasis(actor, jg.id, f.db);
+  expect(result.lines.find(l => l.materialSkuId === untouched)).toMatchObject({ pendingIssueQty: "0", woPendingIssueQty: "2.0000", suggestedIssueQty: "0" });
+  expect(result.woOpenIssues).toContainEqual({ kind: "fl", id: pending.id, docNo: pending.docNo, status: "pending", jgId: sibling.id, jgDocNo: sibling.docNo });
+  expect(result.openDocuments.some(d => d.id === pending.id && d.kind === "fl")).toBe(false);
+});
 it.each([0, -1, 1.5, 2147483648, NaN])("rejects invalid source %s", async id => {
   await expect(getJgMaterialBasis(actor, id, f.db)).rejects.toMatchObject({ status: 400 });
 });

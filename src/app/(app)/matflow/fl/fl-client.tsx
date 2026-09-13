@@ -177,8 +177,8 @@ export default function FlClient() {
   const [createLines, setCreateLines] = useState<CreateLine[]>([]);
   const materialRead = useJgMaterialLines((lines) => setCreateLines(lines.map((l) => ({
     skuId: l.materialSkuId, skuCode: l.skuCode, skuName: l.skuName, baseUom: l.baseUom,
-    grossReq: l.grossReq, issuedQty: l.issuedQty, draftIssueQty: l.draftIssueQty,
-    pendingIssueQty: l.pendingIssueQty, qty: l.suggestedIssueQty,
+    grossReq: l.grossReq, issuedQty: l.woIssuedQty, draftIssueQty: l.woDraftIssueQty,
+    pendingIssueQty: l.woPendingIssueQty, qty: l.suggestedIssueQty,
   }))));
 
   const beginLoadRead = useLatestRead();
@@ -347,16 +347,16 @@ export default function FlClient() {
       render: (v: string | null, r) => v ? `${v}${r.expiryDate ? ` · ${r.expiryDate}` : ""}` : "无批次",
     },
     {
-      title: "毛需求",
+      title: "工单毛需求",
       key: "grossReq",
       width: 110,
       align: "right",
       render: (_, r) => formatQty(reqBySku.get(r.skuId)?.grossReq),
     },
     {
-      title: "累计已发",
+      title: "工单累计已发",
       key: "issuedCum",
-      width: 110,
+      width: 130,
       align: "right",
       render: (_, r) => formatQty(reqBySku.get(r.skuId)?.issuedCum),
     },
@@ -383,9 +383,9 @@ export default function FlClient() {
   const createLineColumns: ColumnsType<CreateLine> = [
     { title: "物料", key: "material", width: 200, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
-    { title: "毛需求", dataIndex: "grossReq", width: 110, align: "right", render: (v: string) => formatQty(v) },
-    { title: "累计已批发料", dataIndex: "issuedQty", width: 120, align: "right", render: (v: string) => formatQty(v) },
-    { title: "草稿 / 待批", key: "open", width: 130, align: "right", render: (_, r) => formatQty(r.draftIssueQty) + " / " + formatQty(r.pendingIssueQty) },
+    { title: "工单毛需求", dataIndex: "grossReq", width: 120, align: "right", render: (v: string) => formatQty(v) },
+    { title: "工单累计已发", dataIndex: "issuedQty", width: 130, align: "right", render: (v: string) => formatQty(v) },
+    { title: "工单草稿 / 待批", key: "open", width: 150, align: "right", render: (_, r) => formatQty(r.draftIssueQty) + " / " + formatQty(r.pendingIssueQty) },
     {
       title: "本单发料数量",
       key: "qty",
@@ -539,7 +539,7 @@ export default function FlClient() {
               columns={lineColumns}
               dataSource={detail.lines}
               pagination={false}
-              scroll={{ x: 750 }}
+              scroll={{ x: 770 }}
               tableLayout="fixed"
               style={{ marginBottom: 24 }}
             />
@@ -622,7 +622,7 @@ export default function FlClient() {
               columns={createLineColumns}
               dataSource={createLines}
               pagination={false}
-              scroll={{ x: 790 }}
+              scroll={{ x: 830 }}
               tableLayout="fixed"
               locale={{ emptyText: materialRead.error ? "物料读取失败" : jgId == null ? "请先选择加工通知单" : "当前工单没有物料行" }}
             />

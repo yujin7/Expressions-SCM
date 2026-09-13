@@ -11,6 +11,10 @@ export interface JgMaterialLine {
   pendingIssueQty: string;
   draftReturnQty: string;
   pendingReturnQty: string;
+  /** Whole-WO issue allowance, including sibling JGs; legacy fields above remain this JG. */
+  woIssuedQty: string;
+  woDraftIssueQty: string;
+  woPendingIssueQty: string;
   suggestedIssueQty: string;
 }
 
@@ -21,4 +25,5 @@ export interface JgMaterialBasis {
   observedAt: string;
   lines: JgMaterialLine[];
   openDocuments: { kind: "fl" | "tl"; id: number; docNo: string; status: "draft" | "pending" }[];
+  woOpenIssues: { kind: "fl"; id: number; docNo: string; status: "draft" | "pending"; jgId: number; jgDocNo: string }[];
 }
