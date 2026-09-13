@@ -17,25 +17,29 @@ export function useJgMaterialLines(onLoaded: (lines: JgMaterialLine[]) => void) 
   const [scope] = useState(createLatestReadScope);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [supplierId, setSupplierId] = useState<number | null>(null);
   useEffect(() => scope.cancel, [scope]);
 
   const cancel = useCallback(() => {
     scope.cancel();
     setLoading(false);
     setError(null);
+    setSupplierId(null);
   }, [scope]);
 
   const load = useCallback(async (id: number) => {
     const request = scope.begin();
     onLoaded([]);
+    setSupplierId(null);
     setLoading(true);
     setError(null);
     try {
-      const jg = await fetchJson<{ woId: number }>(`/api/outsource/jg/${id}`, { signal: request.signal });
+      const jg = await fetchJson<{ woId: number; supplierId: number }>(`/api/outsource/jg/${id}`, { signal: request.signal });
       if (!request.isCurrent()) return;
       const wo = await fetchJson<{ lines: JgMaterialLine[] }>(`/api/outsource/wo/${jg.woId}`, { signal: request.signal });
       if (!request.isCurrent()) return;
       onLoaded(wo.lines);
+      setSupplierId(jg.supplierId ?? null);
     } catch (cause) {
       if (request.isCurrent()) setError(cause instanceof Error ? cause.message : "物料加载失败，请重试");
     } finally {
@@ -43,5 +47,5 @@ export function useJgMaterialLines(onLoaded: (lines: JgMaterialLine[]) => void) 
     }
   }, [onLoaded, scope]);
 
-  return { load, cancel, loading, error };
+  return { load, cancel, loading, error, supplierId };
 }

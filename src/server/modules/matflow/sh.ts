@@ -23,9 +23,9 @@ import {
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import {
   ACTIVE_DOC_STATUSES, completeApprovedDoc, getGlobalParam, getJgForMatflow,
-  getOutsourceWarehouseOf, requireRealtimeWarehouse,
+  getOutsourceWarehouseOf, requireRealtimeWarehouse, lockMatflowWarehouses,
 } from "./common-notes";
-import { createQcSchema, createShSchema } from "./schemas";
+import { confirmInboundSchema, createQcSchema, createShSchema } from "./schemas";
 import { lockPurchaseReceipt, resolvePurchaseReceiptLine } from "./purchase-receipt-lock";
 import { currentWriteActor as currentMatflowActor } from "@/server/core/current-write-actor";
 
@@ -127,8 +127,6 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
   return db.transaction(async (tx: AnyDb) => {
     const actor = await currentMatflowActor(tx, user);
     requireAnyRole(actor, "warehouse");
-    await tx.select({ id: warehouses.id }).from(warehouses).where(eq(warehouses.id, v.warehouseId)).for("share");
-    await requireRealtimeWarehouse(tx, v.warehouseId, "收货仓");
 
     let lines = v.lines;
     if (v.sourceType === "jg") {
@@ -157,6 +155,9 @@ export async function createSh(user: SessionUser, input: unknown, dbArg?: AnyDb)
       // po 源无行类型概念，强制 normal
       lines = lines.map((l) => ({ ...l, poLineId: resolvePurchaseReceiptLine(plRows, l.skuId, l.poLineId).id, lineType: "normal" as const }));
     }
+    // Source before warehouse, matching inbound; the opposite order can deadlock a concurrent receipt.
+    await tx.select({ id: warehouses.id }).from(warehouses).where(eq(warehouses.id, v.warehouseId)).for("share");
+    await requireRealtimeWarehouse(tx, v.warehouseId, "收货仓");
     const docNo = await nextDocNo(tx, "SH");
     const [doc]: ShRow[] = await tx
       .insert(shDocs)
@@ -344,8 +345,10 @@ export async function confirmInbound(
   user: SessionUser,
   shId: number,
   dbArg?: AnyDb,
+  input: unknown = {},
 ): Promise<{ status: string; materialReview?: "checked" | "pending"; batchCheck?: "checked" | "pending" }> {
   requireAnyRole(user, "warehouse");
+  const selection = confirmInboundSchema.parse(input);
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
@@ -367,6 +370,18 @@ export async function confirmInbound(
       // Lock the shared PO aggregate before batch/stock writes; different SH and CT
       // must not independently read the same old receivedQty.
       const purchase = sh.sourceType === "po" ? await lockPurchaseReceipt(tx, sh.sourceId) : null;
+      let outsourceWarehouse: typeof warehouses.$inferSelect | null = null;
+      if (sh.sourceType === "jg") {
+        await lockJgReceiptAggregate(tx, sh.sourceId);
+        const [jg]: (typeof jgDocs.$inferSelect)[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, sh.sourceId));
+        const choice = await getOutsourceWarehouseOf(tx, jg.supplierId, selection.outsourceWarehouseId);
+        await lockMatflowWarehouses(tx, [sh.warehouseId, choice.id]);
+        outsourceWarehouse = await getOutsourceWarehouseOf(tx, jg.supplierId, choice.id);
+      } else {
+        if (selection.outsourceWarehouseId != null) throw new ApiError(400, "采购收货不可指定委外扣料仓");
+        await lockMatflowWarehouses(tx, [sh.warehouseId]);
+      }
+      await requireRealtimeWarehouse(tx, sh.warehouseId, "收货仓");
       const batchPostingEnabled = await isBatchPostingEnabled(tx);
       const batchIds = await registerBatchesFromReceipt(
         tx,
@@ -383,7 +398,7 @@ export async function confirmInbound(
       );
 
       if (sh.sourceType === "jg") {
-        await inboundFromJg(tx, user, sh, lines, qcByShLine, batchByShLine);
+        await inboundFromJg(tx, user, sh, lines, qcByShLine, batchByShLine, outsourceWarehouse!.id);
       } else {
         await inboundFromPo(tx, user, sh, lines, qcByShLine, batchByShLine, purchase!);
       }
@@ -398,6 +413,9 @@ export async function confirmInbound(
           qcId: qc.id,
           sourceType: sh.sourceType,
           sourceId: sh.sourceId,
+          outsourceWarehouse: outsourceWarehouse ? {
+            id: outsourceWarehouse.id, code: outsourceWarehouse.code, name: outsourceWarehouse.name,
+          } : null,
           batchPostingEnabled,
           autoBatchRequested,
           autoBatchWoId: autoBatchRequested ? purchase!.po.woId : null,
@@ -452,10 +470,10 @@ async function inboundFromJg(
   lines: ShLineRow[],
   qcByShLine: Map<number, typeof qcLines.$inferSelect>,
   batchByShLine: Map<number, number | null>,
+  outsourceWarehouseId: number,
 ): Promise<void> {
   const [jg]: (typeof jgDocs.$inferSelect)[] = await tx.select().from(jgDocs).where(eq(jgDocs.id, sh.sourceId));
   if (!jg) throw new ApiError(500, `收货单挂空 JG: #${sh.sourceId}`);
-  const outWh = await getOutsourceWarehouseOf(tx, jg.supplierId);
   const woLineRows: (typeof woLines.$inferSelect)[] = await tx
     .select()
     .from(woLines)
@@ -491,7 +509,7 @@ async function inboundFromJg(
     const consumption = woLineRows
       .map((wl) => ({ skuId: wl.materialSkuId, qty: dMul(wl.qtyPer, q), originId: wl.id }))
       .filter((line) => !dZero(line.qty));
-    const allocated = await expandOutboundLinesForBatchPosting(tx, outWh.id, consumption);
+    const allocated = await expandOutboundLinesForBatchPosting(tx, outsourceWarehouseId, consumption);
     const fragmentByOrigin = new Map<number, number>();
     for (const line of allocated) {
       const fragment = (fragmentByOrigin.get(line.originId) ?? 0) + 1;
@@ -501,7 +519,7 @@ async function inboundFromJg(
       eventLines.push({
         sourceLineId,
         skuId: line.skuId,
-        warehouseId: outWh.id,
+        warehouseId: outsourceWarehouseId,
         batchId: line.batchId,
         qtyDelta: dNeg(line.qty),
       });

@@ -1,4 +1,4 @@
-import { and, eq, getTableColumns, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import type { AnyPgTable, PgColumn } from "drizzle-orm/pg-core";
 import { jgDocs, sysParams, warehouses } from "@/db/schema";
 import { nextStatus } from "@/server/docflow/state";
@@ -67,15 +67,27 @@ export async function matflowSourceBlock(db: AnyDb, jgId: number, operation: "is
 
 type WarehouseRow = typeof warehouses.$inferSelect;
 
-/** 该加工厂的委外仓（kind=outsource + supplierId 匹配）；缺失 404（须先建仓） */
-export async function getOutsourceWarehouseOf(db: AnyDb, supplierId: number): Promise<WarehouseRow> {
-  const [wh]: WarehouseRow[] = await db
+/** Explicit choice, or a unique eligible warehouse for older callers. Never guess among multiple warehouses. */
+export async function getOutsourceWarehouseOf(db: AnyDb, supplierId: number, warehouseId?: number): Promise<WarehouseRow> {
+  const rows: WarehouseRow[] = await db
     .select()
     .from(warehouses)
-    .where(and(eq(warehouses.kind, "outsource"), eq(warehouses.supplierId, supplierId), eq(warehouses.active, true)))
-    .limit(1);
-  if (!wh) throw new ApiError(404, `该加工厂无委外仓（kind=outsource, supplier#${supplierId}），请先在仓库主数据建仓`);
-  return wh;
+    .where(and(eq(warehouses.kind, "outsource"), eq(warehouses.supplierId, supplierId),
+      eq(warehouses.active, true), eq(warehouses.accountingMode, "realtime"),
+      warehouseId == null ? undefined : eq(warehouses.id, warehouseId)))
+    .orderBy(warehouses.id).limit(2);
+  if (!rows.length) throw new ApiError(warehouseId == null ? 404 : 409, warehouseId == null
+    ? `该加工厂无启用的实时委外仓（supplier#${supplierId}），请先在仓库主数据核对`
+    : `所选委外仓 #${warehouseId} 已停用或不属于该加工厂的实时委外仓，请重新核对`);
+  if (rows.length > 1) throw new ApiError(409, "该加工厂有多个委外仓，请明确选择本次实际发料、退料或扣料的仓库");
+  return rows[0];
+}
+
+/** Same ordered locks as posting. Callers re-read qualification after waiting, within the transaction. */
+export async function lockMatflowWarehouses(db: AnyDb, warehouseIds: number[]): Promise<void> {
+  await db.select({ id: warehouses.id }).from(warehouses)
+    .where(inArray(warehouses.id, [...new Set(warehouseIds)]))
+    .orderBy(warehouses.id).for("update");
 }
 
 /** 自有实时仓校验（发/退/收货落仓）：存在、启用、实时记账、非委外仓 */

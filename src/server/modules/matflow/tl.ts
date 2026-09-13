@@ -18,7 +18,7 @@ import {
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import {
   ACTIVE_DOC_STATUSES, completeApprovedDoc, getJgForMatflow, getOutsourceWarehouseOf,
-  requireRealtimeWarehouse, lockMatflowJg, matflowSourceBlock,
+  requireRealtimeWarehouse, lockMatflowJg, lockMatflowWarehouses, matflowSourceBlock,
 } from "./common-notes";
 import { createTlSchema } from "./schemas";
 import { expandOutboundLinesForBatchPosting } from "@/server/modules/inventory/batch-allocation";
@@ -45,7 +45,9 @@ export async function createTl(user: SessionUser, input: unknown, dbArg?: AnyDb)
   const actor = await currentWriteActor(tx, user); requireAnyRole(actor, "warehouse");
   await lockMatflowJg(tx, v.jgId);
   const jg = await getJgForMatflow(tx, v.jgId, "return");
-  const fromWh = await getOutsourceWarehouseOf(tx, jg.supplierId); // 退料出仓=该加工厂委外仓（自动）
+  const fromWh = await getOutsourceWarehouseOf(tx, jg.supplierId, v.fromWarehouseId);
+  await lockMatflowWarehouses(tx, [fromWh.id, v.toWarehouseId]);
+  await getOutsourceWarehouseOf(tx, jg.supplierId, fromWh.id);
   await requireRealtimeWarehouse(tx, v.toWarehouseId, "退回仓");
 
   const skuIds = [...new Set(v.lines.map((l) => l.skuId))];
@@ -145,7 +147,10 @@ export async function approveTl(
         after: { comment: v.comment ?? null },
       });
       if (v.action === "reject") return r;
-      await getJgForMatflow(tx, doc.jgId, "return");
+      const sourceJg = await getJgForMatflow(tx, doc.jgId, "return");
+      await lockMatflowWarehouses(tx, [doc.fromWarehouseId, doc.toWarehouseId]);
+      await getOutsourceWarehouseOf(tx, sourceJg.supplierId, doc.fromWarehouseId);
+      await requireRealtimeWarehouse(tx, doc.toWarehouseId, "退回仓");
 
       const lines: TlLineRow[] = await tx.select().from(tlLines).where(eq(tlLines.tlId, id)).orderBy(tlLines.id);
       if (lines.length === 0) throw new ApiError(409, "退料单无行，不可审批过账");

@@ -7,6 +7,7 @@ import {
   qcRecords,
   shDocs,
   shLines,
+  stockLedger,
   skus,
   users,
   warehouses,
@@ -44,12 +45,14 @@ export async function getSh(id: number, dbArg?: AnyDb) {
   if (!doc) throw new ApiError(404, "单据不存在");
 
   let sourceDocNo: string | null = null;
+  let sourceSupplierId: number | null = null;
   if (doc.sourceType === "jg") {
-    const [row]: { docNo: string }[] = await db
-      .select({ docNo: jgDocs.docNo })
+    const [row]: { docNo: string; supplierId: number }[] = await db
+      .select({ docNo: jgDocs.docNo, supplierId: jgDocs.supplierId })
       .from(jgDocs)
       .where(eq(jgDocs.id, doc.sourceId));
     sourceDocNo = row?.docNo ?? null;
+    sourceSupplierId = row?.supplierId ?? null;
   } else {
     const [row]: { docNo: string }[] = await db
       .select({ docNo: poDocs.docNo })
@@ -111,9 +114,19 @@ export async function getSh(id: number, dbArg?: AnyDb) {
     basisStatus: ["unknown", "needs_review", "no_difference"].includes(result?.basisStatus ?? "") ? result!.basisStatus : null,
   } : null;
 
+  // Historical facts: this receipt's negative ledger legs, never today's first factory warehouse.
+  const consumptionWarehouses = doc.status === "completed" && doc.sourceType === "jg"
+    ? await db.selectDistinct({ id: warehouses.id, code: warehouses.code, name: warehouses.name })
+      .from(stockLedger).innerJoin(warehouses, eq(stockLedger.warehouseId, warehouses.id))
+      .where(and(eq(stockLedger.sourceDocType, "sh_outsource_in"), eq(stockLedger.sourceDocId, id),
+        eq(stockLedger.action, "post"), sql`${stockLedger.qtyDelta} < 0`)).orderBy(warehouses.id)
+    : [];
+
   return {
     ...doc,
     sourceDocNo,
+    sourceSupplierId,
+    consumptionWarehouses,
     lines,
     qc,
     inbound: doc.status === "completed",

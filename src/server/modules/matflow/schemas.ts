@@ -19,6 +19,7 @@ const dateStr = businessDateSchema;
 export const createFlSchema = z.object({
   jgId: z.number().int().positive({ message: "必须选择加工通知单" }),
   fromWarehouseId: z.number().int().positive({ message: "必须选择发料仓" }),
+  toWarehouseId: z.number().int().positive().optional(),
   remark: z.string().trim().max(500).optional(),
   lines: z
     .array(
@@ -37,6 +38,7 @@ export type CreateFlInput = z.infer<typeof createFlSchema>;
 export const createTlSchema = z.object({
   jgId: z.number().int().positive({ message: "必须选择加工通知单" }),
   toWarehouseId: z.number().int().positive({ message: "必须选择退回仓" }),
+  fromWarehouseId: z.number().int().positive().optional(),
   remark: z.string().trim().max(500).optional(),
   lines: z
     .array(
@@ -75,6 +77,10 @@ export const createShSchema = z.object({
     .min(1, "至少需要一行"),
 });
 export type CreateShInput = z.infer<typeof createShSchema>;
+
+export const confirmInboundSchema = z.object({
+  outsourceWarehouseId: z.number().int().positive().optional(),
+}).strict();
 
 // ---------- QC 检验 ----------
 

@@ -16,10 +16,14 @@ function buildWhere(q: string) {
 export const WAREHOUSE_SORT_KEYS = ["code", "name", "regionCode"] as const;
 export async function listWarehouses(q: string, page: number, pageSize: number, selectedValues?: SelectedOptionValue[], options?: {
   sort?: typeof WAREHOUSE_SORT_KEYS[number]; order?: "asc" | "desc";
+  outsourceSupplierId?: number;
 }) {
   const db = await getDbAsync();
   const sortColumn = schema.warehouses[options?.sort ?? "code"];
-  const where = and(buildWhere(q), selectedOptionsPredicate(selectedValues, {
+  const where = and(buildWhere(q), options?.outsourceSupplierId == null ? undefined : and(
+    eq(schema.warehouses.supplierId, options.outsourceSupplierId), eq(schema.warehouses.kind, "outsource"),
+    eq(schema.warehouses.accountingMode, "realtime"), eq(schema.warehouses.active, true),
+  ), selectedOptionsPredicate(selectedValues, {
     id: schema.warehouses.id, text: [schema.warehouses.code, schema.warehouses.name],
   }));
   const [rows, [{ total }]] = await Promise.all([
