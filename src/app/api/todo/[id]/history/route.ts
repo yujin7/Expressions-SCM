@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser } from "@/server/core/dto";
-import { appendWorkItemNote, listWorkItemHistory } from "@/server/modules/todo/history";
+import { appendWorkItemNote, getWorkItemNoteResult, listWorkItemHistory } from "@/server/modules/todo/history";
 import { ApiError, errorResponse, parseId, readJson } from "@/server/modules/master/common";
 
 type Context = { params: Promise<{ id: string }> };
@@ -8,6 +8,10 @@ export async function GET(req: NextRequest, ctx: Context) {
   try {
     const actor = await getFreshSessionUser();
     const params = new URL(req.url).searchParams;
+    if (params.get("mode") === "result") {
+      if ([...params.keys()].some(k => !["mode", "requestId"].includes(k)) || params.getAll("mode").length !== 1 || params.getAll("requestId").length !== 1) throw new ApiError(400, "跟进回执查询参数无效");
+      return NextResponse.json(await getWorkItemNoteResult(parseId((await ctx.params).id), params.get("requestId")!, actor), { headers: { "Cache-Control": "private, no-store" } });
+    }
     if ([...params.keys()].some(k => k !== "before") || params.getAll("before").length > 1) throw new ApiError(400, "历史记录查询参数无效");
     return NextResponse.json(await listWorkItemHistory(parseId((await ctx.params).id), params.has("before") ? { before: params.get("before") } : {}, actor));
   } catch (error) { return errorResponse(error, { path: "/api/todo/[id]/history", method: "GET" }); }

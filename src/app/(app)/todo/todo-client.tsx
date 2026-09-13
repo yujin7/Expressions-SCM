@@ -26,6 +26,7 @@ import { todoSortPatch, type TodoSortField } from "@/lib/todo-sort";
 import TodoProgressCard from "./TodoProgressCard";
 import TodoCreateDrawer from "./TodoCreateDrawer";
 import TodoHistoryDrawer from "./TodoHistoryDrawer";
+import TodoNoteRecovery from "./TodoNoteRecovery";
 import styles from "./todo-client.module.css";
 
 export interface WorkItemRow {
@@ -479,6 +480,7 @@ export default function TodoClient() {
         detail={<div>部门按责任角色划分（D61）。同来源 7 天内再触发则重新打开而不是新建。完成率 = 已完成 ÷ (总数 − 已取消)；按时率 = 按时完成 ÷ 已完成；创建后不足 10 分钟即关闭标「可疑」。审批类事项不在这里，见顶部菜单「待我审批」。</div>}
       />
       <div style={{ marginBottom: 12 }}><TodoProgressCard refreshKey={tick} /></div>
+      {me ? <TodoNoteRecovery key={`${me.id}:${me.roles.join(",")}`} actorId={me.id} /> : null}
       <Tabs
         activeKey={activeTab}
         onChange={(tab) => router.push(todoTabHref(searchParams.toString(), tab), { scroll: false })}
