@@ -1,6 +1,7 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import CtClient from "@/app/(app)/matflow/ct/ct-client";
+import CtDraftVoid from "@/app/(app)/matflow/ct/ct-draft-void";
 
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
   q: "", detailId: null as number | null, actorId: 1, roles: ["warehouse"], rootKey: null as string | null, approver: false, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
@@ -119,6 +120,34 @@ it("a quantity block disables approval while keeping independent rejection avail
   const buttons = nodes(props("drawer").extra as ReactNode).filter(n => n.type === "button");
   expect(buttons.find(n => n.props.children === "审批通过")?.props.disabled).toBe(true);
   expect(buttons.some(n => n.props.children === "驳回")).toBe(true);
+});
+it.each([true, false, undefined])("void entry follows the service hint (%s), including an invalid source", async allowed => {
+  h.detailId = 1;
+  fetchMock.mockImplementation(async url => String(url).endsWith("/ct/1") ? Response.json({ id: 1, version: 3, createdBy: 1, docNo: "CT-1", status: "draft", lines: [], approvals: [],
+    actions: { void: allowed, edit: false, submit: false, reason: "来源已关闭" } }) : Response.json({ rows: [], total: 0 }));
+  render(); await flush();
+  const button = nodes(props("drawer").extra as ReactNode).find(n => n.props.children === "作废错误草稿");
+  expect(!!button).toBe(allowed === true);
+  if (button) {
+    (button.props.onClick as () => void)();
+    const dialog = nodes(render()).find(n => n.type === CtDraftVoid)!;
+    expect(dialog.props.doc).toMatchObject({ id: 1, version: 3 });
+    (dialog.props.onReload as () => void)(); render(); await flush();
+    expect(nodes(render()).some(n => n.type === CtDraftVoid)).toBe(false);
+    expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  }
+});
+it("voided detail retains reason and opens a blank replacement only on explicit click", async () => {
+  h.detailId = 1;
+  fetchMock.mockImplementation(async url => String(url).endsWith("/ct/1") ? Response.json({ id: 1, createdBy: 1, docNo: "CT-1", status: "void", closedReason: "实物批次选错", lines: [], approvals: [],
+    actions: { void: false, edit: false, submit: false, reason: "已结束" } }) : Response.json({ rows: [], total: 0 }));
+  render(); await flush(); expect(create().props.open).toBe(false);
+  expect(nodes(render()).some(n => n.props.message === "作废原因：实物批次选错")).toBe(true);
+  const button = nodes(props("drawer").extra as ReactNode).find(n => n.props.children === "新建正确退货单")!;
+  (button.props.onClick as () => void)(); render();
+  expect(create().props.open).toBe(true); expect(lines().dataSource).toEqual([]);
+  expect(create().props.okButtonProps).toMatchObject({ disabled: true });
+  expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
 });
 it.each(["identity", "roles"])("%s change remounts the workspace and clears another actor's open form", async change => {
   await prepared(); expect(create().props.open).toBe(true);

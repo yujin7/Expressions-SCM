@@ -56,7 +56,7 @@ export default function CtDraftEditor({ doc, onClose, onSaved, onReload }: {
     okButtonProps={{ disabled: busy || mustReload }} cancelButtonProps={{ disabled: busy }} onOk={() => void save()}>
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Alert type="info" showIcon message={`原采购订单 ${doc.poDocNo}、出库仓 ${doc.warehouseName}、采购行及批次保持不变。`}
-        description="仅纠正数量、原因、备注或移除不退的行；保存不提交、不审批、不改变库存和PO已收数，原审批历史保留。来源或实物批次本身选错时，请先联系仓管核对，不借用其他行或批次。" />
+        description="仅纠正数量、原因、备注或移除不退的行；保存不提交、不审批、不改变库存和PO已收数，原审批历史保留。来源或实物批次本身选错时，关闭后由具备资格的制单人或管理员作废错误草稿，再核对新建；不借用其他行或批次。" />
       {error && <Alert type="error" showIcon message={error} action={mustReload ? <Button size="small" onClick={onReload}>关闭并核对原单</Button> : undefined} />}
       <Table size="small" rowKey="id" columns={columns} dataSource={lines} pagination={false} tableLayout="fixed" scroll={{ x: 730, y: 280 }} />
       <Input.TextArea aria-label="修改退货备注" value={remark} disabled={busy || mustReload} rows={2} maxLength={500} placeholder="备注（可选）"

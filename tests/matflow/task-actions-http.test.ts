@@ -4,13 +4,14 @@ import { ApiError } from "@/server/modules/master/common";
 import { GET as flDetail, PATCH as flUpdate } from "@/app/api/matflow/fl/[id]/route";
 import { GET as tlDetail, PATCH as tlUpdate } from "@/app/api/matflow/tl/[id]/route";
 import { GET as ctDetail, PATCH as ctUpdate } from "@/app/api/matflow/ct/[id]/route";
+import { POST as ctVoid } from "@/app/api/matflow/ct/[id]/void/route";
 import { GET as flList } from "@/app/api/matflow/fl/route";
 import { GET as tlList } from "@/app/api/matflow/tl/route";
 const h = vi.hoisted(() => ({ fresh: vi.fn(), fl: vi.fn(), tl: vi.fn(), list: vi.fn(), update: vi.fn() }));
 vi.mock("@/server/modules/outsource/common", () => ({ guardFreshWrite: h.fresh }));
 vi.mock("@/server/modules/matflow/fl", () => ({ getFl: h.fl, listFls: h.list, updateFl: h.update }));
 vi.mock("@/server/modules/matflow/tl", () => ({ getTl: h.tl, listTls: h.list, updateTl: h.update }));
-vi.mock("@/server/modules/matflow/ct", () => ({ getCt: h.tl, updateCt: h.update }));
+vi.mock("@/server/modules/matflow/ct", () => ({ getCt: h.tl, updateCt: h.update, voidCt: h.update }));
 const actor = { id: 7, name: "当前仓管", roles: ["warehouse"], isApprover: false };
 const req = new NextRequest("http://localhost/api/matflow/fl");
 const ctx = { params: Promise.resolve({ id: "19" }) };
@@ -20,6 +21,26 @@ beforeEach(() => {
   h.tl.mockImplementation(h.fl); h.list.mockResolvedValue({ rows: [], total: 0 });
 });
 const patchRequest = (body: string) => new NextRequest("http://localhost/api/matflow/fl/19", { method: "PATCH", headers: { "content-type": "application/json" }, body });
+it("CT void forwards fresh actor and exact version/reason and never caches the result", async () => {
+  const payload = { version: 3, reason: "原采购来源选错" };
+  h.update.mockResolvedValue({ id: 19, status: "void", version: 4 });
+  const response = await ctVoid(patchRequest(JSON.stringify(payload)), ctx);
+  expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(h.update).toHaveBeenCalledExactlyOnceWith(actor, 19, payload);
+});
+it("CT void refuses stale session, bad ID and malformed JSON before mutation", async () => {
+  h.fresh.mockRejectedValueOnce(new ApiError(401, "会话失效"));
+  expect((await ctVoid(patchRequest("{}"), ctx)).status).toBe(401);
+  expect((await ctVoid(patchRequest("{"), ctx)).status).toBe(400);
+  expect((await ctVoid(patchRequest("{}"), { params: Promise.resolve({ id: "bad" }) })).status).toBe(400);
+  expect(h.update).not.toHaveBeenCalled();
+});
+it("CT void preserves the actionable conflict and does not retry", async () => {
+  h.update.mockRejectedValueOnce(new ApiError(409, "单据版本已变化，请重新读取"));
+  const response = await ctVoid(patchRequest("{}"), ctx);
+  expect(response.status).toBe(409); expect(await response.json()).toEqual({ error: "单据版本已变化，请重新读取" });
+  expect(h.update).toHaveBeenCalledOnce();
+});
 it("draft PATCH forwards fresh actor and exact payload, with no automatic retry", async () => {
   const payload = { version: 3, fromWarehouseId: 1, toWarehouseId: 2, lines: [{ skuId: 1, qty: "1", batchId: null }] };
   h.update.mockResolvedValue({ id: 19, version: 4, status: "draft" });

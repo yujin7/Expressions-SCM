@@ -144,6 +144,11 @@ export const createCtSchema = z.object({
 });
 export type CreateCtInput = z.infer<typeof createCtSchema>;
 
+export const voidCtSchema = z.object({
+  version: z.number().int().positive(),
+  reason: z.string().trim().min(1, "请填写作废原因").max(500),
+}).strict();
+
 /** Original PO, physical warehouse/SKU/batch and retained line IDs are immutable during repair. */
 export const updateCtSchema = z.object({
   version: z.number().int().positive(),
