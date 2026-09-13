@@ -223,6 +223,18 @@ it("restored missing/changed source identity blocks correction instead of silent
   await (create().props.onOk as () => Promise<void>)(); expect(h.message.warning).toHaveBeenCalledWith(expect.stringContaining("身份变化"));
   expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
 });
+it("correcting within the open modal withdraws old PO balances and rereads the same source", async () => {
+  await prepared();
+  const request = { requestKey: "ee392149-8738-4e50-992f-f565bba7f911", poId: 1, warehouseId: 10,
+    lines: [{ poLineId: 1, skuId: 1, qty: "1", batchId: null }] };
+  const fresh = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(fresh.promise);
+  (recoveryNode().props.onEdit as (request: unknown) => void)(request); render();
+  expect(lines().dataSource).toEqual([]); expect(create().props.okButtonProps).toMatchObject({ disabled: true });
+  fresh.resolve(Response.json({ id: 1, lines: [{ id: 1, skuId: 1, skuCode: "SKU-1", skuName: "合成物料", baseUom: "kg", receivedQty: "0.5" }] }));
+  await flush(); expect(lines().dataSource).toMatchObject([{ poLineId: 1, receivedQty: "0.5", qty: "1", batchId: null }]);
+  await (create().props.onOk as () => Promise<void>)(); expect(h.message.warning).toHaveBeenCalledWith(expect.stringContaining("超过该行已收余额"));
+  expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});
 it("late creation after account change cannot report success or navigate as the new actor", async () => {
   await prepared(); (cell("batch").onChange as (v: string) => void)("unbatched"); render(); (cell("qty").onChange as (v: string) => void)("1"); render();
   const pending = Promise.withResolvers<Response>(); fetchMock.mockReturnValueOnce(pending.promise);

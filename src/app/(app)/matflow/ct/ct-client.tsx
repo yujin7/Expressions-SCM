@@ -217,6 +217,8 @@ function CtWorkspace({ me }: { me: Me | null }) {
   };
 
   const editCreateRequest = (request: CtCreateRequest) => {
+    // Reopening the same source inside an already-open modal must also withdraw stale balances.
+    if (createOpen && poId === request.poId) poRead.retry();
     setCreateOpen(true); setEditingRequestKey(request.requestKey); setRestoredSource(request);
     setPoId(request.poId); setWarehouseId(request.warehouseId); setRemark(request.remark ?? "");
     const edits: Record<number, LineEdit[]> = {};
