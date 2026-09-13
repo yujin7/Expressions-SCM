@@ -1,12 +1,15 @@
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
 import { getKitFactoryEvidence } from "@/server/modules/outsource/kit-factory-evidence";
+import { outboundBatchBlock } from "@/server/posting/batch-eligibility";
+import { allocateFefo } from "@/server/rules/fefo";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 let db: TestDb, client: Awaited<ReturnType<typeof createTestDb>>["client"], seq = 0;
 beforeAll(async () => { ({ db, client } = await createTestDb()); });
 afterAll(async () => { await client.close(); });
+afterEach(() => vi.useRealTimers());
 async function fixture() {
   const code = `FACTORY-EVID-${++seq}`;
   const [actor] = await db.insert(s.users).values({ name: code, roles: ["pmc"] }).returning();
@@ -82,6 +85,35 @@ it("risk categories may overlap; multiple bins and duplicate WO lines never mult
     { expired: "10.0000", undatedBatch: "3.0000", unidentifiedBatch: "3.0000", quarantine: "3.0000" },
   ] });
   expect(JSON.stringify(evidence)).not.toMatch(/availableQty|allocatedQty/);
+});
+it.each([
+  { instant: "2026-09-13T15:59:59.999Z", day: "2026-09-13", expired: "2.0000", blocked: false },
+  { instant: "2026-09-13T16:00:00.000Z", day: "2026-09-14", expired: "5.1250", blocked: true },
+])("Shanghai midnight $instant: observation, FEFO and execution agree without netting risk away", async ({ instant, day, expired, blocked }) => {
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(instant));
+  const f = await fixture(), warehouse = await f.warehouse();
+  const [old, due, later, unknown, negative, wrong] = await db.insert(s.batches).values([
+    { skuId: f.material.id, batchNo: `${f.code}-OLD`, expiryDate: "2026-09-12" },
+    { skuId: f.material.id, batchNo: `${f.code}-DUE`, expiryDate: "2026-09-14" },
+    { skuId: f.material.id, batchNo: `${f.code}-LATER`, expiryDate: "2026-09-15" },
+    { skuId: f.material.id, batchNo: `${f.code}-UNKNOWN` },
+    { skuId: f.material.id, batchNo: `${f.code}-NEGATIVE`, expiryDate: "2026-09-12" },
+    { skuId: f.product.id, batchNo: `${f.code}-WRONG`, expiryDate: "2026-09-12" },
+  ]).returning();
+  await db.insert(s.stockBalances).values([
+    { batchId: old.id, qty: "2" }, { batchId: due.id, qty: "3.125" }, { batchId: later.id, qty: "4" },
+    { batchId: unknown.id, qty: "5" }, { batchId: negative.id, qty: "-1" }, { batchId: wrong.id, qty: "6" },
+  ].map(row => ({ ...row, skuId: f.material.id, warehouseId: warehouse.id })));
+  const before = { audits: await db.select().from(s.auditLogs), ledger: await db.select().from(s.stockLedger), balances: await db.select().from(s.stockBalances) };
+  const evidence = await f.read();
+  expect(evidence.businessDate).toBe(day);
+  expect(evidence.materials[0]).toMatchObject({ factoryOnHand: "19.1250", warehouses: [{ expired, undatedBatch: "5.0000", unidentifiedBatch: "6.0000" }] });
+  const lot = { batchId: due.id, batchNo: due.batchNo, expiryDate: due.expiryDate, qty: "3.125" };
+  expect(allocateFefo([lot], "1", evidence.businessDate).expiredLots).toBe(blocked ? 1 : 0);
+  const execution = await db.transaction(tx => outboundBatchBlock(tx, { sourceDocType: "fl_issue", sourceDocId: 999,
+    action: "post", lines: [{ sourceLineId: 1, skuId: f.material.id, warehouseId: warehouse.id, batchId: due.id, qtyDelta: "-1" }] }));
+  expect(execution?.code ?? null).toBe(blocked ? "EXPIRED_BATCH" : null);
+  expect({ audits: await db.select().from(s.auditLogs), ledger: await db.select().from(s.stockLedger), balances: await db.select().from(s.stockBalances) }).toEqual(before);
 });
 it("peer WOs are same-factory and same-material only; paused remains explicit, not reserved", async () => {
   const f = await fixture();
