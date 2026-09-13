@@ -9,8 +9,11 @@ const decStr = z
   .transform((v) => String(v).trim())
   .refine((s) => /^-?\d+(\.\d+)?$/.test(s), "必须是十进制数字");
 
-const qtyPositive = decStr.refine((s) => dCmp(s, "0") > 0, "数量必须大于 0");
-const qtyNonNegative = decStr.refine((s) => dCmp(s, "0") >= 0, "数量不能为负");
+// Chained refinements still run after a format error. Pipe only valid decimals
+// into arithmetic so malformed user input remains a field-level 400, not a 500.
+const qtyPositive = decStr.pipe(z.string().refine((s) => dCmp(s, "0") > 0, "数量必须大于 0"));
+const qtyNonNegative = decStr.pipe(z.string().refine((s) => dCmp(s, "0") >= 0, "数量不能为负"));
+const returnQtyPositive = qtyPositive.pipe(z.string().regex(/^\d{1,10}(\.\d{1,4})?$/, "数量最多10位整数、4位小数"));
 
 const dateStr = businessDateSchema;
 
@@ -51,7 +54,7 @@ export const createTlSchema = z.object({
     .array(
       z.object({
         skuId: z.number().int().positive({ message: "必须选择物料" }),
-        qty: qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数"),
+        qty: returnQtyPositive,
         batchId: z.number().int().positive().nullable().optional(),
         reason: z.enum(["surplus_return", "defect_exchange"], {
           errorMap: () => ({ message: "退料原因必填：剩料退回/不合格料退换" }),
@@ -69,7 +72,7 @@ export const updateTlSchema = z.object({
   remark: z.string().trim().max(500).optional(),
   lines: z.array(z.object({
     id: z.number().int().positive(),
-    qty: qtyPositive.refine(s => /^\d{1,10}(\.\d{1,4})?$/.test(s), "数量最多10位整数、4位小数"),
+    qty: returnQtyPositive,
     reason: createTlSchema.shape.lines.element.shape.reason,
   }).strict()).min(1, "至少保留一行退料明细")
     .refine(lines => new Set(lines.map(line => line.id)).size === lines.length, "退料行不可重复"),
@@ -132,7 +135,7 @@ export const createCtSchema = z.object({
       z.object({
         poLineId: z.number().int().positive({ message: "必须关联 PO 行" }),
         skuId: z.number().int().positive({ message: "必须选择 SKU" }),
-        qty: qtyPositive, // 基础单位
+        qty: returnQtyPositive, // 基础单位
         batchId: z.number().int().positive().nullable().optional(),
         reason: z.string().trim().max(200).optional(),
       }),

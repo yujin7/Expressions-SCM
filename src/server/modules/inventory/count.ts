@@ -57,7 +57,8 @@ const decStr = z
   .transform((v) => String(v).trim())
   .refine((s) => /^-?\d+(\.\d+)?$/.test(s), "必须是十进制数字");
 
-const qtyNonNegative = decStr.refine((s) => dCmp(s, "0") >= 0, "实盘数量不能为负");
+// A format failure must stop before decimal comparison, not become a generic 500.
+const qtyNonNegative = decStr.pipe(z.string().refine((s) => dCmp(s, "0") >= 0, "实盘数量不能为负"));
 
 export const createCountTaskSchema = z
   .object({

@@ -7,7 +7,7 @@ import DocumentDrawer from "@/components/DocumentDrawer";
 
 import SearchInput from "@/components/SearchInput";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { App, Alert, Button, Descriptions, Input, InputNumber, Modal, Popconfirm, Space, Table, Tabs, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
@@ -26,6 +26,8 @@ import ApprovalTimeline from "@/components/ApprovalTimeline";
 // ---------- 客户端十进制比较（仅提交前过滤/预警用；非负字符串，禁 float） ----------
 
 const DEC_RE = /^\d+(\.\d+)?$/;
+const QTY_RE = /^\d{1,10}(\.\d{1,4})?$/;
+const qtyUnits = (s: string) => { const [whole, fraction = ""] = s.split("."); return BigInt(whole) * 10000n + BigInt(fraction.padEnd(4, "0")); };
 
 function decCmp(a: string, b: string): number {
   const [ai, af = ""] = a.split(".");
@@ -73,6 +75,7 @@ interface DocApproval {
 
 interface CtDetail {
   id: number;
+  createdBy: number;
   docNo: string;
   status: string;
   remark: string | null;
@@ -96,6 +99,9 @@ interface PoDetailLine {
 }
 
 interface CreateLine {
+  rowKey: string;
+  index: number;
+  batchId?: number | null;
   poLineId: number;
   skuId: number;
   skuCode: string;
@@ -105,6 +111,8 @@ interface CreateLine {
   qty: string;
   reason: string;
 }
+type LineEdit = Pick<CreateLine, "qty" | "reason" | "batchId">;
+const emptyLine = (): LineEdit => ({ qty: "0", reason: "", batchId: undefined });
 
 const STATUS_TABS = [
   { key: "", label: "全部" },
@@ -152,21 +160,26 @@ export default function CtClient() {
   // 创建
   const [createOpen, setCreateOpen] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
+  const creating = useRef(false);
   const [poId, setPoId] = useState<number | null>(null);
   const [warehouseId, setWarehouseId] = useState<number | null>(null);
   const [remark, setRemark] = useState("");
-  const [lineEdits, setLineEdits] = useState<Record<number, { qty: string; reason: string }>>({});
+  const [lineEdits, setLineEdits] = useState<Record<number, LineEdit[]>>({});
   const poRead = useDocumentRead<{ id: number; lines: PoDetailLine[] }>(createOpen && poId != null ? `/api/outsource/po/${poId}` : null);
   const poValid = poRead.data != null && poRead.data.id === poId && Array.isArray(poRead.data.lines)
     && poRead.data.lines.every(l => l != null && Number.isSafeInteger(l.id) && l.id > 0 && Number.isSafeInteger(l.skuId) && l.skuId > 0
       && typeof l.skuCode === "string" && typeof l.skuName === "string" && typeof l.baseUom === "string"
-      && typeof l.receivedQty === "string" && DEC_RE.test(l.receivedQty))
+      && typeof l.receivedQty === "string" && QTY_RE.test(l.receivedQty))
     && new Set(poRead.data.lines.map(l => l.id)).size === poRead.data.lines.length;
   const poError = poRead.error ?? (poRead.data && !poValid ? "采购订单身份或行数据不一致，请重新读取" : null);
-  const createLines: CreateLine[] = poValid ? poRead.data!.lines.filter(l => decCmp(l.receivedQty, "0") > 0).map(l => ({
+  const createLines: CreateLine[] = poValid ? poRead.data!.lines.filter(l => decCmp(l.receivedQty, "0") > 0).flatMap(l => (lineEdits[l.id] ?? [emptyLine()]).map((edit, index) => ({
+    rowKey: `${l.id}:${index}`, index, ...edit,
     poLineId: l.id, skuId: l.skuId, skuCode: l.skuCode, skuName: l.skuName, baseUom: l.baseUom,
-    receivedQty: l.receivedQty, qty: lineEdits[l.id]?.qty ?? "0", reason: lineEdits[l.id]?.reason ?? "",
-  })) : [];
+    receivedQty: l.receivedQty,
+  }))) : [];
+  const editLine = (line: CreateLine, patch: Partial<LineEdit>) => setLineEdits(prev => ({
+    ...prev, [line.poLineId]: (prev[line.poLineId] ?? [emptyLine()]).map((edit, index) => index === line.index ? { ...edit, ...patch } : edit),
+  }));
 
   useEffect(() => { setOverAlert(null); }, [detailId]);
 
@@ -186,23 +199,30 @@ export default function CtClient() {
   };
 
   /** 选 PO 后：取已收行（可退数量 = 当前已收数，基础单位） */
-  const handlePoChange = (id: number) => {
-    setPoId(id);
+  const handlePoChange = (id: number | undefined) => {
+    if (creating.current) return;
+    setPoId(id ?? null);
     setLineEdits({});
   };
 
   const handleCreate = async () => {
+    if (creating.current) return;
     if (poId == null) return void message.warning("请选择采购订单");
     if (!poValid || poRead.phase !== "success") return void message.warning("请先成功读取当前采购订单的可退行");
     if (warehouseId == null) return void message.warning("请选择退货出库仓");
-    const valid = createLines.filter((l) => DEC_RE.test(l.qty) && decCmp(l.qty, "0") > 0);
+    if (createLines.some(l => !QTY_RE.test(l.qty))) return void message.warning("数量须为非负数，最多10位整数、4位小数；请核对全部退货行");
+    const valid = createLines.filter((l) => decCmp(l.qty, "0") > 0);
     if (valid.length === 0) return void message.warning("至少需要一行数量大于 0 的退货行");
-    const over = valid.find((l) => decCmp(l.qty, l.receivedQty) > 0);
+    if (valid.some(l => l.batchId === undefined)) return void message.warning("请逐行选择实际退货批次；历史无批次须显式选择");
+    const totals = new Map<number, bigint>();
+    for (const line of valid) totals.set(line.poLineId, (totals.get(line.poLineId) ?? 0n) + qtyUnits(line.qty));
+    const over = valid.find((l) => totals.get(l.poLineId)! > qtyUnits(l.receivedQty));
     if (over) {
       return void message.warning(
-        `${over.skuCode} ${over.skuName}：退货 ${formatQty(over.qty)} 超过可退数量 ${formatQty(over.receivedQty)}`,
+        `${over.skuCode} PO行#${over.poLineId}：各批次退货合计超过该行已收余额 ${formatQty(over.receivedQty)}`,
       );
     }
+    creating.current = true;
     setCreateLoading(true);
     try {
       const created = await postJson<{ id: number }>("/api/matflow/ct", {
@@ -213,6 +233,7 @@ export default function CtClient() {
           poLineId: l.poLineId,
           skuId: l.skuId,
           qty: l.qty,
+          batchId: l.batchId,
           reason: l.reason.trim() || undefined,
         })),
       });
@@ -223,6 +244,7 @@ export default function CtClient() {
     } catch (e) {
       message.error((e as Error).message);
     } finally {
+      creating.current = false;
       setCreateLoading(false);
     }
   };
@@ -307,15 +329,24 @@ export default function CtClient() {
   ];
 
   const createLineColumns: ColumnsType<CreateLine> = [
-    { title: "物料", key: "material", width: 220, render: (_, r) => `${r.skuCode} ${r.skuName}` },
+    { title: "物料 / 采购行", key: "material", width: 220, render: (_, r) => `${r.skuCode} ${r.skuName} · PO行#${r.poLineId}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     {
-      title: "可退数量（已收）",
+      title: "采购行已收余额",
       dataIndex: "receivedQty",
       width: 130,
       align: "right",
       render: (v: string) => formatQty(v),
     },
+    { title: "实际退货批次", key: "batch", width: 280, render: (_, r) => <RemoteSelect
+      key={`${poId}:${warehouseId}:${r.rowKey}`} allowClear aria-label={`${r.skuCode} 第${r.index + 1}行实际退货批次`}
+      api={`/api/matflow/ct/return-lots?poId=${poId}&poLineId=${r.poLineId}&warehouseId=${warehouseId}`}
+      disabled={createLoading || warehouseId == null || poId == null} style={{ width: "100%" }}
+      placeholder="核对实物后选择批次" value={r.batchId === null ? "unbatched" : r.batchId}
+      getValue={lot => lot.batchId == null ? "unbatched" : Number(lot.batchId)}
+      getLabel={lot => `${lot.batchNo ?? "历史无批次（不可追溯）"} · 效期${lot.expiryDate ?? "未知"} · 未定位${formatQty(String(lot.availableQty))}`}
+      onChange={(v: string | number | undefined) => editLine(r, { batchId: v === undefined ? undefined : v === "unbatched" ? null : Number(v) })}
+    /> },
     {
       title: "退货数量",
       key: "qty",
@@ -329,9 +360,7 @@ export default function CtClient() {
           style={{ width: "100%" }}
           value={r.qty}
           status={DEC_RE.test(r.qty) && decCmp(r.qty, r.receivedQty) > 0 ? "error" : undefined}
-          onChange={(v) =>
-            setLineEdits(prev => ({ ...prev, [r.poLineId]: { qty: v ?? "0", reason: prev[r.poLineId]?.reason ?? "" } }))
-          }
+          onChange={(v) => editLine(r, { qty: v ?? "0" })}
         />
       ),
     },
@@ -345,12 +374,12 @@ export default function CtClient() {
           disabled={createLoading}
           maxLength={200}
           value={r.reason}
-          onChange={(e) =>
-            setLineEdits(prev => ({ ...prev, [r.poLineId]: { qty: prev[r.poLineId]?.qty ?? "0", reason: e.target.value } }))
-          }
+          onChange={(e) => editLine(r, { reason: e.target.value })}
         />
       ),
     },
+    { title: "混批", key: "split", width: 120, render: (_, r) => <Button disabled={createLoading} onClick={() =>
+      setLineEdits(prev => ({ ...prev, [r.poLineId]: [...(prev[r.poLineId] ?? [emptyLine()]), emptyLine()] }))}>另一个批次</Button> },
   ];
 
   const actions = detail ? (
@@ -362,7 +391,7 @@ export default function CtClient() {
           </Button>
         </Popconfirm>
       ) : null}
-      {detail.status === "pending" && canApprove ? (
+      {detail.status === "pending" && canApprove && Number.isSafeInteger(detail.createdBy) && detail.createdBy !== me?.id ? (
         <>
           <Popconfirm
             title="确认审批通过？通过即过账退货出库并回冲 PO 已收数。"
@@ -379,6 +408,7 @@ export default function CtClient() {
           </Button>
         </>
       ) : null}
+      {detail.status === "pending" && detail.createdBy === me?.id ? <span>已提交，等待其他审批人处理（不可自审）</span> : null}
     </Space>
   ) : null;
 
@@ -501,7 +531,7 @@ export default function CtClient() {
       <Modal
         title="新建采购退货单"
         open={createOpen}
-        width={860}
+        width={1180}
         okText="创建"
         cancelText="取消"
         confirmLoading={createLoading}
@@ -518,6 +548,7 @@ export default function CtClient() {
             <div style={{ marginBottom: 4 }}>采购订单</div>
             <RemoteSelect
               api="/api/outsource/po?returnEligible=1"
+              allowClear
               aria-label="采购订单"
               disabled={createLoading}
               style={{ width: "100%" }}
@@ -531,6 +562,7 @@ export default function CtClient() {
             <div style={{ marginBottom: 4 }}>退货出库仓（自有实时仓）</div>
             <RemoteSelect
               aria-label="退货出库仓"
+              allowClear
               disabled={createLoading}
               api="/api/master/warehouse"
               style={{ width: "100%" }}
@@ -543,19 +575,21 @@ export default function CtClient() {
                 r.kind !== "outsource" &&
                 r.kind !== "snapshot"
               }
-              onChange={(v: number) => setWarehouseId(v)}
+              onChange={(v: number | undefined) => { if (!creating.current) { setWarehouseId(v ?? null); setLineEdits({}); } }}
             />
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>退货行（仅列出已收数量大于 0 的 PO 行；数量为 0 的行不提交）</div>
+            <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="按实物选择，不自动配批；同一采购行各批次数量合计不能超过已收余额。"
+              description="批次选项仅为所选仓库未定位库存，不证明它来自本采购订单；请核对原收货记录与供应商。已到期实物可受控退回，历史无批次不可追溯。切换出仓将清空已填批次和数量。" />
             <LoadErrorAlert error={poError} onRetry={poRead.retry} subject="采购订单可退行" />
             <Table<CreateLine>
-              rowKey="poLineId"
+              rowKey="rowKey"
               size="small"
               loading={poRead.phase === "loading"}
               columns={createLineColumns}
               tableLayout="fixed"
-              scroll={{ x: 760 }}
+              scroll={{ x: 1140, y: 320 }}
               dataSource={createLines}
               pagination={false}
               locale={{ emptyText: poId == null ? "请先选择采购订单" : poError ? "读取失败，请重试" : poRead.phase === "loading" ? "正在读取可退行…" : "该采购订单暂无已收数量，无可退行" }}

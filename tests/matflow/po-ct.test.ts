@@ -282,7 +282,7 @@ describe("物料流转 W4：SH 收货（po 源）+ CT 采购退货", () => {
     const ct = await createCt(whCreator, {
       poId: po.id,
       warehouseId: whId,
-      lines: [{ poLineId: poLine.id, skuId: yl, qty: "4", reason: "批次退货" }],
+      lines: [{ poLineId: poLine.id, skuId: yl, batchId: batch.id, qty: "4", reason: "批次退货" }],
     }, db);
     const ctDetail = await getCt(ct.id, db);
     expect(ctDetail.lines).toHaveLength(1);

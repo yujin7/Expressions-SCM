@@ -22,7 +22,7 @@ import {
 } from "./common-notes";
 import { createTlSchema, updateTlSchema } from "./schemas";
 import { outboundBatchBlock } from "@/server/posting/batch-eligibility";
-import { resolveTlPhysicalLines } from "./return-lots";
+import { resolveReturnPhysicalLines } from "./return-lots";
 import { skuLineMatch } from "@/server/core/doc-search";
 import { canEditMaterialDraft, materialExcess, materialTaskActions } from "./task-actions";
 
@@ -61,7 +61,7 @@ export async function createTl(user: SessionUser, input: unknown, dbArg?: AnyDb)
     if (!activeSku.has(sid)) throw new ApiError(400, `SKU 不存在或已停用: #${sid}`);
   }
 
-    const allocatedLines = await resolveTlPhysicalLines(tx, fromWh.id, v.lines);
+    const allocatedLines = await resolveReturnPhysicalLines(tx, fromWh.id, v.lines);
     const docNo = await nextDocNo(tx, "TL");
     const [doc]: TlRow[] = await tx
       .insert(tlDocs)
