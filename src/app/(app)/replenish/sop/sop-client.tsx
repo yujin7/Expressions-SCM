@@ -26,11 +26,13 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { ReloadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import CaliberNote from "@/components/CaliberNote";
 import { fetchJson, postJson } from "@/components/fetchJson";
-import { useMe } from "@/components/useMe";
+import { useMe, type Me } from "@/components/useMe";
+import { useSopExecutionRequest } from "@/components/useSopExecutionRequest";
+import DocStatusTag from "@/components/DocStatusTag";
 import { documentHref } from "@/lib/document-links";
 
 type SopRole = "ops" | "pmc" | "finance";
@@ -121,8 +123,12 @@ function formatTime(value: string | null) {
 }
 
 export default function SopClient() {
-  const { message } = App.useApp();
   const me = useMe();
+  return <SopWorkspace key={`${me?.id ?? "anonymous"}:${me?.roles.join(",") ?? ""}`} me={me} />;
+}
+
+function SopWorkspace({ me }: { me: Me | null }) {
+  const { message } = App.useApp();
   const canManage = Boolean(me?.roles.some((role) => role === "admin" || role === "pmc"));
   const signRoles = (["ops", "pmc", "finance"] as SopRole[]).filter((role) => me?.roles.includes(role));
   const [data, setData] = useState<Workspace | null>(null);
@@ -274,62 +280,43 @@ export default function SopClient() {
      于是执行整体挪到系统外。这里是唯一的执行通道，数量取冻结版本的行，绝不回算实时建议。 */
   const [execution, setExecution] = useState<FrozenExecution | null>(null);
   const [execLoading, setExecLoading] = useState(false);
+  const [execError, setExecError] = useState<string | null>(null);
   const [pickedSkus, setPickedSkus] = useState<number[]>([]);
-  /** 本次「按冻结计划开单」的幂等键（成功后清空；失败重试沿用同一个键） */
-  const executeKey = useRef<string | null>(null);
   const [includeSuppressed, setIncludeSuppressed] = useState(false);
+  const recovery = useSopExecutionRequest(me?.id ?? null, canManage, () => { void load(); });
 
   const beginLoadExecutionRead = useLatestRead();
   const loadExecution = useCallback(async (cycleId: number) => {
     const readRequest = beginLoadExecutionRead();
     setExecLoading(true);
+    setExecError(null);
+    setExecution(null);
     try {
       const latestReadResult = await fetchJson<FrozenExecution>(`/api/replenish/sop?cycleId=${cycleId}`, { signal: readRequest.signal });
       if (!readRequest.isCurrent()) return;
       setExecution(latestReadResult);
-    } catch {
+    } catch (error) {
       if (!readRequest.isCurrent()) return;
       setExecution(null);
+      setExecError(error instanceof Error ? error.message : "执行记录加载失败");
     } finally {
       if (readRequest.isCurrent()) { setExecLoading(false); }
     }
   }, [beginLoadExecutionRead]);
 
   const executable = cycle?.status === "frozen" || cycle?.status === "executing";
+  const hasExecutionHistory = executable || cycle?.status === "closed";
+  const currentExecution = execution?.cycle.id === cycle?.id ? execution : null;
   useEffect(() => {
-    if (cycle && executable) void loadExecution(cycle.id);
-    else setExecution(null);
+    if (cycle && hasExecutionHistory) void loadExecution(cycle.id);
+    else { beginLoadExecutionRead(); setExecution(null); setExecError(null); setExecLoading(false); }
     setPickedSkus([]);
-  }, [cycle, executable, loadExecution]);
-
-  const draftFromFrozen = async () => {
-    if (!cycle) return;
-    setSaving(true);
-    try {
-      /* 幂等键在本次点击内固定：重试/双击落到同一个键 → 服务端返回同一张草稿，
-         不会有两张内容相同的 BH 一起进审批链。成功后清空，下一次开单是新的一笔。 */
-      executeKey.current ??= crypto.randomUUID();
-      const res = await postJson<{ draft: { id: number; docNo: string; lineCount: number } }>("/api/replenish/sop", {
-        action: "execute_draft",
-        cycleId: cycle.id,
-        idempotencyKey: executeKey.current,
-        skuIds: pickedSkus.length ? pickedSkus : undefined,
-        includeSuppressed,
-      });
-      message.success({
-        content: <span>已确认备货申请 {res.draft.docNo}（{res.draft.lineCount} 项）。<a href={documentHref("bh", res.draft.id) ?? undefined}>打开核对当前状态</a></span>,
-        duration: 8,
-      });
-      executeKey.current = null;
-      setPickedSkus([]);
-      await load();
-      await loadExecution(cycle.id);
-    } catch (error) {
-      message.error((error as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  };
+    setIncludeSuppressed(false);
+  }, [cycle, hasExecutionHistory, loadExecution, beginLoadExecutionRead]);
+  const draftPayload = cycle ? { cycleId: cycle.id, skuIds: pickedSkus.length ? pickedSkus : undefined, includeSuppressed } : null;
+  const requestSource = recovery.result?.requestIntent ?? recovery.request;
+  const requestCycle = data?.cycles.find(c => c.id === requestSource?.cycleId);
+  const canStartRequest = executable && Boolean(currentExecution?.lines.length) && !execLoading && !execError;
 
   const frozenColumns = useMemo<ColumnsType<FrozenLine>>(() => [
     { title: "SKU", dataIndex: "skuCode", width: 140 },
@@ -414,6 +401,31 @@ export default function SopClient() {
         message="边界：这是数量供需共识，不是完整财务 IBP"
         description="成本、资金占用和销售订单事实尚未完成裁决，因此本页不展示虚假的金额共识或 ATP。"
       />
+
+      {canManage && (recovery.request || recovery.error) ? (
+        <Alert showIcon type={recovery.error ? "error" : recovery.result?.document ? "success" : "warning"}
+          style={{ marginBottom: 16 }}
+          message={recovery.result?.document ? `已找回备货申请 ${recovery.result.document.docNo}` : "计划开单结果待核对"}
+          description={<Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <span>{recovery.error ?? (recovery.result?.document === null
+              ? "暂未找到已提交回执。请重试原请求；如选择有误，可明确修正，但仍使用原请求编号。"
+              : "已保留原请求。刷新、关闭页面或切换周期不会另开一单；核对只查询结果，不创建或审批单据。恢复记录仅保存在当前浏览器与站点。")}</span>
+            {requestSource ? <span>原请求：{requestCycle ? `${requestCycle.month} · ${requestCycle.name}` : `周期 #${requestSource.cycleId}`} · {requestSource.skuIds?.length ? `${requestSource.skuIds.length} 项指定 SKU` : "全部行"} · {requestSource.includeSuppressed ? "包含抑制行" : "不含抑制行"}</span> : null}
+            {recovery.request ? <Space wrap size={[8, 8]}>
+              <Button loading={recovery.busy} onClick={() => void recovery.lookup()}>核对开单结果</Button>
+              {!recovery.result?.document ? <Button disabled={recovery.busy} onClick={() => void recovery.submit()}>重试原开单请求</Button> : null}
+              {recovery.result?.document === null && canStartRequest && draftPayload ? <Button disabled={recovery.busy} onClick={() => Modal.confirm({
+                title: "用当前选择修正原请求？", content: "仍保留原请求编号；若原单已生成，只找回原单，不会再次开单。", okText: "修正并重试",
+                onOk: () => recovery.submit(draftPayload, true),
+              })}>按当前选择修正原请求</Button> : null}
+              {recovery.result?.document ? <>
+                <DocStatusTag status={recovery.result.document.status} />
+                <Typography.Link href={documentHref("bh", recovery.result.document.id) ?? undefined}>打开原备货申请</Typography.Link>
+                <Button disabled={recovery.busy} onClick={() => void recovery.acknowledge()}>已核对，准备下一次开单</Button>
+              </> : null}
+            </Space> : null}
+          </Space>} />
+      ) : null}
 
       {loadError ? (
         <Alert
@@ -529,9 +541,9 @@ export default function SopClient() {
             </Col>
           </Row>
 
-          {executable ? (
+          {hasExecutionHistory ? (
             <Card
-              title="按冻结计划开单（唯一执行通道）"
+              title={executable ? "按冻结计划开单（唯一执行通道）" : "冻结计划与开单历史（只读）"}
               extra={<Button size="small" icon={<ReloadOutlined />} onClick={() => void loadExecution(cycle.id)}>刷新</Button>}
               style={{ marginBottom: 16 }}
             >
@@ -539,49 +551,51 @@ export default function SopClient() {
                 type="info"
                 showIcon
                 style={{ marginBottom: 12 }}
-                message="冻结后当月实时补货建议只读——需要下单就从这里走。数量取自冻结版本的行（不回算实时建议），仍是人工勾选生成 BH 草稿并走正常审批链。"
+                message={executable ? "冻结后当月实时补货建议只读——需要下单就从这里走。数量取自冻结版本的行（不回算实时建议），仍是人工勾选生成 BH 草稿并走正常审批链。" : "周期已关闭：仍可核对冻结计划和原备货申请，不能新增开单，也无需重新开放周期。"}
               />
+              {execError ? <Alert showIcon type="error" message="执行记录加载失败" description={execError}
+                action={<Button size="small" onClick={() => void loadExecution(cycle.id)}>重试读取</Button>} style={{ marginBottom: 12 }} /> : null}
               <Table<FrozenLine>
                 rowKey="skuId"
                 size="small"
                 loading={execLoading}
                 columns={frozenColumns}
-                dataSource={(execution?.lines ?? []).filter((l) => includeSuppressed || !l.suppressed)}
+                dataSource={(currentExecution?.lines ?? []).filter((l) => !executable || includeSuppressed || !l.suppressed)}
                 pagination={{ pageSize: 10, hideOnSinglePage: true }}
                 scroll={{ x: 820 }}
-                rowSelection={canManage ? {
+                rowSelection={canManage && executable ? {
                   selectedRowKeys: pickedSkus,
                   onChange: (keys) => setPickedSkus(keys as number[]),
                 } : undefined}
-                locale={{ emptyText: "冻结版本里没有可开单的行" }}
+                locale={{ emptyText: execError ? "尚未获取执行记录，请重试读取" : execLoading ? "正在读取执行记录" : "冻结版本里没有符合当前选择的行" }}
               />
               <Flex wrap gap={12} align="center" style={{ marginTop: 12 }}>
-                {canManage ? (
+                {canManage && executable ? (
                   <>
                     <Button
                       type="primary"
-                      loading={saving}
-                      disabled={(execution?.lines.length ?? 0) === 0}
-                      onClick={() => void draftFromFrozen()}
+                      loading={recovery.busy}
+                      disabled={!canStartRequest || !recovery.ready || Boolean(recovery.request) || saving}
+                      onClick={() => draftPayload && void recovery.submit(draftPayload)}
                     >
-                      {pickedSkus.length ? `按冻结计划开单（${pickedSkus.length} 项）` : "按冻结计划开单（全部未抑制行）"}
+                      {pickedSkus.length ? `按冻结计划开单（${pickedSkus.length} 项）` : includeSuppressed ? "按冻结计划开单（包含抑制行）" : "按冻结计划开单（全部未抑制行）"}
                     </Button>
                     <Button size="small" onClick={() => setIncludeSuppressed((v) => !v)}>
                       {includeSuppressed ? "隐藏被抑制行" : "显示并允许放行被抑制行"}
                     </Button>
                   </>
                 ) : (
-                  <Typography.Text type="secondary">仅 PMC/管理员可据此开单。</Typography.Text>
+                  <Typography.Text type="secondary">{executable ? "仅 PMC/管理员可据此开单。" : "已关闭周期仅供核对历史。"}</Typography.Text>
                 )}
                 <Space wrap size={[8, 4]}>
-                  <Typography.Text type="secondary">本周期备货申请：</Typography.Text>
-                  {execution?.drafts.length
-                    ? execution.drafts.map((d) => (
+                  <Typography.Text type="secondary">本周期可读备货申请：</Typography.Text>
+                  {currentExecution?.drafts.length
+                    ? currentExecution.drafts.map((d) => (
                       <Typography.Link key={d.bhId} href={documentHref("bh", d.bhId) ?? undefined}>
                         {d.docNo}（{d.lineCount} 项，{d.by ?? "未知"}）
                       </Typography.Link>
                     ))
-                    : <Typography.Text type="secondary">无</Typography.Text>}
+                    : <Typography.Text type="secondary">{currentExecution ? "无" : "待获取"}</Typography.Text>}
                 </Space>
               </Flex>
             </Card>

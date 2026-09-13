@@ -5,7 +5,7 @@ import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
-import { executeFrozenPlan } from "@/server/modules/replenish/sop-cycle";
+import { executeFrozenPlan, getSopExecutionResult } from "@/server/modules/replenish/sop-cycle";
 import { createNpdFirstOrder } from "@/server/modules/npd/service";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
@@ -55,6 +55,11 @@ async function main() {
     const changed = await race(tx => executeFrozenPlan(actor, changedInput, tx), () => executeFrozenPlan(actor, { ...changedInput, remark: "different intent" }, otherDb));
     assert(!changed.second.ok); assert.equal(changed.second.error.status, 409);
     console.log("PASS same key with changed intent waits and refuses without another BH");
+    const recoveryInput = { ...sopInput, idempotencyKey: randomUUID() };
+    const recovery = await race(tx => executeFrozenPlan(actor, recoveryInput, tx), () => getSopExecutionResult(actor, recoveryInput.idempotencyKey, otherDb));
+    assert(recovery.second.ok); assert.equal(recovery.second.value.document?.id, recovery.first.id);
+    assert.equal(recovery.second.value.document?.status, "draft");
+    console.log("PASS read-only recovery waits for in-flight creation and finds its committed receipt");
     const close = await race(async tx => { await tx.update(s.sopCycles).set({ status: "closed", executingBy: actor.id, executingAt: new Date(), closedBy: actor.id, closedAt: new Date() }).where(eq(s.sopCycles.id, cycle.id)); },
       () => executeFrozenPlan(actor, { ...sopInput, idempotencyKey: randomUUID() }, otherDb));
     assert(!close.second.ok); assert.equal(close.second.error.status, 409);
@@ -68,16 +73,19 @@ async function main() {
     assert(!cross.second.ok); assert.equal(cross.second.error.status, 409);
     assert.equal((await db.select().from(s.npdProjects).where(eq(s.npdProjects.id, projects[2].id)))[0].version, 1);
     console.log("PASS cross-project request collision serializes before source changes");
+    const revokedLookup = await race(async tx => { await tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, actor.id)); }, () => getSopExecutionResult(actor, recoveryInput.idempotencyKey, otherDb));
+    assert(!revokedLookup.second.ok); assert.equal(revokedLookup.second.error.status, 403);
+    console.log("PASS read-only recovery waits for current identity and refuses a revoked role");
     const revoked = await race(async tx => { await tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, actor.id)); }, () => executeFrozenPlan(actor, sopInput, otherDb));
     assert(!revoked.second.ok); assert.equal(revoked.second.error.status, 403);
     console.log("PASS revoked PMC role wins over an existing S&OP receipt");
     const inactive = await race(async tx => { await tx.update(s.users).set({ active: false }).where(eq(s.users.id, ops.id)); }, () => createNpdFirstOrder(ops, npdInput, otherDb));
     assert(!inactive.second.ok); assert.equal(inactive.second.error.status, 403);
     console.log("PASS deactivated NPD actor cannot recover through a stale session");
-    assert.equal((await db.select().from(s.sopExecutionDrafts).where(eq(s.sopExecutionDrafts.cycleId, cycle.id))).length, 2);
+    assert.equal((await db.select().from(s.sopExecutionDrafts).where(eq(s.sopExecutionDrafts.cycleId, cycle.id))).length, 3);
     assert.equal((await db.select().from(s.npdFirstOrders).where(eq(s.npdFirstOrders.requestedBy, ops.id))).length, 2);
     assert.equal((await control.query("select count(*)::int n from stock_ledger")).rows[0].n, ledgerBefore);
-    console.log(`PASS 7/7; fixture ${key}; inventory ledger unchanged ${ledgerBefore}`);
+    console.log(`PASS 9/9; fixture ${key}; inventory ledger unchanged ${ledgerBefore}`);
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

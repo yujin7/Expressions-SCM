@@ -750,14 +750,14 @@ export interface FrozenPlanExecutionView {
   drafts: { docNo: string; bhId: number; lineCount: number; at: string; by: string | null }[];
 }
 
-/** 冻结（或执行中）周期的可执行行 + 已开单据。共识未达成/已关闭的周期没有执行通道。 */
+/** 已冻结周期的行与历史；关闭后仍可读，新增开单另由 executeFrozenPlan 守卫。 */
 export async function getFrozenPlanExecution(user: SessionUser, cycleId: number, dbArg?: AnyDb): Promise<FrozenPlanExecutionView> {
   requireAnyRole(user, "pmc", "purchasing", "ops", "finance");
   const db = await resolveDb(dbArg);
   const [cycle] = await db.select().from(schema.sopCycles).where(eq(schema.sopCycles.id, cycleId));
   if (!cycle) throw new ApiError(404, "S&OP 周期不存在");
-  if (cycle.status !== "frozen" && cycle.status !== "executing") {
-    throw new ApiError(409, `只有已冻结/执行中的周期有执行通道（当前 ${cycle.status}）`);
+  if (!["frozen", "executing", "closed"].includes(cycle.status)) {
+    throw new ApiError(409, `只有已冻结过的周期可查看执行记录（当前 ${cycle.status}）`);
   }
   const lineRows: { skuId: number; skuCode: string; skuName: string; baseUom: string; suggestedQty: string; suppressed: boolean; shortageDate: string | null; orderByDate: string | null; orderWindowMissed: boolean }[] = await db
     .select({
@@ -778,22 +778,26 @@ export async function getFrozenPlanExecution(user: SessionUser, cycleId: number,
      此前 `drafted` 是解析 `audit_logs.after.skuIds` 算出来的，而那条审计写在
      createBh 的事务之外：审计写失败 → 页面显示这些行「未开单」→ 同样的量被再开一张。
      现在 sop_execution_drafts 与 BH 主单在同一事务里落地，读到的即是真账。 */
-  const draftRows: { docNo: string; bhId: number; skuIds: number[]; createdAt: Date; by: string | null }[] = await db
+  const scopedReader = { ...user, ...await loadUserScopes(db, user.id) };
+  const draftRows: { docNo: string; bhId: number; skuIds: number[]; createdAt: Date; by: string | null; readable: boolean }[] = await db
     .select({
       docNo: schema.sopExecutionDrafts.docNo,
       bhId: schema.sopExecutionDrafts.bhId,
       skuIds: schema.sopExecutionDrafts.skuIds,
       createdAt: schema.sopExecutionDrafts.createdAt,
       by: schema.users.name,
+      readable: sql<boolean>`${bhReadScope(db, scopedReader) ?? sql`true`}`,
     })
     .from(schema.sopExecutionDrafts)
+    .innerJoin(schema.bhDocs, eq(schema.sopExecutionDrafts.bhId, schema.bhDocs.id))
     .leftJoin(schema.users, eq(schema.sopExecutionDrafts.createdBy, schema.users.id))
     .where(eq(schema.sopExecutionDrafts.cycleId, cycle.id))
     .orderBy(desc(schema.sopExecutionDrafts.id));
   const draftedSkus = new Set<number>();
-  const drafts = draftRows.map((r) => {
+  // Shared plan coverage remains true even when a particular BH is outside the reader's scope.
+  for (const row of draftRows) for (const skuId of row.skuIds ?? []) draftedSkus.add(skuId);
+  const drafts = draftRows.filter(r => r.readable).map((r) => {
     const skuIds = r.skuIds ?? [];
-    for (const id of skuIds) draftedSkus.add(id);
     return {
       docNo: r.docNo,
       bhId: r.bhId,
@@ -937,6 +941,36 @@ async function findExecutionDraft(
   idempotencyKey: string,
   requestIntent: NonNullable<typeof schema.sopExecutionDrafts.$inferSelect.requestIntent>,
 ): Promise<{ id: number; docNo: string; lineCount: number } | null> {
+  const found = await findOwnedExecutionDraft(db, user, idempotencyKey);
+  if (!found) return null;
+  const { row, doc } = found;
+  const original = row.requestIntent;
+  if (original.v !== 1 || original.cycleId !== requestIntent.cycleId
+    || original.includeSuppressed !== requestIntent.includeSuppressed || original.remark !== requestIntent.remark
+    || JSON.stringify(original.skuIds) !== JSON.stringify(requestIntent.skuIds)) {
+    throw new ApiError(409, "请求标识已用于不同周期、选择或备注，请核对原备货申请，不要修改原请求重试");
+  }
+  return { id: doc.id, docNo: doc.docNo, lineCount: (row.skuIds ?? []).length };
+}
+
+/** Read-only recovery uses the same owner/scope authority and key lock as execution. */
+export async function getSopExecutionResult(user: SessionUser, input: unknown, dbArg?: AnyDb) {
+  const requestKey = z.string().uuid().transform(key => key.toLowerCase()).parse(input);
+  const db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    requireAnyRole(actor, "pmc");
+    const scopedActor = { ...actor, ...await loadUserScopes(tx, actor.id) };
+    // Wait for an in-flight execution to commit/roll back before declaring no receipt.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('sop-execute'), hashtext(${requestKey}))`);
+    const found = await findOwnedExecutionDraft(tx, scopedActor, requestKey);
+    return found
+      ? { requestKey, requestIntent: found.row.requestIntent, document: found.doc, lineCount: (found.row.skuIds ?? []).length }
+      : { requestKey, requestIntent: null, document: null, lineCount: 0 };
+  });
+}
+
+async function findOwnedExecutionDraft(db: AnyDb, user: SessionUser, idempotencyKey: string) {
   // Older callers could store uppercase UUIDs. Never miss their receipt after normalization.
   const rows: (typeof schema.sopExecutionDrafts.$inferSelect)[] = await db
     .select()
@@ -947,15 +981,9 @@ async function findExecutionDraft(
   const [row] = rows;
   if (!row) return null;
   if (row.createdBy !== user.id) throw new ApiError(403, "请求标识不属于当前账号，请核对自己的开单记录");
-  const [doc] = await db.select({ id: schema.bhDocs.id, docNo: schema.bhDocs.docNo }).from(schema.bhDocs)
+  const [doc] = await db.select({ id: schema.bhDocs.id, docNo: schema.bhDocs.docNo, status: schema.bhDocs.status }).from(schema.bhDocs)
     .where(and(eq(schema.bhDocs.id, row.bhId), bhReadScope(db, user)));
   if (!doc) throw new ApiError(403, "原备货申请不在当前可读范围，请联系负责人核对");
   if (!row.requestIntent) throw new ApiError(409, `历史回执未保存完整请求内容，请在备货申请中核对 ${doc.docNo}；不要换请求标识重复开单`);
-  const original = row.requestIntent;
-  if (original.v !== 1 || original.cycleId !== requestIntent.cycleId
-    || original.includeSuppressed !== requestIntent.includeSuppressed || original.remark !== requestIntent.remark
-    || JSON.stringify(original.skuIds) !== JSON.stringify(requestIntent.skuIds)) {
-    throw new ApiError(409, "请求标识已用于不同周期、选择或备注，请核对原备货申请，不要修改原请求重试");
-  }
-  return { id: doc.id, docNo: doc.docNo, lineCount: (row.skuIds ?? []).length };
+  return { row: { ...row, requestIntent: row.requestIntent }, doc };
 }

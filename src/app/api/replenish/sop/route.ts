@@ -9,6 +9,7 @@ import {
   decideSopCycle,
   executeFrozenPlan,
   getFrozenPlanExecution,
+  getSopExecutionResult,
   getSopWorkspace,
   transitionSopCycle,
 } from "@/server/modules/replenish/sop-cycle";
@@ -54,13 +55,23 @@ const actionSchema = z.discriminatedUnion("action", [
   }),
 ]);
 
-/** GET：工作台；带 ?cycleId= 时返回该冻结周期的可执行行与已开单据（W2-#4）。 */
+/** GET: workspace, cycle history, or a read-only account-owned request receipt. */
 export async function GET(req: NextRequest) {
   try {
+    const params = new URL(req.url).searchParams;
+    const query = z.object({ cycleId: z.coerce.number().int().positive().max(2147483647).optional(), requestKey: z.string().uuid().optional() })
+      .refine(v => !(v.cycleId !== undefined && v.requestKey !== undefined), "周期查询与请求核对不能同时使用")
+      .parse(Object.fromEntries(params));
+    if (params.getAll("cycleId").length > 1 || params.getAll("requestKey").length > 1) {
+      return NextResponse.json({ error: "查询条件不能重复" }, { status: 400 });
+    }
+    if (query.requestKey !== undefined) {
+      const user = await getFreshSessionUser();
+      return NextResponse.json(await getSopExecutionResult(user, query.requestKey), { headers: { "Cache-Control": "private, no-store" } });
+    }
     const user = await guardRead();
-    const cycleId = Number(new URL(req.url).searchParams.get("cycleId"));
-    if (Number.isInteger(cycleId) && cycleId > 0) {
-      return NextResponse.json(await getFrozenPlanExecution(user, cycleId));
+    if (query.cycleId !== undefined) {
+      return NextResponse.json(await getFrozenPlanExecution(user, query.cycleId));
     }
     return NextResponse.json(await getSopWorkspace(user));
   } catch (error) {
@@ -78,7 +89,8 @@ export async function POST(req: NextRequest) {
     if (input.action === "transition") await transitionSopCycle(user, input);
     if (input.action === "execute_draft") {
       const draft = await executeFrozenPlan(user, input);
-      return NextResponse.json({ ...(await getSopWorkspace(user)), draft }, { status: 201 });
+      // Do not turn a committed document into a 500 if an unrelated workspace refresh fails.
+      return NextResponse.json({ requestKey: input.idempotencyKey.toLowerCase(), draft }, { status: 201 });
     }
     return NextResponse.json(await getSopWorkspace(user));
   } catch (error) {

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
-import { executeFrozenPlan } from "@/server/modules/replenish/sop-cycle";
+import { executeFrozenPlan, getFrozenPlanExecution, getSopExecutionResult } from "@/server/modules/replenish/sop-cycle";
 import { createTestDb } from "../helpers/db";
 
 let fixture: Awaited<ReturnType<typeof createTestDb>>;
@@ -81,6 +81,33 @@ describe("冻结计划回执：当前身份、准确原意、历史不猜测", (
     expect(await executeFrozenPlan(actor, request(), fixture.db)).toEqual(original);
     await expect(executeFrozenPlan(actor, request({ idempotencyKey: crypto.randomUUID() }), fixture.db)).rejects.toMatchObject({ status: 409 });
     expect((await fixture.db.select().from(schema.bhDocs))[0].status).toBe("approved");
+    const beforeAudits = await fixture.db.select().from(schema.auditLogs);
+    const recovered = await getSopExecutionResult(actor, key.toUpperCase(), fixture.db);
+    expect(recovered).toMatchObject({ requestKey: key, document: { id: original.id, docNo: original.docNo, status: "approved" } });
+    const history = await getFrozenPlanExecution(actor, cycleId, fixture.db);
+    expect(history.cycle.status).toBe("closed"); expect(history.drafts[0].bhId).toBe(original.id);
+    expect(history.lines.every(l => l.drafted)).toBe(true);
+    expect(await fixture.db.select().from(schema.auditLogs)).toEqual(beforeAudits);
+  });
+  it("read-only lookup returns an explicit missing result without any document/audit effects", async () => {
+    expect(await getSopExecutionResult(actor, key, fixture.db)).toEqual({ requestKey: key, document: null, requestIntent: null, lineCount: 0 });
+    expect(await fixture.db.select().from(schema.bhDocs)).toHaveLength(0);
+    expect(await fixture.db.select().from(schema.auditLogs)).toHaveLength(0);
+  });
+  it("lookup rejects other owners and stale roles, disabled accounts, or revoked sessions", async () => {
+    await executeFrozenPlan(actor, request(), fixture.db);
+    await expect(getSopExecutionResult(other, key, fixture.db)).rejects.toMatchObject({ status: 403 });
+    for (const changed of [{ roles: ["warehouse"] }, { active: false }, { sessionVersion: actor.sessionVersion! + 1 }]) {
+      await fixture.db.update(schema.users).set({ roles: ["pmc"], active: true, sessionVersion: actor.sessionVersion, ...changed }).where(eq(schema.users.id, actor.id));
+      await expect(getSopExecutionResult(actor, key, fixture.db)).rejects.toMatchObject({ status: "sessionVersion" in changed ? 401 : 403 });
+    }
+  });
+  it("history hides out-of-scope BH identity but keeps shared plan coverage accurate", async () => {
+    const original = await executeFrozenPlan(actor, request(), fixture.db);
+    await fixture.db.insert(schema.userDataScopes).values({ userId: other.id, scopeKind: "channel", targetId: 987, createdBy: actor.id });
+    const history = await getFrozenPlanExecution(other, cycleId, fixture.db);
+    expect(history.drafts).toEqual([]); expect(history.lines.every(l => l.drafted)).toBe(true);
+    expect(JSON.stringify(history)).not.toContain(original.docNo);
   });
   it.each([false, true])("legacy unknown intent refuses even with uppercase key=%s, preserves original", async uppercase => {
     const bh = await legacyReceipt(uppercase ? key.toUpperCase() : key);
