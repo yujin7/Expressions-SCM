@@ -15,8 +15,9 @@ const decStr = z
   .transform((v) => String(v).trim())
   .refine((s) => /^-?\d+(\.\d+)?$/.test(s), "必须是十进制数字");
 
-const qtyPositive = decStr.refine((s) => dCmp(s, "0") > 0, "数量必须大于 0");
-const priceNonNegative = decStr.refine((s) => dCmp(s, "0") >= 0, "单价不能为负");
+// Only format-valid values may reach arithmetic; ordinary input errors stay 400.
+const qtyPositive = decStr.pipe(z.string().refine((s) => dCmp(s, "0") > 0, "数量必须大于 0"));
+const priceNonNegative = decStr.pipe(z.string().refine((s) => dCmp(s, "0") >= 0, "单价不能为负"));
 
 export const stockDocLineSchema = z.object({
   skuId: z.number().int().positive({ message: "必须选择 SKU" }),

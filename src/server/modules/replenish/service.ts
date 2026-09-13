@@ -1269,7 +1269,7 @@ const decStr = z
   .union([z.string(), z.number()])
   .transform((v) => String(v).trim())
   .refine((s) => /^-?\d+(\.\d+)?$/.test(s), "必须是十进制数字")
-  .refine((s) => dCmp(s, "0") > 0, "数量必须大于 0");
+  .pipe(z.string().refine((s) => dCmp(s, "0") > 0, "数量必须大于 0"));
 
 export const createReplenishDraftSchema = z.object({
   remark: z.string().trim().max(500).optional(),
