@@ -21,6 +21,7 @@ import RemoteSelect from "@/components/RemoteSelect";
 import OutsourceWarehouseSelect from "@/components/OutsourceWarehouseSelect";
 import { viewportModalProps } from "@/components/viewport-modal";
 import { useJgMaterialLines } from "@/components/useJgMaterialLines";
+import MaterialBasisNotice from "@/components/MaterialBasisNotice";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
@@ -118,6 +119,9 @@ interface CreateLine {
   skuName: string;
   baseUom: string;
   grossReq: string;
+  issuedQty: string;
+  draftIssueQty: string;
+  pendingIssueQty: string;
   qty: string;
 }
 
@@ -165,7 +169,8 @@ export default function FlClient() {
   const [createLines, setCreateLines] = useState<CreateLine[]>([]);
   const materialRead = useJgMaterialLines((lines) => setCreateLines(lines.map((l) => ({
     skuId: l.materialSkuId, skuCode: l.skuCode, skuName: l.skuName, baseUom: l.baseUom,
-    grossReq: l.grossReq, qty: l.grossReq,
+    grossReq: l.grossReq, issuedQty: l.issuedQty, draftIssueQty: l.draftIssueQty,
+    pendingIssueQty: l.pendingIssueQty, qty: l.suggestedIssueQty,
   }))));
 
   const beginLoadRead = useLatestRead();
@@ -213,7 +218,7 @@ export default function FlClient() {
     setCreateLines([]);
   };
 
-  /** 选 JG 后：JG 详情取 woId → WO 详情取物料行（毛需求）预填发料行 */
+  /** One current JG snapshot: merged requirements, prior issues and open documents. */
   const handleJgChange = async (id: number) => {
     if (createLock.current) return;
     setJgId(id);
@@ -371,6 +376,8 @@ export default function FlClient() {
     { title: "物料", key: "material", width: 200, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
     { title: "毛需求", dataIndex: "grossReq", width: 110, align: "right", render: (v: string) => formatQty(v) },
+    { title: "累计已批发料", dataIndex: "issuedQty", width: 120, align: "right", render: (v: string) => formatQty(v) },
+    { title: "草稿 / 待批", key: "open", width: 130, align: "right", render: (_, r) => formatQty(r.draftIssueQty) + " / " + formatQty(r.pendingIssueQty) },
     {
       title: "本单发料数量",
       key: "qty",
@@ -587,7 +594,9 @@ export default function FlClient() {
               onChange={setToWarehouseId} disabled={createLoading} label="加工厂收料仓" />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>发料行（按工单毛需求预填，可改；数量为 0 的行不提交）</div>
+            <div style={{ marginBottom: 4 }}>发料行（按未发差额预填，可改；数量为 0 的行不提交）</div>
+            <MaterialBasisNotice basis={materialRead.basis} kind="fl" disabled={createLoading || materialRead.loading}
+              onRefresh={() => { if (jgId != null) void handleJgChange(jgId); }} />
             {materialRead.error && <Alert type="error" showIcon message={materialRead.error}
               action={<Button size="small" disabled={jgId == null || createLoading} onClick={() => { if (jgId != null) void handleJgChange(jgId); }}>重试物料</Button>} />}
             <Table<CreateLine>
@@ -597,7 +606,7 @@ export default function FlClient() {
               columns={createLineColumns}
               dataSource={createLines}
               pagination={false}
-              scroll={{ x: 540 }}
+              scroll={{ x: 790 }}
               tableLayout="fixed"
               locale={{ emptyText: materialRead.error ? "物料读取失败" : jgId == null ? "请先选择加工通知单" : "当前工单没有物料行" }}
             />

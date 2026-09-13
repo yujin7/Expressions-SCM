@@ -6,6 +6,7 @@ import { createFl, submitFl, approveFl } from "@/server/modules/matflow/fl";
 import { createTl, submitTl, approveTl } from "@/server/modules/matflow/tl";
 import { createSh, submitSh, approveSh, createQc, confirmInbound, getSh } from "@/server/modules/matflow/sh";
 import { getOutsourceWarehouseOf } from "@/server/modules/matflow/common-notes";
+import { getJgMaterialBasis } from "@/server/modules/matflow/material-basis";
 import { getBalance } from "@/server/posting";
 import { createTestDb } from "../helpers/db";
 
@@ -26,6 +27,25 @@ beforeAll(async () => {
 });
 afterAll(async () => f?.client.close());
 afterEach(() => vi.restoreAllMocks());
+
+it("admin-approved extra-WO material stays reachable in return creation evidence and posts a real TL", async () => {
+  const x = await fixture();
+  const [original] = await f.db.select().from(s.skus).where(eq(s.skus.id, material));
+  const [extra] = await f.db.insert(s.skus).values({ code: "WH-SELECT-EXTRA", spuId: original.spuId, skuType: "raw", baseUom: "个" }).returning();
+  const [admin] = await f.db.insert(s.users).values({ name: "额外物料审批", roles: ["admin"], isApprover: true }).returning();
+  await f.db.insert(s.stockBalances).values({ warehouseId: x.own.id, skuId: extra.id, qty: "10" });
+  const fl = await createFl(maker, { ...x.fl, lines: [{ skuId: extra.id, qty: "3" }] }, f.db);
+  const pending = await submitFl(maker, fl.id, fl.version, f.db);
+  await approveFl(admin, fl.id, { action: "approve", version: pending.version }, f.db);
+  const basis = await getJgMaterialBasis(maker, x.jg.id, f.db);
+  const row = basis.lines.find(l => l.materialSkuId === extra.id);
+  expect(row).toMatchObject({ issuedQty: "3.0000", grossReq: "0", suggestedIssueQty: "0" });
+  const tl = await createTl(maker, { ...x.tl, lines: [{ skuId: row!.materialSkuId, qty: "1", reason: "surplus_return" }] }, f.db);
+  const tp = await submitTl(maker, tl.id, tl.version, f.db);
+  await approveTl(checker, tl.id, { action: "approve", version: tp.version }, f.db);
+  expect(await getBalance(f.db, extra.id, x.b.id)).toBe("2.0000");
+  expect((await getJgMaterialBasis(maker, x.jg.id, f.db)).lines.find(l => l.materialSkuId === extra.id)?.returnedQty).toBe("1.0000");
+});
 
 async function fixture() {
   const key = `WH-SELECT-${++seq}`;

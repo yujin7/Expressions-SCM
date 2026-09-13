@@ -3,14 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchJson } from "./fetchJson";
 import { createLatestReadScope } from "./useLatestRead";
-
-export interface JgMaterialLine {
-  materialSkuId: number;
-  skuCode: string;
-  skuName: string;
-  baseUom: string;
-  grossReq: string;
-}
+import type { JgMaterialBasis, JgMaterialLine } from "@/lib/matflow-basis";
+export type { JgMaterialLine } from "@/lib/matflow-basis";
 
 /** One source-selection lane for FL/TL. Late results must never populate another JG. */
 export function useJgMaterialLines(onLoaded: (lines: JgMaterialLine[]) => void) {
@@ -18,6 +12,7 @@ export function useJgMaterialLines(onLoaded: (lines: JgMaterialLine[]) => void) 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [supplierId, setSupplierId] = useState<number | null>(null);
+  const [basis, setBasis] = useState<JgMaterialBasis | null>(null);
   useEffect(() => scope.cancel, [scope]);
 
   const cancel = useCallback(() => {
@@ -25,21 +20,23 @@ export function useJgMaterialLines(onLoaded: (lines: JgMaterialLine[]) => void) 
     setLoading(false);
     setError(null);
     setSupplierId(null);
+    setBasis(null);
   }, [scope]);
 
   const load = useCallback(async (id: number) => {
     const request = scope.begin();
     onLoaded([]);
     setSupplierId(null);
+    setBasis(null);
     setLoading(true);
     setError(null);
     try {
-      const jg = await fetchJson<{ woId: number; supplierId: number }>(`/api/outsource/jg/${id}`, { signal: request.signal });
+      const current = await fetchJson<JgMaterialBasis>(`/api/outsource/jg/${id}?materialBasis=1`, { signal: request.signal, cache: "no-store" });
       if (!request.isCurrent()) return;
-      const wo = await fetchJson<{ lines: JgMaterialLine[] }>(`/api/outsource/wo/${jg.woId}`, { signal: request.signal });
-      if (!request.isCurrent()) return;
-      onLoaded(wo.lines);
-      setSupplierId(jg.supplierId ?? null);
+      if (current.jgId !== id) throw new Error("物料依据与当前加工单不符，请重试");
+      onLoaded(current.lines);
+      setSupplierId(current.supplierId);
+      setBasis(current);
     } catch (cause) {
       if (request.isCurrent()) setError(cause instanceof Error ? cause.message : "物料加载失败，请重试");
     } finally {
@@ -47,5 +44,5 @@ export function useJgMaterialLines(onLoaded: (lines: JgMaterialLine[]) => void) 
     }
   }, [onLoaded, scope]);
 
-  return { load, cancel, loading, error, supplierId };
+  return { load, cancel, loading, error, supplierId, basis };
 }
