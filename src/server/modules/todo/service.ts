@@ -64,10 +64,14 @@ export const workItemPatchSchema = z.object({
   status: z.enum(WORK_ITEM_STATUSES).optional(),
   assigneeId: z.number().int().positive().optional(),
   note: z.preprocess(emptyToUndef, z.string().trim().max(500).nullable().optional()),
-}).refine((v) => v.status !== undefined || v.assigneeId !== undefined, { message: "status 或 assigneeId 至少一项" });
+  requestId: z.string().uuid().transform(s => s.toLowerCase()).optional(),
+  expectedVersion: z.number().int().positive().max(2147483647).optional(),
+}).strict().refine((v) => v.status !== undefined || v.assigneeId !== undefined, { message: "status 或 assigneeId 至少一项" })
+  .refine(v => (v.requestId === undefined) === (v.expectedVersion === undefined), { message: "原请求编号与待办版本必须一起提供" });
 
 export interface WorkItemRow {
   id: number;
+  version: number;
   title: string;
   detail: string | null;
   assigneeId: number;
@@ -162,6 +166,7 @@ function toRow(r: RawRow, today: string): WorkItemRow {
   const completedAt = r.completedAt ? new Date(r.completedAt) : null;
   return {
     id: r.id,
+    version: r.version,
     title: r.title,
     detail: r.detail ?? null,
     assigneeId: r.assigneeId,
@@ -293,6 +298,7 @@ export async function createWorkItem(
         if (now.getTime() - closedAt <= REOPEN_WINDOW_DAYS * DAY_MS) {
           const notificationEventId = randomUUID();
           await tx.update(workItems).set({
+            version: sql`${workItems.version} + 1`,
             status: "open",
             completedAt: null,
             title: input.title,
@@ -356,6 +362,54 @@ export async function createWorkItem(
   });
 }
 
+const mutationIntentSchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  status: z.enum(WORK_ITEM_STATUSES).nullable(),
+  assigneeId: z.number().int().positive().nullable(),
+  note: z.string().max(500).nullable(),
+}).strict().refine(v => v.status !== null || v.assigneeId !== null);
+const mutationResultSchema = z.object({
+  version: z.number().int().positive(), status: z.enum(WORK_ITEM_STATUSES),
+  assigneeId: z.number().int().positive(), completedAt: z.string().datetime().nullable(), suspicious: z.boolean(),
+}).strict();
+export interface WorkItemMutationReceipt {
+  eventId: number;
+  requestId: string;
+  originalIntent: z.output<typeof mutationIntentSchema>;
+  originalResult: z.output<typeof mutationResultSchema>;
+}
+export type WorkItemMutationResult = WorkItemRow & { mutationReceipt?: WorkItemMutationReceipt; replayed?: boolean };
+const lockMutationRequest = (tx: AnyDb, key: string) => tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('todo-mutation'), hashtext(${key}))`);
+
+/** Called only while the request and current item locks are held. Never infer an old result from current state. */
+async function originalTaskMutation(tx: AnyDb, key: string, itemId: number, actorId: number): Promise<WorkItemMutationReceipt | null> {
+  const rows = await tx.select({ id: auditLogs.id, entityId: auditLogs.entityId, userId: auditLogs.userId, after: auditLogs.after }).from(auditLogs)
+    .where(sql`${auditLogs.entity} = 'work_item' AND ${auditLogs.after}->>'mutationRequestId' IS NOT NULL AND lower(${auditLogs.after}->>'mutationRequestId') = ${key}`).limit(2);
+  if (rows.length > 1) throw new ApiError(409, "原操作回执不唯一，请人工核对");
+  const row = rows[0];
+  if (!row) return null;
+  if (row.userId !== actorId) throw new ApiError(403, "只能核对本人提交的操作回执");
+  if (row.entityId !== itemId) throw new ApiError(409, "原请求属于另一待办，不能重新使用");
+  const intent = mutationIntentSchema.safeParse(row.after?.mutationIntent);
+  const result = mutationResultSchema.safeParse(row.after?.mutationResult);
+  if (!intent.success || !result.success) throw new ApiError(409, "原操作依据无法核验，请人工核对");
+  return { eventId: row.id, requestId: key, originalIntent: intent.data, originalResult: result.data };
+}
+
+export async function getWorkItemMutationResult(id: number, requestId: string, user: SessionUser, dbArg?: AnyDb) {
+  const key = z.string().uuid().parse(requestId).toLowerCase();
+  const db = dbArg ?? await getDbAsync();
+  return db.transaction(async (tx: AnyDb) => {
+    const current = await currentWriteActor(tx, user);
+    const actor: SessionUser = { ...current, ...await loadUserScopes(tx, current.id) };
+    await lockMutationRequest(tx, key);
+    const [item]: RawRow[] = await tx.select().from(workItems).where(eq(workItems.id, id)).for("share");
+    if (!item || !isWorkItemVisible(item, actor)) throw new ApiError(404, "待办不存在");
+    const receipt = await originalTaskMutation(tx, key, id, actor.id);
+    return { itemId: id, requestId: key, receipt, current: toRow((await loadRow(tx, id)) as RawRow, dayShanghai(new Date())) };
+  });
+}
+
 /**
  * 待办修改唯一入口：锁定当前行后，按读取的同一范围校验权限与状态。
  * 一次请求的改派、状态、审计及通知 outbox 全部成功或全部回滚；后台提交后才网络分发。
@@ -366,18 +420,30 @@ export async function patchWorkItem(
   user: SessionUser,
   dbArg?: AnyDb,
   opts?: { now?: Date },
-): Promise<WorkItemRow> {
+): Promise<WorkItemMutationResult> {
   const patch = workItemPatchSchema.parse(raw);
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
   return db.transaction(async (tx: AnyDb) => {
     const current = await currentWriteActor(tx, user);
     const actor: SessionUser = { ...current, ...await loadUserScopes(tx, current.id) };
+    if (patch.requestId) await lockMutationRequest(tx, patch.requestId);
     // Lock the base row, not loadRow's nullable user join (PostgreSQL forbids that lock).
     const [existing]: RawRow[] = await tx.select().from(workItems).where(eq(workItems.id, id)).for("update");
     if (!existing) throw new ApiError(404, "待办不存在");
     // Authorize even no-op requests; ownerRole alone must not bypass deptScope.
     if (!isWorkItemVisible(existing, actor)) throw new ApiError(403, "无权修改该待办");
+
+    const intent = patch.requestId ? mutationIntentSchema.parse({ expectedVersion: patch.expectedVersion,
+      status: patch.status ?? null, assigneeId: patch.assigneeId ?? null, note: patch.note ?? null }) : null;
+    if (patch.requestId) {
+      const receipt = await originalTaskMutation(tx, patch.requestId, id, actor.id);
+      if (receipt) {
+        if (JSON.stringify(receipt.originalIntent) !== JSON.stringify(intent)) throw new ApiError(409, "原请求已保存不同操作，请先核对回执");
+        return { ...toRow((await loadRow(tx, id)) as RawRow, dayShanghai(now)), mutationReceipt: receipt, replayed: true };
+      }
+      if (existing.version !== patch.expectedVersion) throw new ApiError(409, "待办已被更新，原操作未执行；请刷新并核对当前状态和责任人");
+    }
 
     let assignee: Awaited<ReturnType<typeof requireActiveUser>> | null = null;
     if (patch.assigneeId !== undefined) {
@@ -395,16 +461,20 @@ export async function patchWorkItem(
     const completedAt = patch.status === "done" ? now : null;
     if (assignmentChanged || statusChanged) {
       await tx.update(workItems).set({
+        version: sql`${workItems.version} + 1`,
         ...(assignmentChanged ? { assigneeId: patch.assigneeId, assignerId: actor.id } : {}),
         ...(statusChanged ? { status: patch.status, completedAt } : {}),
         updatedAt: now,
       }).where(eq(workItems.id, id));
     }
+    const item = toRow((await loadRow(tx, id)) as RawRow, dayShanghai(now));
+    const receiptFields = patch.requestId ? { mutationRequestId: patch.requestId, mutationIntent: intent,
+      mutationResult: { version: item.version, status: item.status, assigneeId: item.assigneeId, completedAt: item.completedAt, suspicious: item.suspicious } } : {};
     if (assignmentChanged) {
       await writeAudit(tx, {
         userId: actor.id, entity: "work_item", entityId: id, action: "assign",
         before: { assigneeId: existing.assigneeId },
-        after: { assigneeId: patch.assigneeId, note: patch.note ?? null, notificationEventId },
+        after: { assigneeId: patch.assigneeId, note: patch.note ?? null, notificationEventId, ...receiptFields },
       });
     }
     if (statusChanged) {
@@ -413,12 +483,21 @@ export async function patchWorkItem(
       await writeAudit(tx, {
         userId: actor.id, entity: "work_item", entityId: id, action,
         before: { status: from, completedAt: existing.completedAt },
-        after: { status, completedAt, suspicious: status === "done" && isSuspiciousClose(new Date(existing.createdAt), now), note: patch.note ?? null },
+        after: { status, completedAt, suspicious: status === "done" && isSuspiciousClose(new Date(existing.createdAt), now), note: patch.note ?? null, ...(!assignmentChanged ? receiptFields : {}) },
       });
     }
-    const item = toRow((await loadRow(tx, id)) as RawRow, dayShanghai(now));
+    // A successful no-op also consumes the key; retrying it after a later change must not mutate again.
+    if (patch.requestId && !assignmentChanged && !statusChanged) await writeAudit(tx, {
+      userId: actor.id, entity: "work_item", entityId: id, action: "update",
+      after: { ...receiptFields, note: "原操作已核对，状态与责任人无需变更" },
+    });
     if (assignmentChanged && assignee && notificationEventId) {
       await enqueueAssigneeNotification(tx, item, { kind: "reassigned", id: notificationEventId }, actor, assignee);
+    }
+    if (patch.requestId) {
+      const receipt = await originalTaskMutation(tx, patch.requestId, id, actor.id);
+      if (!receipt) throw new ApiError(409, "原操作回执未保存，整笔更新已撤销");
+      return { ...item, mutationReceipt: receipt, replayed: false };
     }
     return item;
   });

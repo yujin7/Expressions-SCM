@@ -114,6 +114,7 @@ const ROLE_LIST_SQL = sql`('ops', 'purchasing', 'warehouse', 'quality', 'pmc', '
  */
 export const workItems = pgTable("work_items", {
   id: serial("id").primaryKey(),
+  version: integer("version").notNull().default(1),
   title: text("title").notNull(),
   detail: text("detail"),
   assigneeId: integer("assignee_id").notNull().references(() => users.id),
@@ -132,6 +133,7 @@ export const workItems = pgTable("work_items", {
   index("ix_work_items_assignee_status").on(t.assigneeId, t.status),
   index("ix_work_items_due").on(t.dueDate),
   index("ix_work_items_source").on(t.sourceKind, t.sourceRef), // 指纹查找（todo-sync 每半小时按来源去重）
+  check("ck_work_items_version", sql`${t.version} > 0`),
   check("ck_work_items_priority", sql`${t.priority} IN ('low', 'normal', 'high')`),
   check("ck_work_items_status", sql`${t.status} IN ('open', 'in_progress', 'done', 'cancelled')`),
   check("ck_work_items_source_kind", sql`${t.sourceKind} IS NULL OR ${t.sourceKind} IN ('alert', 'manual', 'review')`),

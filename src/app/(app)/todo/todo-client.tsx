@@ -30,6 +30,7 @@ import styles from "./todo-client.module.css";
 
 export interface WorkItemRow {
   id: number;
+  version: number;
   title: string;
   detail: string | null;
   assigneeId: number;
@@ -158,7 +159,7 @@ export function ItemTable({ view, prefix, assignees, refreshKey, onChanged }: { 
     pendingIds.current.add(row.id);
     setBusyIds(new Set(pendingIds.current));
     try {
-      const r = await patchJson<WorkItemRow>(`/api/todo/${row.id}`, patch);
+      const r = await patchJson<WorkItemRow>(`/api/todo/${row.id}`, { ...patch, requestId: crypto.randomUUID(), expectedVersion: row.version });
       if (r.suspicious && patch.status === "done") message.warning("创建后不足 10 分钟即关闭，已标记为「可疑」（仅提示，不影响状态）");
       else if (patch.status === "done") message.success("待办已完成");
       else message.success("已更新");

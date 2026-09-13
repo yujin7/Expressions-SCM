@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import { auditLogs, notifications, users, workItems } from "@/db/schema";
@@ -77,7 +78,7 @@ describe("同一次待办 PATCH 的改派与状态变更必须原子提交", () 
   }) {
     return PATCH(new NextRequest(`http://localhost/api/todo/${id}`, {
       method: "PATCH", headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, requestId: randomUUID(), expectedVersion: 1 }),
     }), { params: Promise.resolve({ id: String(id) }) });
   }
 
@@ -139,7 +140,7 @@ describe("同一次待办 PATCH 的改派与状态变更必须原子提交", () 
     expect(await snapshot(row.id)).toEqual(before);
   });
 
-  it.each(["open", "in_progress"] as const)("%s 同责任人与同状态联合 noop 返回 200，但不改时间、审计或通知", async (status) => {
+  it.each(["open", "in_progress"] as const)("%s 同责任人与同状态联合 noop 只保留原回执，不改时间或通知", async (status) => {
     const row = await seedItem(status);
     const before = await snapshot(row.id);
     const response = await patch(row.id, { assigneeId: originalAssignee, status, note: "noop 不单独落备注" });
@@ -148,7 +149,11 @@ describe("同一次待办 PATCH 的改派与状态变更必须原子提交", () 
       id: row.id, assigneeId: originalAssignee, status,
       createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), completedAt: null,
     });
-    expect(await snapshot(row.id)).toEqual(before);
+    const after = await snapshot(row.id);
+    expect(after.item).toEqual(before.item);
+    expect(after.notifications).toEqual(before.notifications);
+    expect(after.audit).toHaveLength(before.audit.length + 1);
+    expect(after.audit.at(-1)).toMatchObject({ action: "update", isStateChange: false, after: { mutationResult: { version: 1, status } } });
   });
 
   it.each([
