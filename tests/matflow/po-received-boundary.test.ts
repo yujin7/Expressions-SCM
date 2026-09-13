@@ -44,10 +44,14 @@ describe("采购收退货共享已收数边界", () => {
   function expectPurchaseLocksBeforeStock() {
     const header = queries.findIndex(q => q.includes('from "po_docs"') && q.endsWith("for update"));
     const lines = queries.findIndex(q => q.includes('from "po_lines"') && q.includes('order by "po_lines"."id"') && q.endsWith("for update"));
-    const stock = queries.findIndex(q => /select id from warehouses .*for update/.test(q));
+    // The warehouse lock now also reads the fresh execution kind. Match compiled SQL,
+    // rather than requiring the old raw SELECT spelling that read kind before locking.
+    const stock = queries.findIndex(q => q.includes('from "warehouses"') && q.endsWith("for update"));
     expect(header).toBeGreaterThanOrEqual(0);
     expect(lines).toBeGreaterThan(header);
     expect(stock).toBeGreaterThan(lines);
+    expect(queries[stock]).toContain('"kind"');
+    expect(queries[stock]).toContain('order by "warehouses"."id"');
   }
   const received = async (id: number) => (await db.select().from(schema.poLines).where(eq(schema.poLines.id, id)))[0].receivedQty;
 
