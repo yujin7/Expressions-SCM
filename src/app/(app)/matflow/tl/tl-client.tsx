@@ -21,6 +21,7 @@ import RemoteSelect from "@/components/RemoteSelect";
 import OutsourceWarehouseSelect from "@/components/OutsourceWarehouseSelect";
 import { viewportModalProps } from "@/components/viewport-modal";
 import { useJgMaterialLines } from "@/components/useJgMaterialLines";
+import MaterialBasisNotice from "@/components/MaterialBasisNotice";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { formatQty } from "@/components/format";
 import { useListState } from "@/components/useListState";
@@ -103,6 +104,10 @@ interface CreateLine {
   skuCode: string;
   skuName: string;
   baseUom: string;
+  issuedQty: string;
+  returnedQty: string;
+  draftReturnQty: string;
+  pendingReturnQty: string;
   qty: string;
   reason: TlReason;
 }
@@ -151,6 +156,8 @@ export default function TlClient() {
   const [createLines, setCreateLines] = useState<CreateLine[]>([]);
   const materialRead = useJgMaterialLines((lines) => setCreateLines(lines.map((l) => ({
     skuId: l.materialSkuId, skuCode: l.skuCode, skuName: l.skuName, baseUom: l.baseUom,
+    issuedQty: l.issuedQty, returnedQty: l.returnedQty,
+    draftReturnQty: l.draftReturnQty, pendingReturnQty: l.pendingReturnQty,
     qty: "0", reason: "surplus_return",
   }))));
 
@@ -326,6 +333,8 @@ export default function TlClient() {
   const createLineColumns: ColumnsType<CreateLine> = [
     { title: "物料", key: "material", width: 200, render: (_, r) => `${r.skuCode} ${r.skuName}` },
     { title: "单位", dataIndex: "baseUom", width: 70 },
+    { title: "已批发 / 退", key: "active", width: 130, align: "right", render: (_, r) => formatQty(r.issuedQty) + " / " + formatQty(r.returnedQty) },
+    { title: "退料草稿 / 待批", key: "open", width: 140, align: "right", render: (_, r) => formatQty(r.draftReturnQty) + " / " + formatQty(r.pendingReturnQty) },
     {
       title: "退料数量",
       key: "qty",
@@ -562,7 +571,9 @@ export default function TlClient() {
               onChange={setFromWarehouseId} disabled={createLoading} label="加工厂退料出仓" />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>退料行（工单物料清单；数量为 0 的行不提交）</div>
+            <div style={{ marginBottom: 4 }}>退料行（工单及该加工单发退物料；数量为 0 的行不提交）</div>
+            <MaterialBasisNotice basis={materialRead.basis} kind="tl" disabled={createLoading || materialRead.loading}
+              onRefresh={() => { if (jgId != null) void handleJgChange(jgId); }} />
             {materialRead.error && <Alert type="error" showIcon message={materialRead.error}
               action={<Button size="small" disabled={jgId == null || createLoading} onClick={() => { if (jgId != null) void handleJgChange(jgId); }}>重试物料</Button>} />}
             <Table<CreateLine>
@@ -572,7 +583,7 @@ export default function TlClient() {
               columns={createLineColumns}
               dataSource={createLines}
               pagination={false}
-              scroll={{ x: 580 }}
+              scroll={{ x: 850 }}
               tableLayout="fixed"
               locale={{ emptyText: materialRead.error ? "物料读取失败" : jgId == null ? "请先选择加工通知单" : "当前工单没有物料行" }}
             />
