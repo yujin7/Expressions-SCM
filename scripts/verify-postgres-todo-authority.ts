@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
 import { createWorkItem, patchWorkItem } from "@/server/modules/todo/service";
-import { appendWorkItemNote, listWorkItemHistory } from "@/server/modules/todo/history";
+import { appendWorkItemNote, getWorkItemNoteResult, listWorkItemHistory } from "@/server/modules/todo/history";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function main() {
@@ -47,6 +47,7 @@ async function main() {
       () => patchWorkItem(item.id, { status: "done" }, actor, other),
       () => appendWorkItemNote(item.id, input, actor, other),
       () => listWorkItemHistory(item.id, {}, actor, other),
+      () => getWorkItemNoteResult(item.id, input.requestId, actor, other),
     ];
     for (const [i, operation] of operations.entries()) {
       await db.update(s.users).set({ active: true }).where(eq(s.users.id, actor.id));
@@ -67,14 +68,18 @@ async function main() {
     await db.update(s.users).set({ active: true }).where(eq(s.users.id, actor.id));
     const replay = await race(tx => appendWorkItemNote(item.id, input, actor, tx), () => appendWorkItemNote(item.id, input, actor, other));
     assert(replay.second.ok); assert.equal(replay.second.value.eventId, note.first.eventId); assert.equal(replay.first.eventId, note.first.eventId);
+    const lookupInput = { note: "合成提交尚未提交完成时核对原回执", requestId: randomUUID() };
+    const resultLookup = await race(tx => appendWorkItemNote(item.id, lookupInput, actor, tx), () => getWorkItemNoteResult(item.id, lookupInput.requestId, actor, other));
+    assert(resultLookup.second.ok); assert.equal(resultLookup.second.value.eventId, resultLookup.first.eventId); assert.equal(resultLookup.second.value.note, lookupInput.note);
+    console.log("PASS exact result lookup waits for original append transaction and returns same receipt");
     const events = (await control.query("select id,action from audit_logs where entity='work_item' and entity_id=$1 order by id", [item.id])).rows;
-    assert.deepEqual(events.map(e => e.action), ["create", "update", "follow_up"]);
+    assert.deepEqual(events.map(e => e.action), ["create", "update", "follow_up", "follow_up"]);
     const [current] = await db.select().from(s.workItems).where(eq(s.workItems.id, item.id));
     assert.equal(current.status, "in_progress"); assert.equal(current.completedAt, null);
     assert.equal((await db.select().from(s.workItems).where(eq(s.workItems.createdBy, actor.id))).length, 1);
     assert.deepEqual(await counts(), before);
     console.log(JSON.stringify({ fixture, actorId: actor.id, itemId: item.id, eventId: note.first.eventId,
-      checks: 7, actualLockWaits: waits, audits: events, counts: before, retained: true }));
+      checks: 9, actualLockWaits: waits, audits: events, counts: before, retained: true }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

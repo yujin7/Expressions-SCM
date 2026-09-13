@@ -42,7 +42,7 @@
 
 ### 待办当前身份并发验证
 
-`verify-postgres-todo-authority.ts`：同样显式设置`SCM_ALLOW_MUTATING_PG_CONTRACT=1`，仅已迁移loopback `scm_contract_*`，三连接/提交屏障。7场景实际锁等待覆盖停用先完成后创建/修改/跟进/历史拒绝，状态/跟进先提交后才停用，以及同键跟进复用。保留唯一合成账号、待办和create/update/follow_up三审计；不关闭真实来源、不发消息、不写库存，不代替负责人/全部范围并发或真实业务UAT。
+`verify-postgres-todo-authority.ts`：同样显式设置`SCM_ALLOW_MUTATING_PG_CONTRACT=1`，仅已迁移loopback `scm_contract_*`，三连接/提交屏障。9场景实际锁等待覆盖停用先完成后创建/修改/跟进/历史/原回执拒绝，状态/跟进先提交后才停用，同键跟进复用，以及原回执等待新跟进实际提交后返回原记录。保留唯一合成账号、待办及create/update/两条不同请求follow_up四审计；不关闭真实来源、不发消息、不写库存，不代替负责人/全部范围并发或真实业务UAT。
 
 ## 二、历史一次性脚本（2026-07/08 首批数据入库时使用，已被 staging→release 导入管道取代）
 

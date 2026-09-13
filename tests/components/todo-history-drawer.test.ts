@@ -1,11 +1,13 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import TodoHistoryDrawer from "@/app/(app)/todo/TodoHistoryDrawer";
+import { loadTodoNote, todoNoteKey } from "@/components/todo-note-request";
 
 const state = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: [] as (() => void)[], fetch: vi.fn(), retry: vi.fn(), url: "", nextBefore: null as number | null }));
 vi.mock("antd", () => ({ Alert: "alert", Button: "button", Drawer: "drawer", Space: "space", Spin: "spin", Input: { TextArea: "textarea" } }));
 vi.mock("@/components/LoadErrorAlert", () => ({ default: "load-error" }));
 vi.mock("@/components/fetchJson", () => ({ fetchJson: state.fetch }));
+vi.mock("@/components/useMe", () => ({ useMe: () => ({ id: 1, roles: ["pmc"] }) }));
 vi.mock("@/components/useDocumentRead", () => ({ useDocumentRead: (url: string) => { state.url = url; return { phase: "success", data: { rows: [], nextBefore: state.nextBefore }, error: null, retry: state.retry }; } }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -15,13 +17,22 @@ vi.mock("react", async original => ({
 }));
 type Node = React.ReactElement<Record<string, unknown> & { children?: ReactNode }>;
 const nodes = (v: ReactNode): Node[] => Array.isArray(v) ? v.flatMap(nodes) : isValidElement<Node["props"]>(v) ? [v, ...nodes(v.props.children)] : [];
-const render = () => { state.cursor = 0; const tree = TodoHistoryDrawer({ id: 7, title: "合成跟进", onClose: () => {} }); for (const effect of state.effects.splice(0)) effect(); return tree; };
+function expand(v: ReactNode): ReactNode {
+  if (Array.isArray(v)) return v.map(expand);
+  if (!isValidElement<Node["props"]>(v)) return v;
+  if (typeof v.type === "function") return expand((v.type as (props: unknown) => ReactNode)(v.props));
+  return React.cloneElement(v, {}, expand(v.props.children));
+}
+const render = () => { state.cursor = 0; const tree = expand(TodoHistoryDrawer({ id: 7, title: "合成跟进", onClose: () => {} })) as Node; for (const effect of state.effects.splice(0)) effect(); return tree; };
 const input = () => nodes(render()).find(n => n.type === "textarea")!.props;
 const button = (text: string) => nodes(render()).find(n => n.type === "button" && n.props.children === text)!.props;
 const click = (text: string) => (button(text).onClick as () => void)();
 const type = (value: string) => (input().onChange as (e: unknown) => void)({ target: { value } });
-const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-beforeEach(() => { state.cursor = 0; state.slots = []; state.effects = []; state.cleanups = []; state.nextBefore = null; state.fetch.mockReset(); state.retry.mockReset(); vi.stubGlobal("React", React); });
+const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
+beforeEach(() => { state.cursor = 0; state.slots = []; state.effects = []; state.cleanups = []; state.nextBefore = null; state.fetch.mockReset(); state.retry.mockReset(); vi.stubGlobal("React", React);
+  const data = new Map<string, string>(); vi.stubGlobal("localStorage", { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => data.set(k, v), removeItem: (k: string) => data.delete(k) });
+  vi.stubGlobal("window", new EventTarget()); vi.stubGlobal("navigator", { locks: { request: (_key: string, action: () => unknown) => action() } });
+});
 afterEach(() => { for (const cleanup of state.cleanups) cleanup(); vi.unstubAllGlobals(); });
 
 it("loads only the selected item's scoped history and rejects empty notes", () => {
@@ -48,13 +59,13 @@ it("keeps focus in the persistent drawer content before pagination or retry remo
 });
 it("locks duplicate clicks and drawer closing while saving, then shows a durable receipt", async () => {
   const pending = Promise.withResolvers<unknown>(); state.fetch.mockReturnValue(pending.promise);
-  type("工厂正在确认可交日期"); click("保存跟进"); click("保存跟进");
+  type("工厂正在确认可交日期"); const save = button("保存跟进").onClick as () => void; save(); save();
   expect(state.fetch).toHaveBeenCalledTimes(1); expect(render().props).toMatchObject({ closable: false, maskClosable: false, keyboard: false });
   pending.resolve({ eventId: 45, replayed: false }); await flush();
-  expect(input().value).toBe(""); expect(JSON.stringify(render())).toContain("跟进已保存（记录 #45）"); expect(state.retry).toHaveBeenCalledTimes(1);
+  expect(input().value).toBe(""); expect(JSON.stringify(render())).toContain("跟进已确认（记录 #45）"); expect(state.retry).toHaveBeenCalledTimes(1);
 });
 it("retains focus before disabling submit controls, including explicit uncertain-result confirmation", async () => {
-  const content = nodes(render()).find(n => n.type === "div" && n.props.tabIndex === -1)!;
+  const content = nodes(render()).filter(n => n.type === "div" && n.props.tabIndex === -1)[1]!;
   const focus = vi.fn();
   (content.props.ref as { current: unknown }).current = { focus };
   state.fetch.mockImplementationOnce(() => {
@@ -73,7 +84,7 @@ it("retains focus before disabling submit controls, including explicit uncertain
   click("确认同一提交"); await flush();
   expect(render().props.keyboard).toBe(true);
   expect(input().value).toBe("");
-  expect(JSON.stringify(render())).toContain("跟进已保存（记录 #48）");
+  expect(JSON.stringify(render())).toContain("跟进已确认（记录 #48）");
 });
 it("uncertain failure preserves content and request ID; only explicit confirmation retries", async () => {
   state.fetch.mockRejectedValueOnce(new Error("timeout")); type("等待供应商书面依据"); click("保存跟进"); await flush();
@@ -91,4 +102,23 @@ it("an unmounted drawer ignores a late write result without retrying or resettin
   type("合成关闭后迟到的回执"); click("保存跟进"); for (const cleanup of state.cleanups) cleanup();
   pending.resolve({ eventId: 47, replayed: false }); await flush(); expect(state.retry).not.toHaveBeenCalled();
   expect(input().value).toBe("合成关闭后迟到的回执");
+  expect(loadTodoNote(localStorage, 1)?.note).toBe("合成关闭后迟到的回执");
+});
+it("remount restores exact request without POST; explicit lookup clears only a confirmed matching receipt", async () => {
+  state.fetch.mockRejectedValueOnce(Error("lost response")); type("刷新仍可核对的跟进内容"); click("保存跟进"); await flush();
+  const original = loadTodoNote(localStorage, 1)!;
+  for (const cleanup of state.cleanups) cleanup(); state.slots = []; state.cleanups = []; render();
+  expect(input().value).toBe(original.note); expect(state.fetch).toHaveBeenCalledTimes(1);
+  state.fetch.mockResolvedValueOnce({ itemId: 7, requestId: original.requestId, eventId: 49, note: original.note });
+  click("核对原跟进结果"); await flush();
+  expect(state.fetch.mock.calls[1][1]).toMatchObject({ cache: "no-store" });
+  expect(state.fetch.mock.calls[1][1].method).toBeUndefined();
+  expect(loadTodoNote(localStorage, 1)).toBeNull(); expect(JSON.stringify(render())).toContain("记录 #49");
+});
+it("corrupted persistence or an unresolved other task cannot be overwritten", async () => {
+  localStorage.setItem(todoNoteKey(1), "{"); render(); expect(input().disabled).toBe(true);
+  click("保存跟进"); await flush(); expect(state.fetch).not.toHaveBeenCalled();
+  localStorage.setItem(todoNoteKey(1), JSON.stringify({ itemId: 8, requestId: "ec264aa1-38a0-4803-9643-f9371545d3b8", note: "另一待办原跟进内容" }));
+  window.dispatchEvent(new Event("storage"));
+  expect(button("保存跟进").disabled).toBe(true); expect(JSON.stringify(render())).toContain("待办 #8");
 });

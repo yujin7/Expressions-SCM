@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import { users, workItems } from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
-import { appendWorkItemNote, listWorkItemHistory } from "@/server/modules/todo/history";
+import { appendWorkItemNote, getWorkItemNoteResult, listWorkItemHistory } from "@/server/modules/todo/history";
 import { GET, POST } from "@/app/api/todo/[id]/history/route";
 import { createTestDb, type TestDb } from "../helpers/db";
 
@@ -43,6 +43,23 @@ it("appends evidence without changing status, completion or reopen-window timest
   const history = await listWorkItemHistory(row.id, {}, owner, db);
   expect(history.rows).toHaveLength(1);
   expect(history.rows[0]).toMatchObject({ id: result.eventId, note: input.note, action: "follow_up", actorName: owner.name, requestId: input.requestId });
+});
+it("exact result is independent of pagination and closure, read-only and current-writer scoped", async () => {
+  const row = await item("done"), input = { note: "原提交的完整跟进依据", requestId: randomUUID() };
+  expect(await getWorkItemNoteResult(row.id, input.requestId, owner, db)).toEqual({ itemId: row.id, requestId: input.requestId, eventId: null, note: null });
+  const first = await appendWorkItemNote(row.id, input, owner, db);
+  await db.update(users).set({ roles: ["admin"] }).where(eq(users.id, stranger.id));
+  try { await expect(getWorkItemNoteResult(row.id, input.requestId, stranger, db)).rejects.toMatchObject({ status: 403 }); }
+  finally { await db.update(users).set({ roles: ["warehouse"] }).where(eq(users.id, stranger.id)); }
+  deps.user.mockResolvedValue(owner);
+  const response = await GET(new NextRequest(`http://localhost/api/todo/${row.id}/history?mode=result&requestId=${input.requestId}`), ctx(row.id));
+  expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toContain("no-store");
+  expect(await response.json()).toEqual({ itemId: row.id, requestId: input.requestId, eventId: first.eventId, note: input.note });
+  expect((await listWorkItemHistory(row.id, {}, owner, db)).rows).toHaveLength(1);
+  expect((await db.select().from(workItems).where(eq(workItems.id, row.id)))[0]).toEqual(row);
+  for (const query of ["mode=result", "mode=result&requestId=bad", `mode=result&requestId=${input.requestId}&before=1`, `mode=result&requestId=${input.requestId}&mode=result`, `mode=result&requestId=${input.requestId}&requestId=${input.requestId}`]) {
+    expect((await GET(new NextRequest(`http://localhost/api/todo/${row.id}/history?${query}`), ctx(row.id))).status).toBe(400);
+  }
 });
 it("replay returns the same event; changed content or another visible actor cannot reuse its token", async () => {
   const row = await item(), input = { note: "待工厂提供书面依据", requestId: randomUUID() };

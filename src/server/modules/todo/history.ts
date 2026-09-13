@@ -33,6 +33,25 @@ export interface WorkItemHistoryEvent {
 }
 export interface WorkItemHistoryPage { rows: WorkItemHistoryEvent[]; nextBefore: number | null }
 
+/** Result lookup waits for an in-flight append, and never reveals another writer's receipt. */
+export async function getWorkItemNoteResult(id: number, requestId: string, user: SessionUser, dbArg?: AnyDb) {
+  const key = z.string().uuid().parse(requestId);
+  const db = dbArg ?? await getDbAsync();
+  return db.transaction(async (tx: AnyDb) => {
+    const current = await currentWriteActor(tx, user);
+    const actor: SessionUser = { ...current, ...await loadUserScopes(tx, current.id) };
+    const [item] = await tx.select().from(workItems).where(eq(workItems.id, id)).for("share");
+    if (!item || !isWorkItemVisible(item, actor)) throw new ApiError(404, "待办不存在");
+    const rows = await tx.select({ id: auditLogs.id, userId: auditLogs.userId, after: auditLogs.after }).from(auditLogs)
+      .where(and(eq(auditLogs.entity, "work_item"), eq(auditLogs.entityId, id), eq(auditLogs.action, "follow_up"), sql`${auditLogs.after}->>'requestId' = ${key}`)).limit(2);
+    if (rows.length > 1) throw new ApiError(409, "原跟进记录不唯一，请联系管理员核对");
+    const row = rows[0];
+    if (row && row.userId !== actor.id) throw new ApiError(403, "只能核对本人提交的跟进回执");
+    if (row && typeof row.after?.note !== "string") throw new ApiError(409, "原跟进内容无法核验，请联系管理员");
+    return { itemId: id, requestId: key, eventId: row?.id ?? null, note: row?.after?.note ?? null };
+  });
+}
+
 /** Explicit projection: never expose arbitrary audit before/after, IP or other entity payloads. */
 function eventDto(row: typeof auditLogs.$inferSelect & { actorName?: string | null }): WorkItemHistoryEvent {
   const after = row.after && typeof row.after === "object" && !Array.isArray(row.after) ? row.after as Record<string, unknown> : {};

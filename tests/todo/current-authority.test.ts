@@ -5,7 +5,7 @@ import { auditLogs, notifications, users, userDataScopes, workItems } from "@/db
 import type { SessionUser } from "@/server/core/dto";
 import { deptKeyToTargetId } from "@/server/core/data-scope";
 import { createWorkItem, patchWorkItem } from "@/server/modules/todo/service";
-import { appendWorkItemNote, listWorkItemHistory } from "@/server/modules/todo/history";
+import { appendWorkItemNote, getWorkItemNoteResult, listWorkItemHistory } from "@/server/modules/todo/history";
 import { createTestDb, type TestDb } from "../helpers/db";
 
 let db: TestDb, client: Awaited<ReturnType<typeof createTestDb>>["client"];
@@ -21,11 +21,12 @@ async function fixture() {
   return { user, owner, item };
 }
 async function facts() { return { tasks: await db.select().from(workItems), audits: await db.select().from(auditLogs), notifications: await db.select().from(notifications) }; }
-const kinds = ["create", "patch", "note", "history"] as const;
+const kinds = ["create", "patch", "note", "history", "result"] as const;
 function invoke(kind: typeof kinds[number], f: Awaited<ReturnType<typeof fixture>>) {
   if (kind === "create") return createWorkItem({ title: "合成创建", assigneeId: f.owner.id }, f.user, db);
   if (kind === "patch") return patchWorkItem(f.item.id, { status: "done" }, f.user, db);
   if (kind === "note") return appendWorkItemNote(f.item.id, { note: "合成当前资格跟进", requestId: randomUUID() }, f.user, db);
+  if (kind === "result") return getWorkItemNoteResult(f.item.id, randomUUID(), f.user, db);
   return listWorkItemHistory(f.item.id, {}, f.user, db);
 }
 it.each(kinds)("%s rejects disabled current actor without task/audit/outbox effects", async kind => {
@@ -36,11 +37,11 @@ it.each(kinds)("%s rejects revoked session without effects", async kind => {
   const f = await fixture(); await db.update(users).set({ sessionVersion: f.user.sessionVersion! + 1 }).where(eq(users.id, f.user.id));
   const before = await facts(); await expect(invoke(kind, f)).rejects.toMatchObject({ status: 401 }); expect(await facts()).toEqual(before);
 });
-it.each(["patch", "note", "history"] as const)("%s uses database roles instead of a stale admin", async kind => {
+it.each(["patch", "note", "history", "result"] as const)("%s uses database roles instead of a stale admin", async kind => {
   const f = await fixture(); await db.update(users).set({ roles: ["warehouse"] }).where(eq(users.id, f.user.id));
   const before = await facts(); await expect(invoke(kind, f)).rejects.toMatchObject({ status: kind === "patch" ? 403 : 404 }); expect(await facts()).toEqual(before);
 });
-it.each(["patch", "note", "history"] as const)("%s uses current database department scope", async kind => {
+it.each(["patch", "note", "history", "result"] as const)("%s uses current database department scope", async kind => {
   const f = await fixture(); await db.update(users).set({ roles: ["pmc", "ops"] }).where(eq(users.id, f.user.id));
   await db.insert(userDataScopes).values({ userId: f.user.id, scopeKind: "dept", targetId: deptKeyToTargetId("ops"), createdBy: f.owner.id });
   const before = await facts(); await expect(invoke(kind, f)).rejects.toMatchObject({ status: kind === "patch" ? 403 : 404 }); expect(await facts()).toEqual(before);
