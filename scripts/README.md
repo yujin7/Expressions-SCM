@@ -36,6 +36,10 @@
 
 `verify-postgres-sop-create.ts`：同样显式启用 `SCM_ALLOW_MUTATING_PG_CONTRACT=1`，仅允许已迁移的loopback `scm_contract_*`。验证周期同键并发、异参拒绝、提交中GET等待、换计划后原意恢复及身份撤销，5场景中4项实际锁等待。保留合成账号、计划版本、2个远期合成周期与审计，不签认、不冻结、不改库存；不能对正式库执行。
 
+### 产能依据当前权限并发验证
+
+`verify-postgres-capacity-authority.ts`：手动 `SCM_ALLOW_MUTATING_PG_CONTRACT=1 DATABASE_URL=<隔离库> node --import tsx scripts/verify-postgres-capacity-authority.ts`，仅已迁移的loopback `scm_contract_*`。4项实际锁等待覆盖撤角色与保存双向竞争、同请求复用原审计、会话失效与重放；核对仅1条产能审计、待办/源告警和库存不变。保留唯一合成账号/商品/待办及审计，不下单、不锁产能，不对正式库执行，不代替真实协议/UAT。
+
 ## 二、历史一次性脚本（2026-07/08 首批数据入库时使用，已被 staging→release 导入管道取代）
 
 保留原因：它们是当时入库方式的证据，不再作为日常操作指引。停dev不等于可安全重跑；必须重新核对输入、目标库、授权、幂等与审计边界，先在隔离副本验证，不能对正式库照抄执行。
