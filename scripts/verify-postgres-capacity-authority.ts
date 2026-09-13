@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
 import { getCapacityCheck } from "@/server/modules/outsource/capacity-check";
-import { attachCapacityCheck } from "@/server/modules/outsource/capacity-handoff";
+import { attachCapacityCheck, getCapacityHandoffResult } from "@/server/modules/outsource/capacity-handoff";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function main() {
@@ -66,13 +66,22 @@ async function main() {
       () => attachCapacityCheck(input, actor, other));
     assert(!session.second.ok); assert.equal(session.second.error.status, 401);
     console.log("PASS session invalidation first: replay waits then requires login");
+    await db.update(s.users).set({ sessionVersion: actor.sessionVersion }).where(eq(s.users.id, actor.id));
+    const queryReceipt = { workItemId: item.id, requestId: input.requestId };
+    const lookup = await race(tx => attachCapacityCheck(input, actor, tx), () => getCapacityHandoffResult(queryReceipt, actor, other));
+    assert(lookup.second.ok); assert.equal(lookup.second.value.eventId, saved.first.eventId);
+    console.log("PASS read-only recovery waits for the writer and finds the same receipt");
+    const revokedLookup = await race(async tx => { await tx.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, actor.id)); },
+      () => getCapacityHandoffResult(queryReceipt, actor, other));
+    assert(!revokedLookup.second.ok); assert.equal(revokedLookup.second.error.status, 403);
+    console.log("PASS recovery waits for current identity revocation and refuses");
     const audits = (await control.query("select id from audit_logs where entity='work_item' and entity_id=$1 and action='capacity_check'", [item.id])).rows;
     assert.equal(audits.length, 1); assert.equal(audits[0].id, saved.first.eventId);
     assert.deepEqual((await db.select().from(s.workItems).where(eq(s.workItems.id, item.id)))[0], item);
     assert.deepEqual((await db.select().from(s.systemAlerts).where(eq(s.systemAlerts.id, alert.id)))[0], alert);
     const ledgerAfter = (await control.query("select count(*)::int n from stock_ledger")).rows[0].n; assert.equal(ledgerAfter, ledgerBefore);
     console.log(JSON.stringify({ fixture, actorId: actor.id, itemId: item.id, alertId: alert.id, skuId: sku.id, eventId: saved.first.eventId,
-      checks: 4, actualLockWaits: waits, audits: audits.length, ledgerBefore, ledgerAfter, retained: true }));
+      checks: 6, actualLockWaits: waits, audits: audits.length, ledgerBefore, ledgerAfter, retained: true }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

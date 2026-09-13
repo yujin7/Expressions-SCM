@@ -38,7 +38,7 @@
 
 ### 产能依据当前权限并发验证
 
-`verify-postgres-capacity-authority.ts`：手动 `SCM_ALLOW_MUTATING_PG_CONTRACT=1 DATABASE_URL=<隔离库> node --import tsx scripts/verify-postgres-capacity-authority.ts`，仅已迁移的loopback `scm_contract_*`。4项实际锁等待覆盖撤角色与保存双向竞争、同请求复用原审计、会话失效与重放；核对仅1条产能审计、待办/源告警和库存不变。保留唯一合成账号/商品/待办及审计，不下单、不锁产能，不对正式库执行，不代替真实协议/UAT。
+`verify-postgres-capacity-authority.ts`：手动 `SCM_ALLOW_MUTATING_PG_CONTRACT=1 DATABASE_URL=<隔离库> node --import tsx scripts/verify-postgres-capacity-authority.ts`，仅已迁移的loopback `scm_contract_*`。6项实际锁等待覆盖撤角色与保存双向竞争、同请求复用原审计、会话失效与重放，以及只读GET等待原保存和撤权后拒绝GET；核对仅1条产能审计、待办/源告警和库存不变。保留唯一合成账号/商品/待办及审计，不下单、不锁产能，不对正式库执行，不代替真实协议/UAT。
 
 ## 二、历史一次性脚本（2026-07/08 首批数据入库时使用，已被 staging→release 导入管道取代）
 

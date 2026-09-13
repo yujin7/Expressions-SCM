@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Button, DatePicker, Drawer, InputNumber, Select, Space, Spin, Typography } from "antd";
 import dayjs from "dayjs";
 import { useDocumentRead } from "./useDocumentRead";
@@ -8,6 +8,8 @@ import LoadErrorAlert from "./LoadErrorAlert";
 import SupplierDeclaredCapacity from "./SupplierDeclaredCapacity";
 import { formatQty } from "./format";
 import CapacityHandoff from "./CapacityHandoff";
+import { capacityStorageKey, loadCapacityRequest } from "./capacity-handoff-request";
+import { hasAnyRole, useMe } from "./useMe";
 import type { CapacityCheck } from "@/server/modules/outsource/capacity-check";
 
 export interface CapacityTarget { skuId: number; code: string; name: string; replenishHref: string; alertId?: number }
@@ -15,9 +17,27 @@ export interface CapacityTarget { skuId: number; code: string; name: string; rep
 /** Parent owns the drawer so responsive table/card switches cannot discard a scenario. */
 export default function CapacityCheckDrawer({ target, onClose }: { target: CapacityTarget | null; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
-  return <Drawer title="核对加工产能" open={target !== null} onClose={onClose} width={680} destroyOnHidden closable={!busy} maskClosable={!busy} keyboard={!busy}>
-    {target && <CapacityCheckForm key={`${target.skuId}:${target.alertId ?? "none"}`} target={target} onBusyChange={setBusy} />}
-  </Drawer>;
+  const [recoveryOpen, setRecoveryOpen] = useState(false), [hasRecovery, setHasRecovery] = useState(false);
+  const me = useMe(), actorId = me?.id;
+  const allowed = hasAnyRole(me, "purchasing", "pmc", "ops");
+  useEffect(() => {
+    if (!actorId || !allowed) { setHasRecovery(false); return; }
+    const restore = () => {
+      try { setHasRecovery(loadCapacityRequest(localStorage, actorId) !== null); }
+      catch { setHasRecovery(true); } // Corruption needs a visible recovery/error entry too.
+    };
+    restore();
+    const changed = (e: StorageEvent) => { if (e.storageArea === localStorage && (e.key == null || e.key === capacityStorageKey(actorId))) restore(); };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [actorId, allowed, target, recoveryOpen]);
+  return <>
+    {hasRecovery && allowed && <Button style={{ marginBlock: 12 }} onClick={() => setRecoveryOpen(true)}>核对待保存产能依据</Button>}
+    <Drawer title="核对加工产能" open={target !== null || recoveryOpen} onClose={() => { setRecoveryOpen(false); onClose(); }} width={680} destroyOnHidden closable={!busy} maskClosable={!busy} keyboard={!busy}>
+      {target ? <CapacityCheckForm key={`${target.skuId}:${target.alertId ?? "none"}`} target={target} onBusyChange={setBusy} />
+        : recoveryOpen ? <CapacityHandoff check={null} onBusyChange={setBusy} /> : null}
+    </Drawer>
+  </>;
 }
 
 export function CapacityCheckForm({ target, onBusyChange }: { target: CapacityTarget; onBusyChange?: (busy: boolean) => void }) {

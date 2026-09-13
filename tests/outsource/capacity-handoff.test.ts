@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import type { SessionUser } from "@/server/core/dto";
 import { getCapacityCheck } from "@/server/modules/outsource/capacity-check";
-import { attachCapacityCheck } from "@/server/modules/outsource/capacity-handoff";
+import { attachCapacityCheck, getCapacityHandoffResult } from "@/server/modules/outsource/capacity-handoff";
 import { listWorkItemHistory } from "@/server/modules/todo/history";
 import { GET, POST } from "@/app/api/outsource/sourcing-aid/route";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -49,6 +49,44 @@ async function fixture(category = "inventory_cover") {
   const input = { ...query, workItemId: item.id, assigneeId: actor.id, evidenceKey: check.evidenceKey!, requestId: randomUUID(), note: "请核实额外产能和书面交期" };
   return { sku, alert, item, query, check, input };
 }
+
+it("read-only lookup distinguishes no receipt from committed evidence and survives later task/source closure", async () => {
+  const f = await fixture(), query = { workItemId: f.item.id, requestId: f.input.requestId };
+  const before = await db.select().from(schema.auditLogs);
+  expect(await getCapacityHandoffResult(query, actor, db)).toEqual({ itemId: f.item.id, requestId: f.input.requestId, eventId: null });
+  expect(await db.select().from(schema.auditLogs)).toEqual(before);
+  const saved = await attachCapacityCheck(f.input, actor, db);
+  await db.update(schema.workItems).set({ status: "done", completedAt: new Date() }).where(eq(schema.workItems.id, f.item.id));
+  await db.update(schema.systemAlerts).set({ status: "resolved" }).where(eq(schema.systemAlerts.id, f.alert.id));
+  expect(await getCapacityHandoffResult(query, actor, db)).toEqual({ itemId: f.item.id, requestId: f.input.requestId, eventId: saved.eventId });
+  expect((await listWorkItemHistory(f.item.id, {}, actor, db)).rows).toHaveLength(1);
+});
+it.each([false, true])("lookup uses database source scope even for missing=%s receipt", async missing => {
+  const f = await fixture("sales_spike");
+  if (!missing) await attachCapacityCheck(f.input, actor, db);
+  await db.insert(schema.userDataScopes).values({ userId: actor.id, scopeKind: "channel", targetId: 2147483647, createdBy: actor.id });
+  await expect(getCapacityHandoffResult({ workItemId: f.item.id, requestId: f.input.requestId }, actor, db)).rejects.toMatchObject({ status: 404 });
+});
+it.each(["disabled", "role", "session"])("receipt lookup refuses current %s identity", async change => {
+  const f = await fixture(), old = { ...actor, sessionVersion: 1 };
+  await attachCapacityCheck(f.input, old, db);
+  await db.update(schema.users).set(change === "disabled" ? { active: false } : change === "role" ? { roles: ["warehouse"] } : { sessionVersion: 2 }).where(eq(schema.users.id, actor.id));
+  await expect(getCapacityHandoffResult({ workItemId: f.item.id, requestId: f.input.requestId }, old, db)).rejects.toMatchObject({ status: change === "session" ? 401 : 403 });
+});
+it("even a currently qualified admin cannot recover another writer's receipt", async () => {
+  const f = await fixture(); await attachCapacityCheck(f.input, actor, db);
+  const [admin] = await db.insert(schema.users).values({ name: "其他管理员", roles: ["admin"] }).returning();
+  await expect(getCapacityHandoffResult({ workItemId: f.item.id, requestId: f.input.requestId }, { id: admin.id, name: admin.name, roles: ["admin"], isApprover: false }, db)).rejects.toMatchObject({ status: 403 });
+});
+it("receipt HTTP rejects unknown/repeated parameters and keeps valid response private", async () => {
+  const f = await fixture(); deps.user.mockResolvedValue(actor);
+  const url = `http://localhost/api/outsource/sourcing-aid?mode=capacity-result&workItemId=${f.item.id}&requestId=${f.input.requestId}`;
+  const response = await GET(new NextRequest(url));
+  expect(response.status).toBe(200); expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  expect(await response.json()).toMatchObject({ eventId: null, itemId: f.item.id });
+  for (const extra of ["&workItemId=1", "&fake=1", "&requestId=bad", "&mode=capacity"]) expect((await GET(new NextRequest(url + extra))).status).toBe(400);
+  expect((await GET(new NextRequest(url.replace(String(f.item.id), "0")))).status).toBe(400);
+});
 
 it("binds source, manual scenario, actual owner and server-derived evidence, without changing business state", async () => {
   const f = await fixture();
