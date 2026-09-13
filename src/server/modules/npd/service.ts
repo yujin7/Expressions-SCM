@@ -6,7 +6,7 @@
  * - 任务状态 pending/doing/done/skipped 人工推进；done 记 doneAt（默认当日 Asia/Shanghai）；
  * - 写路径：pmc/ops（admin 兜底），writeAudit 全覆盖；项目完成/取消仅改状态（无删除）。
  */
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import * as schema from "@/db/schema";
@@ -20,6 +20,8 @@ import { createBhSchema } from "@/server/modules/outsource/schemas";
 import { dQty } from "@/server/core/decimal";
 import { shanghaiDay } from "@/server/core/business-day";
 import { bhReadScope } from "@/server/core/bh-read-scope";
+import { currentWriteActor } from "@/server/core/current-write-actor";
+import { loadUserScopes } from "@/server/core/data-scope";
 import { resolveAlias } from "@/server/modules/dimension/resolver";
 import { resolveDb } from "@/server/core/svc";
 
@@ -434,9 +436,13 @@ export async function createNpdFirstOrder(user: SessionUser, input: unknown, dbA
   const db = await resolveDb(dbArg);
   try {
     return await db.transaction(async (tx: AnyDb) => {
+      const actor = await currentWriteActor(tx, user);
+      requireAnyRole(actor, "pmc", "ops");
+      const scopedActor = { ...actor, ...await loadUserScopes(tx, actor.id) };
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('npd-first-order'), hashtext(${`${actor.id}:${v.requestKey}`}))`);
       const proj = await lockProject(tx, v.projectId);
       // A committed request remains recoverable after later edits or closure. Permission still applies.
-      const replay = await replayFirstOrder(tx, user, v);
+      const replay = await replayFirstOrder(tx, scopedActor, v);
       if (replay) return replay;
       assertWritable(proj, v.version);
       if (!proj.skuCode) throw new ApiError(400, "项目未设置目标 SKU——请先在主数据建档并补录到项目");
@@ -448,7 +454,7 @@ export async function createNpdFirstOrder(user: SessionUser, input: unknown, dbA
          此前 writeAudit 写在 createBh 之后、事务之外——BH 已提交而审计失败，
          就留下一张没人知道从哪来的 NPD 首单草稿。走 inTx 钩子，抛错即整单回滚。 */
       const doc = await createDerivedBh(
-        user, "npd",
+        scopedActor, "npd",
         { remark: `NPD 首单：项目《${proj.name}》#${proj.id}（新品首单，人工确认后提交审批）`, lines: [{ skuId: sku.id, qty: v.qty }] },
         tx,
         {
@@ -474,7 +480,11 @@ export async function createNpdFirstOrder(user: SessionUser, input: unknown, dbA
   } catch (error) {
     // Different projects can race on one actor's key; the unique constraint rolls back the loser entirely.
     if (isRequestCollision(error)) {
-      const replay = await replayFirstOrder(db, user, v);
+      const replay = await db.transaction(async (tx: AnyDb) => {
+        const actor = await currentWriteActor(tx, user);
+        requireAnyRole(actor, "pmc", "ops");
+        return replayFirstOrder(tx, { ...actor, ...await loadUserScopes(tx, actor.id) }, v);
+      });
       if (replay) return replay;
     }
     throw error;

@@ -31,6 +31,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CaliberNote from "@/components/CaliberNote";
 import { fetchJson, postJson } from "@/components/fetchJson";
 import { useMe } from "@/components/useMe";
+import { documentHref } from "@/lib/document-links";
 
 type SopRole = "ops" | "pmc" | "finance";
 type SopStatus = "consensus" | "frozen" | "executing" | "closed";
@@ -308,14 +309,17 @@ export default function SopClient() {
       /* 幂等键在本次点击内固定：重试/双击落到同一个键 → 服务端返回同一张草稿，
          不会有两张内容相同的 BH 一起进审批链。成功后清空，下一次开单是新的一笔。 */
       executeKey.current ??= crypto.randomUUID();
-      const res = await postJson<{ draft: { docNo: string; lineCount: number } }>("/api/replenish/sop", {
+      const res = await postJson<{ draft: { id: number; docNo: string; lineCount: number } }>("/api/replenish/sop", {
         action: "execute_draft",
         cycleId: cycle.id,
         idempotencyKey: executeKey.current,
         skuIds: pickedSkus.length ? pickedSkus : undefined,
         includeSuppressed,
       });
-      message.success(`已按冻结计划生成 BH 草稿 ${res.draft.docNo}（${res.draft.lineCount} 项），请走正常审批`);
+      message.success({
+        content: <span>已确认备货申请 {res.draft.docNo}（{res.draft.lineCount} 项）。<a href={documentHref("bh", res.draft.id) ?? undefined}>打开核对当前状态</a></span>,
+        duration: 8,
+      });
       executeKey.current = null;
       setPickedSkus([]);
       await load();
@@ -569,11 +573,16 @@ export default function SopClient() {
                 ) : (
                   <Typography.Text type="secondary">仅 PMC/管理员可据此开单。</Typography.Text>
                 )}
-                <Typography.Text type="secondary">
-                  已开草稿：{execution?.drafts.length
-                    ? execution.drafts.map((d) => `${d.docNo}（${d.lineCount} 项，${d.by ?? "未知"}）`).join("；")
-                    : "无"}
-                </Typography.Text>
+                <Space wrap size={[8, 4]}>
+                  <Typography.Text type="secondary">本周期备货申请：</Typography.Text>
+                  {execution?.drafts.length
+                    ? execution.drafts.map((d) => (
+                      <Typography.Link key={d.bhId} href={documentHref("bh", d.bhId) ?? undefined}>
+                        {d.docNo}（{d.lineCount} 项，{d.by ?? "未知"}）
+                      </Typography.Link>
+                    ))
+                    : <Typography.Text type="secondary">无</Typography.Text>}
+                </Space>
               </Flex>
             </Card>
           ) : null}

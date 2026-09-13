@@ -177,6 +177,8 @@ export const sopExecutionDrafts = pgTable("sop_execution_drafts", {
   /** 本次开单覆盖的冻结计划行（planning_version_lines.sku_id） */
   skuIds: jsonb("sku_ids").$type<number[]>().notNull(),
   includeSuppressed: boolean("include_suppressed").notNull().default(false),
+  /** Exact normalized caller intent for safe replay; legacy receipts remain unknown, never backfilled. */
+  requestIntent: jsonb("request_intent").$type<{ v: 1; cycleId: number; skuIds: number[] | null; includeSuppressed: boolean; remark: string | null }>(),
   idempotencyKey: text("idempotency_key").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
