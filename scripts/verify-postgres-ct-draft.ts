@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { and, eq } from "drizzle-orm";
 import * as s from "@/db/schema";
 import type { AnyDb } from "@/server/core/svc";
-import { createCt, getCt, submitCt, updateCt } from "@/server/modules/matflow/ct";
+import { createCt, getCt, submitCt, updateCt, voidCt } from "@/server/modules/matflow/ct";
 import { post } from "@/server/posting";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
@@ -74,6 +74,22 @@ async function main() {
       assert.deepEqual(audit.map(row => row.action).sort(), ["create", mode === "submit-edit" ? "submit" : "update_draft"].sort());
       console.log(`PASS ${mode}: real wait, one version transition, original line/batch, atomic audit`);
     }
+    for (const mode of ["void-void", "void-edit", "edit-void", "void-submit", "submit-void"] as const) {
+      const x = await draft(), input = { version: 1, reason: "PG原来源核错" };
+      const operation = (kind: string, target: AnyDb) => kind === "void" ? voidCt(maker, x.doc.id, input, target)
+        : kind === "edit" ? updateCt(maker, x.doc.id, x.input, target) : submitCt(maker, x.doc.id, 1, target);
+      const [first, second] = mode.split("-");
+      const result = await race(tx => operation(first, tx), () => operation(second, secondDb));
+      assert.equal(result.ok, false); if ("error" in result) assert.equal(result.error.status, 409);
+      const after = await getCt(x.doc.id, db);
+      assert.equal(after.version, 2); assert.equal(after.status, first === "void" ? "void" : first === "edit" ? "draft" : "pending");
+      assert.equal(after.closedReason, first === "void" ? input.reason : null);
+      assert.equal(after.lines.length, first === "edit" ? 1 : 2);
+      assert.equal(after.lines[0].batchId, batch.id);
+      const audit = await db.select().from(s.auditLogs).where(and(eq(s.auditLogs.entity, "ct"), eq(s.auditLogs.entityId, x.doc.id)));
+      assert.deepEqual(audit.map(row => row.action).sort(), ["create", first === "edit" ? "update_draft" : first].sort());
+      console.log(`PASS ${mode}: real lock wait, one transition/audit, no replacement or stock movement`);
+    }
     const limited = await draft();
     const reduced = await race(tx => tx.update(s.poLines).set({ receivedQty: "3" }).where(eq(s.poLines.id, source.id)),
       () => updateCt(maker, limited.doc.id, limited.input, secondDb));
@@ -88,15 +104,24 @@ async function main() {
     assert.deepEqual(await getCt(revoked.doc.id, db), revoked.detail);
     await db.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, maker.id));
     console.log("PASS revoked role commits first: repair rereads current actor after lock");
+    const voidRevoked = await draft();
+    const voidDenial = await race(tx => tx.update(s.users).set({ roles: ["ops"] }).where(eq(s.users.id, maker.id)),
+      () => voidCt(maker, voidRevoked.doc.id, { version: 1, reason: "核对" }, secondDb));
+    assert.equal(voidDenial.ok, false); if ("error" in voidDenial) assert.equal(voidDenial.error.status, 403);
+    assert.deepEqual(await getCt(voidRevoked.doc.id, db), voidRevoked.detail);
+    await db.update(s.users).set({ roles: ["warehouse"] }).where(eq(s.users.id, maker.id));
+    console.log("PASS revoked role commits first: void waits and refuses with no document mutation");
     const failed = await draft();
     await control.query(`create function ${fn}() returns trigger language plpgsql as $$ begin
-      if NEW.user_id=${maker.id} and NEW.entity='ct' and NEW.action='update_draft' then raise exception 'CT deliberate audit failure'; end if; return NEW; end $$`);
+      if NEW.user_id=${maker.id} and NEW.entity='ct' and NEW.action in ('update_draft', 'void') then raise exception 'CT deliberate audit failure'; end if; return NEW; end $$`);
     await control.query(`create trigger ${trigger} before insert on audit_logs for each row execute function ${fn}()`); installed = true;
     await assert.rejects(updateCt(maker, failed.doc.id, failed.input, db));
     assert.deepEqual(await getCt(failed.doc.id, db), failed.detail);
+    await assert.rejects(voidCt(maker, failed.doc.id, { version: 1, reason: "原来源错误" }, db));
+    assert.deepEqual(await getCt(failed.doc.id, db), failed.detail);
     assert.deepEqual(await stock(), originalStock);
     assert.equal((await db.select().from(s.poLines).where(eq(s.poLines.id, source.id)))[0].receivedQty, "10.0000");
-    console.log(JSON.stringify({ fixture, cases: 6, makerId: maker.id, skuId: sku.id, warehouseId: wh.id, batchId: batch.id,
+    console.log(JSON.stringify({ fixture, cases: 13, makerId: maker.id, skuId: sku.id, warehouseId: wh.id, batchId: batch.id,
       auditFailureRollback: true, correctionLedgerWrites: 0, receiptUnchangedByRepair: true }, null, 2));
   } finally {
     await Promise.allSettled(pending);

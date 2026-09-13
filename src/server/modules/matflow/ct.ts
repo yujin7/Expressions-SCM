@@ -7,7 +7,7 @@ import type { SessionUser } from "@/server/core/dto";
 import { writeAudit } from "@/server/core/audit";
 import { approveDoc, loadApprovalHistory } from "@/server/docflow/approval";
 import { nextDocNo } from "@/server/docflow/doc-no";
-import type { DocStatus } from "@/server/docflow/state";
+import { nextStatus, type DocStatus } from "@/server/docflow/state";
 import { post, PostingError } from "@/server/posting";
 import { ApiError } from "@/server/modules/master/common";
 import {
@@ -15,7 +15,7 @@ import {
 } from "@/server/modules/outsource/common";
 import { approveDocSchema } from "@/server/modules/outsource/schemas";
 import { completeApprovedDoc, lockMatflowWarehouses, requireRealtimeWarehouse } from "./common-notes";
-import { createCtSchema, updateCtSchema } from "./schemas";
+import { createCtSchema, updateCtSchema, voidCtSchema } from "./schemas";
 import { canEditMaterialDraft, materialTaskActions } from "./task-actions";
 import { outboundBatchBlock } from "@/server/posting/batch-eligibility";
 import { requirePurchaseReturnStatus, resolveReturnPhysicalLines } from "./return-lots";
@@ -154,6 +154,32 @@ export async function updateCt(user: SessionUser, id: number, input: unknown, db
   });
 }
 
+// Never-effective drafts can be abandoned without rewriting their source or physical lines.
+export async function voidCt(user: SessionUser, id: number, input: unknown, dbArg?: AnyDb): Promise<CtRow> {
+  const v = voidCtSchema.parse(input), db = await resolveDb(dbArg);
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentMatflowActor(tx, user);
+    requireAnyRole(actor, "warehouse");
+    const [doc]: CtRow[] = await tx.select().from(ctDocs).where(eq(ctDocs.id, id)).for("update");
+    if (!doc) throw new ApiError(404, "采购退货单不存在");
+    if (doc.status !== "draft") throw new ApiError(409, "仅未生效草稿可作废；待审批请先由合格审批人驳回，已生效单据不能作废");
+    if (!canEditMaterialDraft(actor, doc)) throw new ApiError(403, "仅当前具备仓管权限的制单人或管理员可作废原草稿");
+    if (doc.version !== v.version) throw new ApiError(409, "单据版本已变化，请重新读取核对后再决定是否作废");
+    const [posted] = await tx.select({ id: stockLedger.id }).from(stockLedger)
+      .where(and(eq(stockLedger.sourceDocType, "ct_return"), eq(stockLedger.sourceDocId, id))).limit(1);
+    if (posted) throw new ApiError(409, "原单已有库存流水，不能作废或隐藏历史；请核对红字纠错流程");
+    // A closed PO, disabled warehouse or invalid lot must not trap a never-posted draft.
+    const [saved]: CtRow[] = await tx.update(ctDocs).set({ status: nextStatus(doc.status, "void"),
+      closedReason: v.reason, version: sql`${ctDocs.version} + 1`, updatedAt: new Date() })
+      .where(and(eq(ctDocs.id, id), eq(ctDocs.status, "draft"), eq(ctDocs.version, v.version))).returning();
+    if (!saved) throw new ApiError(409, "版本冲突，请重新读取原单核对");
+    await writeAudit(tx, { userId: actor.id, entity: "ct", entityId: id, action: "void",
+      before: { status: doc.status, version: doc.version, closedReason: doc.closedReason },
+      after: { status: saved.status, version: saved.version, reason: v.reason, poId: doc.poId, warehouseId: doc.warehouseId } });
+    return saved;
+  });
+}
+
 // ---------- 提交 ----------
 
 export async function submitCt(user: SessionUser, id: number, version: number, dbArg?: AnyDb): Promise<CtRow> {
@@ -274,6 +300,7 @@ export async function getCt(id: number, dbArg?: AnyDb, user?: SessionUser) {
       docNo: ctDocs.docNo,
       status: ctDocs.status,
       remark: ctDocs.remark,
+      closedReason: ctDocs.closedReason,
       version: ctDocs.version,
       poId: ctDocs.poId,
       poDocNo: poDocs.docNo,
@@ -335,7 +362,8 @@ export async function getCt(id: number, dbArg?: AnyDb, user?: SessionUser) {
     const [posted] = await db.select({ id: stockLedger.id }).from(stockLedger)
       .where(and(eq(stockLedger.sourceDocType, "ct_return"), eq(stockLedger.sourceDocId, id))).limit(1);
     actions = { ...materialTaskActions(user, doc, cfg?.role ?? null, sourceBlock, quantityBlock),
-      edit: canEditMaterialDraft(user, doc) && !sourceBlock && !posted };
+      edit: canEditMaterialDraft(user, doc) && !sourceBlock && !posted,
+      void: canEditMaterialDraft(user, doc) && !posted };
   }
   return { ...doc, lines, approvals: approvalRows, actions };
 }

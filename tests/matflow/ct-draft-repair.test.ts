@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import * as s from "@/db/schema";
 import * as audit from "@/server/core/audit";
-import { approveCt, createCt, getCt, submitCt, updateCt } from "@/server/modules/matflow/ct";
+import { approveCt, createCt, getCt, submitCt, updateCt, voidCt } from "@/server/modules/matflow/ct";
 import { post, getBalance } from "@/server/posting";
 import { createTestDb } from "../helpers/db";
 
@@ -40,6 +40,64 @@ async function fixture() {
 const snapshot = async () => ({ docs: await f.db.select().from(s.ctDocs), lines: await f.db.select().from(s.ctLines),
   approvals: await f.db.select().from(s.approvals), audit: await f.db.select().from(s.auditLogs),
   ledger: await f.db.select().from(s.stockLedger), balances: await f.db.select().from(s.stockBalances), poLines: await f.db.select().from(s.poLines) });
+
+it("void preserves original sources, lots, lines and rejected approval; source disqualification cannot trap the draft", async () => {
+  const x = await fixture(), pending = await submitCt(x.maker, x.doc.id, 1, x.db);
+  await approveCt(x.checker, x.doc.id, { action: "reject", version: pending.version }, x.db);
+  await x.db.update(s.poDocs).set({ status: "closed" }).where(eq(s.poDocs.id, x.po.id));
+  await x.db.update(s.warehouses).set({ active: false }).where(eq(s.warehouses.id, x.wh.id));
+  const detail = await getCt(x.doc.id, x.db, x.maker), before = await snapshot();
+  expect(detail.actions).toMatchObject({ edit: false, submit: false, void: true });
+  const saved = await voidCt(x.maker, x.doc.id, { version: detail.version, reason: "  原实物批次选错，核对后另建  " }, x.db);
+  expect(saved).toMatchObject({ status: "void", version: detail.version + 1, closedReason: "原实物批次选错，核对后另建", poId: x.po.id, warehouseId: x.wh.id, remark: x.doc.remark });
+  const after = await snapshot();
+  for (const key of ["lines", "approvals", "ledger", "balances", "poLines"] as const) expect(after[key]).toEqual(before[key]);
+  expect(after.audit).toHaveLength(before.audit.length + 1);
+  expect(after.audit.at(-1)).toMatchObject({ action: "void", entity: "ct", entityId: x.doc.id, userId: x.maker.id });
+  expect((await getCt(x.doc.id, x.db, x.maker)).actions).toMatchObject({ edit: false, submit: false, approve: false, reject: false, void: false });
+  await expect(voidCt(x.maker, x.doc.id, { version: detail.version, reason: "重试" }, x.db)).rejects.toMatchObject({ status: 409 });
+  await expect(submitCt(x.maker, x.doc.id, saved.version, x.db)).rejects.toMatchObject({ status: 409 });
+  await expect(updateCt(x.maker, x.doc.id, { ...x.input, version: saved.version }, x.db)).rejects.toMatchObject({ status: 409 });
+  expect(await snapshot()).toEqual(after);
+});
+it("administrator can void another maker's unposted draft, without automatically creating a replacement", async () => {
+  const x = await fixture(), before = await snapshot();
+  await voidCt(x.checker, x.doc.id, { version: 1, reason: "采购来源核错" }, x.db);
+  expect((await snapshot()).docs).toHaveLength(before.docs.length);
+});
+it.each(["other-maker", "disabled", "role-loss", "session-loss"])("void rechecks current authority: %s", async mode => {
+  const x = await fixture();
+  if (mode === "disabled") await x.db.update(s.users).set({ active: false }).where(eq(s.users.id, x.maker.id));
+  if (mode === "role-loss") await x.db.update(s.users).set({ roles: ["ops"] }).where(eq(s.users.id, x.maker.id));
+  if (mode === "session-loss") await x.db.update(s.users).set({ sessionVersion: x.maker.sessionVersion + 1 }).where(eq(s.users.id, x.maker.id));
+  const before = await snapshot();
+  await expect(voidCt(mode === "other-maker" ? x.other : x.maker, x.doc.id, { version: 1, reason: "核对" }, x.db)).rejects.toThrow();
+  expect(await snapshot()).toEqual(before);
+});
+it.each([{ version: 0, reason: "核对" }, { version: 1, reason: "  " }, { version: 1, reason: "x".repeat(501) }, { version: 1, reason: "核对", poId: 9 }])("invalid void input has no effects: %j", async input => {
+  const x = await fixture(), before = await snapshot();
+  await expect(voidCt(x.maker, x.doc.id, input, x.db)).rejects.toThrow(); expect(await snapshot()).toEqual(before);
+});
+it("void refuses stale versions and audit failure rolls back the entire transition", async () => {
+  const x = await fixture(), before = await snapshot();
+  await expect(voidCt(x.maker, x.doc.id, { version: 2, reason: "核对" }, x.db)).rejects.toMatchObject({ status: 409 });
+  vi.spyOn(audit, "writeAudit").mockRejectedValueOnce(Error("void audit down"));
+  await expect(voidCt(x.maker, x.doc.id, { version: 1, reason: "核对" }, x.db)).rejects.toThrow("void audit down");
+  expect(await snapshot()).toEqual(before);
+});
+it("void refuses pending, completed and even corrupt draft status with historical posting", async () => {
+  const x = await fixture(), pending = await submitCt(x.maker, x.doc.id, 1, x.db), before = await snapshot();
+  await expect(voidCt(x.maker, x.doc.id, { version: pending.version, reason: "核对" }, x.db)).rejects.toMatchObject({ status: 409 });
+  expect(await snapshot()).toEqual(before);
+  await approveCt(x.checker, x.doc.id, { action: "approve", version: pending.version }, x.db);
+  let doc = await getCt(x.doc.id, x.db, x.maker);
+  await expect(voidCt(x.maker, doc.id, { version: doc.version, reason: "核对" }, x.db)).rejects.toMatchObject({ status: 409 });
+  await x.db.update(s.ctDocs).set({ status: "draft" }).where(eq(s.ctDocs.id, x.doc.id));
+  doc = await getCt(x.doc.id, x.db, x.maker); const posted = await snapshot();
+  expect(doc.actions?.void).toBe(false);
+  await expect(voidCt(x.maker, doc.id, { version: doc.version, reason: "核对" }, x.db)).rejects.toMatchObject({ status: 409 });
+  expect(await snapshot()).toEqual(posted);
+});
 
 it("over-return rejection → repair original expired lot → approve once preserves source and approval history", async () => {
   const x = await fixture(), pending = await submitCt(x.maker, x.doc.id, x.doc.version, x.db);

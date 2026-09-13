@@ -23,6 +23,7 @@ import { useListState } from "@/components/useListState";
 import { hasAnyRole, useMe, type Me } from "@/components/useMe";
 import ApprovalTimeline from "@/components/ApprovalTimeline";
 import CtDraftEditor from "./ct-draft-editor";
+import CtDraftVoid from "./ct-draft-void";
 
 // ---------- 客户端十进制比较（仅提交前过滤/预警用；非负字符串，禁 float） ----------
 
@@ -80,6 +81,7 @@ interface CtDetail {
   docNo: string;
   status: string;
   remark: string | null;
+  closedReason?: string | null;
   version: number;
   poId: number;
   poDocNo: string;
@@ -88,7 +90,7 @@ interface CtDetail {
   createdByName: string | null;
   lines: CtLine[];
   approvals: DocApproval[];
-  actions?: { submit: boolean; approve: boolean; reject: boolean; edit: boolean; reason: string };
+  actions?: { submit: boolean; approve: boolean; reject: boolean; edit: boolean; void?: boolean; reason: string };
 }
 
 interface PoDetailLine {
@@ -121,6 +123,7 @@ const STATUS_TABS = [
   { key: "draft", label: "草稿" },
   { key: "pending", label: "待审批" },
   { key: "completed", label: "已完成" },
+  { key: "void", label: "已作废" },
 ];
 
 export default function CtClient() {
@@ -150,8 +153,9 @@ function CtWorkspace({ me }: { me: Me | null }) {
 
   const documentSelection = useDocumentTarget();
   const { id: detailId, setId: setDetailId } = documentSelection;
-  useEffect(() => { setRejectOpen(false); setEditingDraft(null); }, [detailId]);
+  useEffect(() => { setRejectOpen(false); setEditingDraft(null); setVoidingDraft(null); }, [detailId]);
   const [editingDraft, setEditingDraft] = useState<CtDetail | null>(null);
+  const [voidingDraft, setVoidingDraft] = useState<CtDetail | null>(null);
   const detailRead = useDocumentRead<CtDetail>(detailId == null ? null : `/api/matflow/ct/${detailId}`);
   const detail = detailRead.data;
   const detailLoading = detailRead.phase === "loading";
@@ -390,6 +394,8 @@ function CtWorkspace({ me }: { me: Me | null }) {
   const actions = detail ? (
     <Space wrap>
       {detail.actions?.edit && <Button disabled={actionLoading} onClick={() => setEditingDraft(detail)}>修改原草稿</Button>}
+      {detail.actions?.void && <Button danger disabled={actionLoading} onClick={() => setVoidingDraft(detail)}>作废错误草稿</Button>}
+      {detail.status === "void" && canWrite && <Button onClick={() => { setDetailId(null); openCreate(); }}>新建正确退货单</Button>}
       {detail.actions?.submit ? (
         <Popconfirm title="确认提交审批？" okText="提交" cancelText="取消" onConfirm={() => void handleSubmit()}>
           <Button type="primary" loading={actionLoading}>
@@ -492,6 +498,8 @@ function CtWorkspace({ me }: { me: Me | null }) {
           <div>
             <ChainStrip docType="ct" id={detail.id} />
             <Alert type="info" showIcon style={{ marginBottom: 12 }} message={detail.actions?.reason ?? "当前操作资格尚未确认，请重新读取原单；不凭旧页面提交或审批。"} />
+            {detail.status === "void" && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`作废原因：${detail.closedReason ?? "历史未登记"}`}
+              description="原单保留只读，不代表退货已经发生。需继续退货时，请核对来源、仓库及实物批次后明确新建，不重复使用原单。" />}
             {overAlert ? (
               <Alert
                 type="warning"
@@ -538,6 +546,10 @@ function CtWorkspace({ me }: { me: Me | null }) {
       {editingDraft && <CtDraftEditor key={`${me?.id}:${me?.roles.join(",")}:${editingDraft.id}:${editingDraft.version}`} doc={editingDraft}
         onClose={() => setEditingDraft(null)} onReload={() => { setEditingDraft(null); refresh(); }}
         onSaved={() => { setEditingDraft(null); message.success("原退货草稿已更新，未提交或过账"); refresh(); }} />}
+
+      {voidingDraft && <CtDraftVoid key={`${voidingDraft.id}:${voidingDraft.version}`} doc={voidingDraft}
+        onClose={() => setVoidingDraft(null)} onReload={() => { setVoidingDraft(null); refresh(); }}
+        onSaved={() => { setVoidingDraft(null); message.success("原草稿已作废，库存及采购已收数未改变"); refresh(); }} />}
 
       <Modal
         title="新建采购退货单"
