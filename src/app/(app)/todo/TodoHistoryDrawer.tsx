@@ -10,7 +10,7 @@ import LoadErrorAlert from "@/components/LoadErrorAlert";
 import type { WorkItemHistoryPage } from "@/server/modules/todo/history";
 import styles from "./todo-client.module.css";
 
-const labels: Record<string, string> = { create: "创建", assign: "改派", update: "更新", complete: "完成待办", cancel: "取消", reopen: "重新打开", follow_up: "跟进记录", capacity_check: "产能核对依据" };
+const labels: Record<string, string> = { create: "创建", assign: "改派", update: "更新", complete: "完成待办", cancel: "取消待办", mutation_cancelled: "阻止原操作（待办未改变）", reopen: "重新打开", follow_up: "跟进记录", capacity_check: "产能核对依据" };
 const statuses: Record<string, string> = { open: "待处理", in_progress: "进行中", done: "已完成", cancelled: "已取消" };
 
 /** Parent-owned drawer survives desktop/mobile table reconstruction; one item per mount. */

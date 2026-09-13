@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { clearTodoMutation, loadTodoMutation, lookupTodoMutation, prepareTodoMutation, submitTodoMutation, todoMutationIsObsolete, todoMutationKey, withTodoMutationLock } from "@/components/todo-mutation-request";
+import { cancelTodoMutation, clearTodoMutation, loadTodoMutation, lookupTodoMutation, prepareTodoMutation, submitTodoMutation, todoMutationIsObsolete, todoMutationKey, withTodoMutationLock } from "@/components/todo-mutation-request";
 const fetch = vi.hoisted(() => vi.fn());
 vi.mock("@/components/fetchJson", () => ({ fetchJson: fetch }));
 const key = "bc264aa1-dac9-4929-93f5-c3dbce063329", next = "dc264aa1-dac9-4929-93f5-c3dbce063329";
@@ -67,4 +67,31 @@ it("timeout retains original record and does not automatically retry", async () 
   vi.useFakeTimers(); const r = prepare(); fetch.mockReturnValue(new Promise(() => {}));
   const pending = submitTodoMutation(r, 20), assertion = expect(pending).rejects.toThrow("超时不代表服务端取消");
   await vi.advanceTimersByTimeAsync(21); await assertion; expect(fetch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[0][1].signal.aborted).toBe(true); expect(loadTodoMutation(storage, 1)).toEqual(r);
+});
+const cancelled = { ...receipt, cancelled: true, originalResult: { version: 1, status: "open", assigneeId: 1, completedAt: null, suspicious: false } };
+it("explicit cancellation posts the same original intent and validates a fence without clearing local evidence", async () => {
+  const r = prepare(); fetch.mockResolvedValue({ ...found, receipt: cancelled, current });
+  expect((await cancelTodoMutation(r)).receipt).toEqual(cancelled);
+  expect(fetch.mock.calls[0][1].method).toBe("POST");
+  expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ mode: "cancel-mutation", requestId: key, ...receipt.originalIntent });
+  expect(loadTodoMutation(storage, 1)).toEqual(r);
+  expect((await lookupTodoMutation(r)).receipt?.cancelled).toBe(true);
+});
+it("save winning the cancellation race stays an applied receipt, not cancelled", async () => {
+  const r = prepare(); fetch.mockResolvedValue(found); expect((await cancelTodoMutation(r)).receipt).toEqual(receipt);
+});
+it.each([{ ...cancelled, cancelled: false }, { ...cancelled, originalResult: snapshot }, { ...cancelled, originalIntent: { ...receipt.originalIntent, status: "open" } }])("invalid cancellation receipt cannot authorize local clearing", async bad => {
+  const r = prepare(); fetch.mockResolvedValue({ ...found, receipt: bad, current });
+  await expect(cancelTodoMutation(r)).rejects.toThrow("不一致"); expect(loadTodoMutation(storage, 1)).toEqual(r);
+});
+it("cancelled receipt cannot masquerade as a successful PATCH", async () => {
+  const r = prepare(); fetch.mockResolvedValue({ ...current, mutationReceipt: cancelled, replayed: true });
+  await expect(submitTodoMutation(r)).rejects.toThrow("先核对"); expect(loadTodoMutation(storage, 1)).toEqual(r);
+});
+it("lost cancellation response preserves the original record and later GET recovers the fence", async () => {
+  vi.useFakeTimers(); const r = prepare(); fetch.mockReturnValueOnce(new Promise(() => {}));
+  const pending = cancelTodoMutation(r, 20), assertion = expect(pending).rejects.toThrow("超时");
+  await vi.advanceTimersByTimeAsync(21); await assertion; expect(loadTodoMutation(storage, 1)).toEqual(r);
+  fetch.mockResolvedValue({ ...found, receipt: cancelled, current }); expect((await lookupTodoMutation(r)).receipt).toEqual(cancelled);
+  expect(fetch).toHaveBeenCalledTimes(2);
 });

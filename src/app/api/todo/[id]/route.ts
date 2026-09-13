@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFreshSessionUser } from "@/server/core/dto";
-import { getWorkItem, getWorkItemMutationResult, isWorkItemVisible, patchWorkItem, resolveTodoVisibility, workItemPatchSchema } from "@/server/modules/todo/service";
+import { cancelWorkItemMutation, getWorkItem, getWorkItemMutationResult, isWorkItemVisible, patchWorkItem, resolveTodoVisibility, workItemPatchSchema, workItemMutationCancelSchema } from "@/server/modules/todo/service";
 import { ApiError, errorResponse, parseId, readJson } from "@/server/modules/master/common";
 
 
@@ -32,5 +32,17 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json(item);
   } catch (error) {
     return errorResponse(error, { path: "/api/todo/[id]", method: "PATCH" });
+  }
+}
+
+/** Cancel an uncertain request, never cancel the task or reverse a committed change. */
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await getFreshSessionUser();
+    if (req.nextUrl.searchParams.size) throw new ApiError(400, "取消原操作不接受额外查询参数");
+    const input = workItemMutationCancelSchema.parse(await readJson(req));
+    return NextResponse.json(await cancelWorkItemMutation(parseId((await ctx.params).id), input, user), { headers: { "Cache-Control": "private, no-store" } });
+  } catch (error) {
+    return errorResponse(error, { path: "/api/todo/[id]", method: "POST" });
   }
 }

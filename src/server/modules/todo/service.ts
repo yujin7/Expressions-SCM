@@ -377,13 +377,23 @@ export interface WorkItemMutationReceipt {
   requestId: string;
   originalIntent: z.output<typeof mutationIntentSchema>;
   originalResult: z.output<typeof mutationResultSchema>;
+  /** A durable fence for this request, not a task status transition or reversal. */
+  cancelled?: true;
 }
+export const workItemMutationCancelSchema = z.object({
+  mode: z.literal("cancel-mutation"),
+  requestId: z.string().uuid().transform(s => s.toLowerCase()),
+  expectedVersion: z.number().int().positive().max(2147483647),
+  status: z.enum(WORK_ITEM_STATUSES).nullable(),
+  assigneeId: z.number().int().positive().max(2147483647).nullable(),
+  note: z.string().trim().max(500).nullable(),
+}).strict().refine(v => v.status !== null || v.assigneeId !== null);
 export type WorkItemMutationResult = WorkItemRow & { mutationReceipt?: WorkItemMutationReceipt; replayed?: boolean };
 const lockMutationRequest = (tx: AnyDb, key: string) => tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('todo-mutation'), hashtext(${key}))`);
 
 /** Called only while the request and current item locks are held. Never infer an old result from current state. */
 async function originalTaskMutation(tx: AnyDb, key: string, itemId: number, actorId: number): Promise<WorkItemMutationReceipt | null> {
-  const rows = await tx.select({ id: auditLogs.id, entityId: auditLogs.entityId, userId: auditLogs.userId, after: auditLogs.after }).from(auditLogs)
+  const rows = await tx.select({ id: auditLogs.id, entityId: auditLogs.entityId, userId: auditLogs.userId, action: auditLogs.action, after: auditLogs.after }).from(auditLogs)
     .where(sql`${auditLogs.entity} = 'work_item' AND ${auditLogs.after}->>'mutationRequestId' IS NOT NULL AND lower(${auditLogs.after}->>'mutationRequestId') = ${key}`).limit(2);
   if (rows.length > 1) throw new ApiError(409, "原操作回执不唯一，请人工核对");
   const row = rows[0];
@@ -393,7 +403,40 @@ async function originalTaskMutation(tx: AnyDb, key: string, itemId: number, acto
   const intent = mutationIntentSchema.safeParse(row.after?.mutationIntent);
   const result = mutationResultSchema.safeParse(row.after?.mutationResult);
   if (!intent.success || !result.success) throw new ApiError(409, "原操作依据无法核验，请人工核对");
-  return { eventId: row.id, requestId: key, originalIntent: intent.data, originalResult: result.data };
+  const cancelled = row.after?.mutationCancelled;
+  if ((cancelled !== undefined && cancelled !== true) || (row.action === "mutation_cancelled") !== (cancelled === true))
+    throw new ApiError(409, "原操作取消依据无法核验，请人工核对");
+  return { eventId: row.id, requestId: key, originalIntent: intent.data, originalResult: result.data, ...(cancelled ? { cancelled: true as const } : {}) };
+}
+
+/** Serialize with PATCH on the same key. A late request must never execute after its fence commits. */
+export async function cancelWorkItemMutation(id: number, raw: z.input<typeof workItemMutationCancelSchema>, user: SessionUser, dbArg?: AnyDb) {
+  const input = workItemMutationCancelSchema.parse(raw), db = dbArg ?? await getDbAsync();
+  const intent = mutationIntentSchema.parse({ expectedVersion: input.expectedVersion, status: input.status,
+    assigneeId: input.assigneeId, note: input.note || null });
+  return db.transaction(async (tx: AnyDb) => {
+    const current = await currentWriteActor(tx, user);
+    const actor: SessionUser = { ...current, ...await loadUserScopes(tx, current.id) };
+    await lockMutationRequest(tx, input.requestId);
+    const [item]: RawRow[] = await tx.select().from(workItems).where(eq(workItems.id, id)).for("update");
+    if (!item || !isWorkItemVisible(item, actor)) throw new ApiError(404, "待办不存在");
+    let receipt = await originalTaskMutation(tx, input.requestId, id, actor.id);
+    if (receipt && JSON.stringify(receipt.originalIntent) !== JSON.stringify(intent)) throw new ApiError(409, "原请求内容不一致，请先核对回执");
+    const snapshot = toRow((await loadRow(tx, id)) as RawRow, dayShanghai(new Date()));
+    if (!receipt) {
+      if (item.version < input.expectedVersion) throw new ApiError(409, "原操作版本无法核验，请刷新核对");
+      // A newer version already permanently rejects this old request. Do not fabricate a cancellation receipt.
+      if (item.version === input.expectedVersion) {
+        await writeAudit(tx, { userId: actor.id, entity: "work_item", entityId: id, action: "mutation_cancelled",
+          after: { mutationRequestId: input.requestId, mutationIntent: intent, mutationCancelled: true,
+            mutationResult: { version: snapshot.version, status: snapshot.status, assigneeId: snapshot.assigneeId,
+              completedAt: snapshot.completedAt, suspicious: snapshot.suspicious } } });
+        receipt = await originalTaskMutation(tx, input.requestId, id, actor.id);
+        if (!receipt?.cancelled) throw new ApiError(409, "取消回执未保存，请继续核对；本机记录仍需保留");
+      }
+    }
+    return { itemId: id, requestId: input.requestId, receipt, current: snapshot };
+  });
 }
 
 export async function getWorkItemMutationResult(id: number, requestId: string, user: SessionUser, dbArg?: AnyDb) {
@@ -440,6 +483,7 @@ export async function patchWorkItem(
       const receipt = await originalTaskMutation(tx, patch.requestId, id, actor.id);
       if (receipt) {
         if (JSON.stringify(receipt.originalIntent) !== JSON.stringify(intent)) throw new ApiError(409, "原请求已保存不同操作，请先核对回执");
+        if (receipt.cancelled) throw new ApiError(409, "原操作已被阻止执行，请核对取消回执；待办未因此改变");
         return { ...toRow((await loadRow(tx, id)) as RawRow, dayShanghai(now)), mutationReceipt: receipt, replayed: true };
       }
       if (existing.version !== patch.expectedVersion) throw new ApiError(409, "待办已被更新，原操作未执行；请刷新并核对当前状态和责任人");

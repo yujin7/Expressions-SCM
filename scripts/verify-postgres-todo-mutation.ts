@@ -5,7 +5,7 @@ import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import * as s from "@/db/schema";
-import { createWorkItem, getWorkItemMutationResult, patchWorkItem } from "@/server/modules/todo/service";
+import { cancelWorkItemMutation, createWorkItem, getWorkItemMutationResult, patchWorkItem } from "@/server/modules/todo/service";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function main() {
@@ -58,7 +58,26 @@ async function main() {
       () => patchWorkItem(competing.id, { requestId: randomUUID(), expectedVersion: 1, status: "in_progress" }, actor, other));
     assert(!conflict.second.ok); assert.equal(conflict.second.error.status, 409);
     console.log("PASS two different intents against one observed version cannot both mutate");
-    for (const operation of [() => getWorkItemMutationResult(row.id, input.requestId, actor, other), () => patchWorkItem(row.id, input, actor, other)]) {
+    const cancellation = () => ({ mode: "cancel-mutation" as const, requestId: randomUUID(), expectedVersion: 1, status: "done" as const, assigneeId: null, note: null });
+    const cancelRow = await task(), cancelInput = cancellation();
+    const fenced = await race(tx => cancelWorkItemMutation(cancelRow.id, cancelInput, actor, tx),
+      () => patchWorkItem(cancelRow.id, { requestId: cancelInput.requestId, expectedVersion: 1, status: "done" }, actor, other));
+    assert.equal(fenced.first.receipt?.cancelled, true); assert(!fenced.second.ok); assert.equal(fenced.second.error.status, 409);
+    assert.equal(fenced.first.current.version, 1); assert.equal(fenced.first.current.status, "open");
+    console.log("PASS cancellation commits before delayed PATCH, which waits then refuses without task changes");
+    const saveRow = await task(), saveInput = cancellation();
+    const saveWins = await race(tx => patchWorkItem(saveRow.id, { requestId: saveInput.requestId, expectedVersion: 1, status: "done" }, actor, tx),
+      () => cancelWorkItemMutation(saveRow.id, saveInput, actor, other));
+    assert(saveWins.second.ok); assert.deepEqual(saveWins.second.value.receipt, saveWins.first.mutationReceipt);
+    assert.equal(saveWins.second.value.receipt?.cancelled, undefined); assert.equal(saveWins.second.value.current.status, "done");
+    console.log("PASS committed save wins cancellation race and is never reversed");
+    const duplicateRow = await task(), duplicateInput = cancellation();
+    const duplicate = await race(tx => cancelWorkItemMutation(duplicateRow.id, duplicateInput, actor, tx),
+      () => cancelWorkItemMutation(duplicateRow.id, duplicateInput, actor, other));
+    assert(duplicate.second.ok); assert.deepEqual(duplicate.second.value, duplicate.first);
+    console.log("PASS concurrent cancellations create one durable receipt");
+    for (const operation of [() => getWorkItemMutationResult(row.id, input.requestId, actor, other), () => patchWorkItem(row.id, input, actor, other),
+      () => cancelWorkItemMutation(duplicateRow.id, duplicateInput, actor, other)]) {
       await db.update(s.users).set({ active: true }).where(eq(s.users.id, actor.id));
       const denied = await race(async tx => { await tx.update(s.users).set({ active: false }).where(eq(s.users.id, actor.id)); }, operation);
       assert(!denied.second.ok); assert.equal(denied.second.error.status, 403);
@@ -68,8 +87,8 @@ async function main() {
     await assert.rejects(control.query(`insert into audit_logs(user_id, entity, entity_id, action, "after") values ($1,'work_item',$2,'update',$3::jsonb)`,
       [actor.id, row.id, JSON.stringify({ mutationRequestId: input.requestId.toUpperCase() })]), (e: unknown) => e instanceof Error && "code" in e && e.code === "23505");
     const receipts = (await control.query(`select id,entity_id,action from audit_logs where entity='work_item' and user_id=$1 and "after"->>'mutationRequestId' is not null order by id`, [actor.id])).rows;
-    assert.equal(receipts.length, 3); assert.deepEqual(await counts(), before);
-    console.log(JSON.stringify({ fixture, actorId: actor.id, checks: 7, actualLockWaits: waits, receipts, counts: before, retained: true }));
+    assert.equal(receipts.length, 6); assert.deepEqual(await counts(), before);
+    console.log(JSON.stringify({ fixture, actorId: actor.id, checks: 11, actualLockWaits: waits, receipts, counts: before, retained: true }));
   } finally { await Promise.allSettled([a.end(), b.end(), control.end()]); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
