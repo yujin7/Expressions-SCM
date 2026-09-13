@@ -17,7 +17,7 @@ import { todoItemHref } from "@/lib/todo-navigation";
 import { isTodoSortField, type TodoSortField } from "@/lib/todo-sort";
 import { z } from "zod";
 import { getDbAsync } from "@/db";
-import { users, workItems } from "@/db/schema";
+import { auditLogs, users, workItems } from "@/db/schema";
 import { writeAudit } from "@/server/core/audit";
 import { ROLES, type Role } from "@/server/core/constants";
 import { loadUserScopes, resolveDeptScope } from "@/server/core/data-scope";
@@ -56,6 +56,7 @@ export const workItemCreateSchema = z.object({
     .nullable().optional()),
   sourceKind: z.enum(WORK_ITEM_SOURCE_KINDS).optional().default("manual"),
   sourceRef: z.preprocess(emptyToUndef, z.string().trim().max(200).nullable().optional()),
+  requestId: z.string().uuid("请刷新页面后保留原创建请求编号").transform(s => s.toLowerCase()).optional(),
 });
 export type WorkItemCreateInput = z.input<typeof workItemCreateSchema>;
 
@@ -94,6 +95,38 @@ export interface CreateWorkItemResult {
   /** true=新建；false=命中既有 open 项或 reopen */
   created: boolean;
   reopened: boolean;
+}
+
+function manualCreationIntent(v: z.output<typeof workItemCreateSchema>) {
+  return { title: v.title, detail: v.detail ?? null, assigneeId: v.assigneeId, ownerRole: v.ownerRole ?? null,
+    priority: v.priority, dueDate: v.dueDate ?? null, sourceRef: v.sourceRef ?? null };
+}
+const lockCreationRequest = (tx: AnyDb, key: string) => tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('todo-create'), hashtext(${key}))`);
+async function originalTaskCreation(tx: AnyDb, key: string, actor: SessionUser) {
+  const rows = await tx.select({ entityId: auditLogs.entityId, userId: auditLogs.userId, after: auditLogs.after }).from(auditLogs)
+    .where(sql`${auditLogs.entity} = 'work_item' AND ${auditLogs.action} = 'create' AND ${auditLogs.after}->>'requestId' IS NOT NULL AND lower(${auditLogs.after}->>'requestId') = ${key}`).limit(2);
+  if (rows.length > 1) throw new ApiError(409, "原创建请求存在歧义，请人工核对");
+  const receipt = rows[0];
+  if (!receipt) return null;
+  if (receipt.userId !== actor.id) throw new ApiError(403, "只能核对本人创建的待办请求");
+  const raw = receipt.after?.creationIntent;
+  if (!raw || typeof raw !== "object" || ["title", "detail", "assigneeId", "ownerRole", "priority", "dueDate", "sourceRef"].some(k => !Object.hasOwn(raw, k))) throw new ApiError(409, "原创建依据不完整，请人工核对；未创建新待办");
+  const parsed = workItemCreateSchema.safeParse(raw);
+  if (!parsed.success) throw new ApiError(409, "原创建依据格式无效，请人工核对");
+  const [item] = await tx.select().from(workItems).where(eq(workItems.id, receipt.entityId)).for("share");
+  if (!item || !isWorkItemVisible(item, { ...actor, ...await loadUserScopes(tx, actor.id) })) throw new ApiError(404, "原待办不存在或不可见");
+  return { item, intent: manualCreationIntent(parsed.data) };
+}
+
+/** A missing result is not permission to replace the pending request or silently resubmit. */
+export async function getWorkItemCreationResult(requestId: string, user: SessionUser, dbArg?: AnyDb) {
+  const key = z.string().uuid().parse(requestId).toLowerCase(), db = dbArg ?? await getDbAsync();
+  return db.transaction(async (tx: AnyDb) => {
+    const actor = await currentWriteActor(tx, user);
+    await lockCreationRequest(tx, key);
+    const original = await originalTaskCreation(tx, key, actor);
+    return { requestId: key, itemId: original?.item.id ?? null, originalIntent: original?.intent ?? null };
+  });
 }
 
 /** 允许的状态流转（D61 四态） */
@@ -226,6 +259,7 @@ export async function createWorkItem(
   opts?: { now?: Date },
 ): Promise<CreateWorkItemResult> {
   const input = workItemCreateSchema.parse(raw);
+  if (input.requestId && input.sourceKind !== "manual") throw new ApiError(400, "创建请求编号仅用于手工待办，不代替系统来源指纹");
   const db = dbArg ?? (await getDbAsync());
   const now = opts?.now ?? new Date();
   const today = dayShanghai(now);
@@ -234,6 +268,14 @@ export async function createWorkItem(
     const actor = await currentWriteActor(tx, user);
     // HTTP normalization is not authority: the earlier admin may have been revoked.
     if (input.sourceKind !== "manual" && !actor.roles.includes("admin")) throw new ApiError(403, "只有当前管理员可创建系统来源待办");
+    if (input.requestId) {
+      await lockCreationRequest(tx, input.requestId);
+      const original = await originalTaskCreation(tx, input.requestId, actor);
+      if (original) {
+        if (JSON.stringify(original.intent) !== JSON.stringify(manualCreationIntent(input))) throw new ApiError(409, "原请求已创建不同内容的待办，请先核对原任务");
+        return { created: false, reopened: false, item: toRow((await loadRow(tx, original.item.id)) as RawRow, today) };
+      }
+    }
     const assignee = await requireActiveUser(tx, input.assigneeId);
     if (fingerprinted) {
       const [existing]: (typeof workItems.$inferSelect)[] = await tx
@@ -299,6 +341,7 @@ export async function createWorkItem(
       action: "create",
       after: {
         title: input.title,
+        ...(input.requestId ? { requestId: input.requestId, creationIntent: manualCreationIntent(input) } : {}),
         assigneeId: input.assigneeId,
         ownerRole: input.ownerRole ?? null,
         priority: input.priority,

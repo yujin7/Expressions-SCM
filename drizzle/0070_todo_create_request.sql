@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "uq_work_item_create_request" ON "audit_logs" USING btree (lower("after"->>'requestId')) WHERE "audit_logs"."entity" = 'work_item' AND "audit_logs"."action" = 'create' AND "audit_logs"."after"->>'requestId' IS NOT NULL;
