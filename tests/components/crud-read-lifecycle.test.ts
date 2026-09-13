@@ -51,6 +51,21 @@ it("bounds the search control to its toolbar instead of overflowing a narrow pad
   expect(props("search").style).toMatchObject({ maxWidth: "100%", minWidth: 0 });
 });
 
+it("keeps long shared edit forms inside the viewport with a separately scrolling body", () => {
+  fetchMock.mockReturnValue(new Promise(() => {}));
+  extraProps = { modalWidth: 900 };
+  const modal = props("modal");
+  expect(modal.width).toBe(900);
+  expect(modal.centered).toBe(true);
+  expect(modal.style).toMatchObject({ maxWidth: "calc(100vw - 32px)", paddingBottom: 0 });
+  expect(modal.styles).toMatchObject({
+    content: { maxHeight: "calc(100dvh - 32px)", display: "flex", flexDirection: "column" },
+    body: { minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" },
+    header: { flexShrink: 0, paddingInlineEnd: 32, overflowWrap: "anywhere" },
+    footer: { flexShrink: 0 },
+  });
+});
+
 it("does not reserve an empty fixed action column for a read-only role", async () => {
   extraProps = { canEdit: () => false, columns: [{ title: "编码", dataIndex: "id" }] };
   fetchMock.mockResolvedValue(Response.json({ data: [{ id: 1 }], total: 1 })); render(); await flush();
