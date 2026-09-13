@@ -573,11 +573,16 @@ export default function SopClient() {
                 ) : (
                   <Typography.Text type="secondary">仅 PMC/管理员可据此开单。</Typography.Text>
                 )}
-                <Typography.Text type="secondary">
-                  已开草稿：{execution?.drafts.length
-                    ? execution.drafts.map((d) => `${d.docNo}（${d.lineCount} 项，${d.by ?? "未知"}）`).join("；")
-                    : "无"}
-                </Typography.Text>
+                <Space wrap size={[8, 4]}>
+                  <Typography.Text type="secondary">本周期备货申请：</Typography.Text>
+                  {execution?.drafts.length
+                    ? execution.drafts.map((d) => (
+                      <Typography.Link key={d.bhId} href={documentHref("bh", d.bhId) ?? undefined}>
+                        {d.docNo}（{d.lineCount} 项，{d.by ?? "未知"}）
+                      </Typography.Link>
+                    ))
+                    : <Typography.Text type="secondary">无</Typography.Text>}
+                </Space>
               </Flex>
             </Card>
           ) : null}
