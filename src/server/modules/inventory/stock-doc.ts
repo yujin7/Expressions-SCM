@@ -124,7 +124,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
     }
     const lines = v.subtype === "opening"
       ? v.lines.map((line) => ({ ...line, qty: dQty(line.qty), batchId: line.batchId ?? null }))
-      : await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines);
+      : await expandOutboundLinesForBatchPosting(tx, v.warehouseId, v.lines, v.riskDisposalId ? "reviewed_scrap" : "use");
     const docNo = await nextDocNo(tx, DOC_PREFIX[v.subtype]);
     const [doc]: StockDocRow[] = await tx
       .insert(stockDocs)

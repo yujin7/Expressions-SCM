@@ -17,6 +17,7 @@ import { getLocatedQty } from "@/server/modules/inventory/location-balance";
 import { isPeriodClosed, periodOf } from "@/server/modules/settlement/period-lock";
 import type { PostingErrorCode } from "./error-codes";
 import { isRegisteredSource } from "./registry";
+import { outboundBatchBlock } from "./batch-eligibility";
 
 /**
  * 宽松 db 句柄：node-postgres 的 NodePgDatabase 与 PGlite 的 PgliteDatabase
@@ -131,6 +132,9 @@ export async function post(db: AnyDb, event: PostingEvent): Promise<{ posted: bo
         );
       }
     }
+
+    const batchBlock = await outboundBatchBlock(tx, event);
+    if (batchBlock) throw new PostingError(batchBlock.code, batchBlock.message);
 
     // 4) 插入流水（按排序后顺序，一行一条；dQty 兼做十进制校验与规格化）
     await tx.insert(stockLedger).values(

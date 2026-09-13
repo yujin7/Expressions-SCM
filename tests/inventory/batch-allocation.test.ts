@@ -37,6 +37,18 @@ describe("批次过账迁移闸门与 FEFO 行展开", () => {
     expect(lines).toEqual([{ skuId, qty: "10.0000", batchId: null, marker: "legacy" }]);
   });
 
+  it.each(["return", "reviewed_scrap"] as const)("%s 仅允许明确批次退回/报废，不绕过身份或数量，也不自动推荐过期货", async purpose => {
+    await db.insert(sysParams).values({ scope: "global", key: "batch_posting_enabled", value: "1" });
+    const [batch] = await db.insert(batches).values({ skuId, batchNo: "EXPIRED-RETURN", expiryDate: "2000-01-01" }).returning();
+    await db.insert(stockBalances).values({ skuId, warehouseId, batchId: batch.id, qty: "2" });
+    const lines = [{ skuId, qty: "1", batchId: batch.id }];
+    await expect(expandOutboundLinesForBatchPosting(db, warehouseId, lines)).rejects.toMatchObject({ status: 409 });
+    expect(await expandOutboundLinesForBatchPosting(db, warehouseId, lines, purpose)).toEqual([{ ...lines[0], qty: "1.0000" }]);
+    await expect(expandOutboundLinesForBatchPosting(db, warehouseId, [{ ...lines[0], qty: "3" }], purpose)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("批次库存不足") });
+    await expect(expandOutboundLinesForBatchPosting(db, warehouseId, [{ ...lines[0], skuId: skuId + 999 }], purpose)).rejects.toMatchObject({ status: 400 });
+    await expect(expandOutboundLinesForBatchPosting(db, warehouseId, [{ skuId, qty: "1" }], purpose)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("过期批次") });
+  });
+
   it("闸门开启后按 FEFO 拆行并保持原业务行归属", async () => {
     await db.insert(sysParams).values({
       scope: "global", key: "batch_posting_enabled", value: "1",

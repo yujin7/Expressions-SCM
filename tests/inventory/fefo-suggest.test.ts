@@ -56,6 +56,18 @@ describe("suggestFefoAllocation", () => {
     expect(r.fallbackQty).toBe("0.0000");
   });
 
+  it("错误SKU批次不变成无效期可用货，也不冒称尚未批次化", async () => {
+    const [spu] = await db.insert(spus).values({ code: "FOREIGN-SPU", nameCn: "其他物料" }).returning();
+    const [other] = await db.insert(skus).values({ code: "FOREIGN-SKU", spuId: spu.id, skuType: "raw", baseUom: "kg" }).returning();
+    const [batch] = await db.insert(batches).values({ skuId: other.id, batchNo: "WRONG-OWNER", expiryDate: "2028-01-01" }).returning();
+    await bal(whA, batch.id, "100");
+    const result = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "3", today: testToday });
+    expect(result).toMatchObject({ allocations: [], batchCoverage: true, shortBy: "3.0000", fallbackQty: "0.0000" });
+    expect(result.note).toContain("批次身份");
+    await bal(whA, null, "1");
+    expect(await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "3", today: testToday })).toMatchObject({ allocations: [], batchCoverage: true, shortBy: "2.0000", fallbackQty: "1.0000" });
+  });
+
   it("**无分批余额时诚实降级**：空分配 + 说明，不报错", async () => {
     await bal(whA, null, "500"); // 只有历史无批次库存
     const r = await suggestFefoAllocation(db, { skuId, warehouseId: whA, qty: "100", today: testToday });

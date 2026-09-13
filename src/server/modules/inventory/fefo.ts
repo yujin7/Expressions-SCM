@@ -60,10 +60,11 @@ export async function suggestFefoAllocation(
   }
 
   /* ── 分批维度余额（batchId 非空）+ 批次主档效期 ── */
-  const batchRows: { batchId: number | null; batchNo: string | null; expiryDate: string | null; qty: string | null }[] =
+  const batchRows: { batchId: number | null; batchSkuId: number | null; batchNo: string | null; expiryDate: string | null; qty: string | null }[] =
     await db
       .select({
         batchId: schema.stockBalances.batchId,
+        batchSkuId: schema.batches.skuId,
         batchNo: schema.batches.batchNo,
         expiryDate: schema.batches.expiryDate,
         qty: schema.stockBalances.qty,
@@ -83,7 +84,7 @@ export async function suggestFefoAllocation(
   });
 
   const lots: BatchLot[] = batchRows
-    .filter((r) => r.batchId != null)
+    .filter((r) => r.batchId != null && r.batchSkuId === args.skuId)
     .map((r) => ({
       batchId: r.batchId as number,
       batchNo: r.batchNo ?? `#${r.batchId}`,
@@ -97,7 +98,7 @@ export async function suggestFefoAllocation(
     }));
 
   /* ── 无批次维度余额：诚实降级，不报错 ── */
-  if (lots.length === 0) {
+  if (batchRows.length === 0) {
     return {
       allocations: [], fallbackQty: dQty("0"), shortBy: dQty("0"),
       expiredLots: 0, batchCoverage: false,
@@ -133,6 +134,8 @@ export async function suggestFefoAllocation(
   }
 
   const parts: string[] = [];
+  const invalidLots = batchRows.filter(row => row.batchSkuId !== args.skuId).length;
+  if (invalidLots > 0) parts.push(`已排除 ${invalidLots} 个批次身份缺失或与 SKU 不符的余额，请核对原始流水；不计入可发库存`);
   if (r.allocations.length > 0) parts.push(`按先到期先出选中 ${r.allocations.length} 个批次`);
   if (dCmp(fallbackQty, "0") > 0) {
     parts.push(
