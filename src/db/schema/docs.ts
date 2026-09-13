@@ -40,6 +40,22 @@ export const bhLines = pgTable("bh_lines", {
   expectDate: date("expect_date"),
 });
 
+/** Immutable receipt shared by manual and live-replenishment creation. */
+export const bhCreateRequests = pgTable("bh_create_requests", {
+  id: serial("id").primaryKey(),
+  requestedBy: integer("requested_by").notNull().references(() => users.id),
+  requestKey: text("request_key").notNull(),
+  source: text("source").notNull(),
+  requestHash: text("request_hash").notNull(),
+  bhId: integer("bh_id").notNull().references(() => bhDocs.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  unique("uq_bh_create_request").on(t.requestedBy, t.requestKey),
+  unique("uq_bh_create_request_doc").on(t.bhId),
+  check("ck_bh_create_request_hash", sql`${t.requestHash} ~ '^[0-9a-f]{64}$'`),
+  check("ck_bh_create_request_source", sql`${t.source} IN ('manual', 'replenish')`),
+]);
+
 /* ── 委外工单 WO ─────────────────────────────── */
 export const woDocs = pgTable("wo_docs", {
   id: serial("id").primaryKey(),

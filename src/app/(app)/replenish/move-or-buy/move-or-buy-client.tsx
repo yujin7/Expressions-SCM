@@ -27,6 +27,8 @@ import LoadErrorAlert from "@/components/LoadErrorAlert";
 import SearchInput from "@/components/SearchInput";
 import SkuHoverCard from "@/components/SkuHoverCard";
 import { fetchJson, postJson } from "@/components/fetchJson";
+import { useMe, hasAnyRole, type Me } from "@/components/useMe";
+import BhCreateRecovery, { useBhCreateRecovery } from "@/components/BhCreateRecovery";
 import { formatCount, formatYuan } from "@/components/format";
 import { useListState } from "@/components/useListState";
 import { groupTransferDraftLanes, transferDraftPayload } from "@/lib/transfer-draft";
@@ -116,6 +118,11 @@ const ACTION_TAG: Record<Row["action"], { color: string; label: string }> = {
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
 export default function MoveOrBuyClient() {
+  const me = useMe();
+  return <MoveOrBuyWorkspace key={`${me?.id}:${me?.roles.join(",")}`} me={me} />;
+}
+
+function MoveOrBuyWorkspace({ me }: { me: Me | null }) {
   const { message } = App.useApp();
   const listState = useListState<Filters>({ key: "move-or-buy", defaults: { q: "" }, defaultPageSize: 50 });
   const query = listState.queryString();
@@ -142,6 +149,7 @@ export default function MoveOrBuyClient() {
       }
     }
   }, [query]);
+  const recovery = useBhCreateRecovery(me?.id ?? null, hasAnyRole(me, "ops", "pmc"), () => void load());
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => requestRef.current?.abort(), []);
 
@@ -199,6 +207,7 @@ export default function MoveOrBuyClient() {
   const [boughtDocNo, setBoughtDocNo] = useState<string | null>(null);
 
   const openBuy = (row: Row) => {
+    if (!hasAnyRole(me, "pmc") || !recovery.ready || recovery.busy || recovery.request) { message.info("请先核对待恢复的备货申请；创建需计划角色"); return; }
     setBuying(row);
     setBoughtDocNo(null);
     setBuyRemark("");
@@ -208,12 +217,14 @@ export default function MoveOrBuyClient() {
     if (!buying?.residualBuyQty) return;
     setSubmitting(true);
     try {
-      const res = await postJson<{ docNo: string }>("/api/replenish/draft", {
+      const res = await recovery.submit({
+        source: "replenish",
         remark: buyRemark.trim() || "由「先挪后买」决策表生成（已扣除可调拨量）",
-        items: [{ skuId: buying.skuId, qty: buying.residualBuyQty }],
+        lines: [{ skuId: buying.skuId, qty: buying.residualBuyQty }],
       });
-      setBoughtDocNo(res.docNo);
-      message.success(`备货申请草稿已生成：${res.docNo}`);
+      if (!res?.document) return;
+      setBoughtDocNo(res.document.docNo);
+      message.success(`已确认原备货申请：${res.document.docNo}，请核对当前状态`);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -399,6 +410,7 @@ export default function MoveOrBuyClient() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>先挪后买 · 统一决策表</Typography.Title>
+      <BhCreateRecovery recovery={recovery} />
       <CaliberNote
         summary="每个 SKU 一行，按最晚下单日排序：先看能从哪个仓挪多少，再看挪完还差多少必须买。"
         detail={
@@ -552,12 +564,15 @@ export default function MoveOrBuyClient() {
         okText={boughtDocNo ? "关闭" : "生成草稿"}
         cancelButtonProps={{ style: boughtDocNo ? { display: "none" } : undefined }}
         confirmLoading={submitting}
-        onCancel={() => setBuying(null)}
+        closable={!submitting}
+        okButtonProps={{ disabled: !boughtDocNo && (!recovery.ready || recovery.busy || !!recovery.request) }}
+        onCancel={() => { if (!submitting) setBuying(null); }}
         onOk={boughtDocNo ? () => setBuying(null) : () => void submitBuy()}
         width={560}
       >
+        {recovery.error && <Alert type="error" showIcon message={recovery.error} description="原请求已保留。关闭弹窗后可核对原单或重试原请求。" style={{ marginBottom: 12 }} />}
         {boughtDocNo ? (
-          <Alert type="success" showIcon message={`草稿已生成：${boughtDocNo}`} description="请到「委外生产 → 备货申请」核对后提交审批。" />
+          <Alert type="success" showIcon message={`已确认原单：${boughtDocNo}`} description="关闭弹窗后使用原单链接，核对当前状态。" />
         ) : buying ? (
           <Space direction="vertical" size={10} style={{ width: "100%" }}>
             <Alert

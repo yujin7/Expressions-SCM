@@ -6,7 +6,9 @@ import { useLatestRead } from "@/components/useLatestRead";
 import { useCallback, useEffect, useState } from "react";
 import {  App, Button, Popconfirm, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchJson, postJson } from "@/components/fetchJson";
+import { fetchJson } from "@/components/fetchJson";
+import { useMe, hasAnyRole, type Me } from "@/components/useMe";
+import BhCreateRecovery, { useBhCreateRecovery } from "@/components/BhCreateRecovery";
 import CaliberNote from "@/components/CaliberNote";
 import LoadErrorAlert from "@/components/LoadErrorAlert";
 
@@ -44,6 +46,11 @@ const coverRender = (v: number | null) =>
   v == null ? <Typography.Text type="secondary">无动销</Typography.Text> : Math.round(v).toLocaleString("zh-CN");
 
 export default function AutoReplenishClient() {
+  const me = useMe();
+  return <AutoReplenishWorkspace key={`${me?.id}:${me?.roles.join(",")}`} me={me} />;
+}
+
+function AutoReplenishWorkspace({ me }: { me: Me | null }) {
   const { message } = App.useApp();
   const [data, setData] = useState<AutoData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -67,6 +74,7 @@ export default function AutoReplenishClient() {
       if (readRequest.isCurrent()) { setLoading(false); }
     }
   }, [beginLoadRead]);
+  const recovery = useBhCreateRecovery(me?.id ?? null, hasAnyRole(me, "ops", "pmc"), () => void load());
   useEffect(() => { void load(); }, [load]);
 
   const bulkDraft = async () => {
@@ -80,11 +88,12 @@ export default function AutoReplenishClient() {
     const items = usable.map((r) => ({ skuId: r.skuId, qty: r.suggestQty as string }));
     setDrafting(true);
     try {
-      const res = await postJson<{ id: number; docNo: string }>("/api/replenish/draft", {
-        items,
+      const res = await recovery.submit({
+        source: "replenish", lines: items,
         remark: "由自动补货候选（守护式）批量生成——人工确认，仍走审批",
       });
-      message.success(`已生成备货申请草稿 ${res.docNo}，请到备货申请页提交审批`);
+      if (!res?.document) return;
+      message.success(`已确认原备货申请 ${res.document.docNo}，请核对当前状态`);
       setSelected([]);
     } catch (e) {
       message.error((e as Error).message);
@@ -134,7 +143,7 @@ export default function AutoReplenishClient() {
                 size="small"
                 type="primary"
                 loading={drafting}
-                disabled={selected.filter((r) => r.suggestQty != null).length > DRAFT_MAX}
+                disabled={selected.filter((r) => r.suggestQty != null).length > DRAFT_MAX || !hasAnyRole(me, "pmc") || !recovery.ready || recovery.busy || !!recovery.request}
               >
                 批量生成补货草稿
               </Button>
@@ -179,6 +188,7 @@ export default function AutoReplenishClient() {
         detail={<div><p>自动候选五门：有真实建议量、ABC ∈ A/B、XYZ ∈ X/Y（波动大不宜自动）、非覆盖缺口（防对海外仓已有库存重复下单）、生产周期在档。</p><p>批准 BH 后如需自动开工单，在 系统管理→运行参数 开启 auto_wo_on_bh（D33 自动链）。</p></div>}
       />
       <LoadErrorAlert error={loadError} onRetry={() => void load()} subject="自动补货候选" retrying={loading} />
+      <BhCreateRecovery recovery={recovery} />
       <Space className="compact-stat-strip" wrap>
         <Statistic title="可自动候选数" value={data ? data.summary.candidateCount : "—"} />
         <Statistic title="需人工数" value={data ? data.summary.exceptionCount : "—"} />
