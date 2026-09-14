@@ -1,12 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { App, Button, Input, Modal, Popconfirm, Space } from "antd";
-import { postJson } from "./fetchJson";
+import { useEffect, useRef, useState } from "react";
+import { Alert, App, Button, Input, Modal, Popconfirm, Space } from "antd";
+import { JsonRequestError } from "./fetchJson";
+import { postStockDocCommand } from "./stock-doc-command";
+import { viewportModalProps } from "./viewport-modal";
 import type { StockDocActionHints } from "@/lib/stock-doc-actions";
 
 export interface DocActionsDoc {
   id: number;
+  docNo?: string;
   status: string;
   version: number;
   subtype: string;
@@ -56,34 +59,45 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
   const [reverseReason, setReverseReason] = useState("");
   const [reasonAction, setReasonAction] = useState<ReasonAction | null>(null);
   const [reasonText, setReasonText] = useState("");
+  const [error, setError] = useState<string | null>(null), [mustReload, setMustReload] = useState(false);
+  const pending = useRef(false), mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const blocked = loading || mustReload;
+  const recovery = error ? <Alert type="error" showIcon style={{ maxWidth: "100%" }} message={error}
+    action={mustReload ? <Button size="small" onClick={onChanged}>核对原单状态</Button> : undefined} /> : null;
 
   const post = async (path: string, body: unknown, successText: string) => {
     const permitted = path === "short-close" ? doc.actions?.shortClose
       : doc.actions?.[path as "submit" | "withdraw" | "void" | "approve" | "reverse"];
-    if (!permitted || loading) return false;
-    setLoading(true);
+    if (!permitted || pending.current || mustReload) return false;
+    pending.current = true; setLoading(true); setError(null);
     try {
-      await postJson(`${apiBase}/${doc.id}/${path}`, body);
+      await postStockDocCommand(apiBase, doc, path, body);
+      if (!mounted.current) return false;
       message.success(successText);
       onChanged();
       return true;
     } catch (e) {
-      message.error((e as Error).message);
+      if (mounted.current) {
+        setError((e as Error).message);
+        if (!(e instanceof JsonRequestError) || e.status !== 400) setMustReload(true);
+      }
       return false;
     } finally {
-      setLoading(false);
+      pending.current = false; if (mounted.current) setLoading(false);
     }
   };
 
   const reasonModal = (
     <Modal
-      title={reasonAction?.title}
+      {...viewportModalProps}
+      title={`${reasonAction?.title ?? "库存操作"} · ${doc.docNo ?? `#${doc.id}`}`}
       open={reasonAction != null}
       okText={reasonAction?.okText}
-      okButtonProps={{ danger: true }}
+      okButtonProps={{ danger: true, disabled: blocked }}
       cancelText="取消"
       confirmLoading={loading}
-      onCancel={() => setReasonAction(null)}
+      onCancel={() => { if (!pending.current) setReasonAction(null); }}
       onOk={() => {
         if (!reasonAction) return;
         if (reasonText.trim().length < 2) {
@@ -102,7 +116,10 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
         });
       }}
     >
+      {recovery}
       <Input.TextArea
+        aria-label="库存操作原因"
+        disabled={blocked}
         rows={3}
         maxLength={500}
         placeholder={reasonAction?.placeholder}
@@ -114,20 +131,22 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
 
   if (doc.status === "draft") {
     return (
-      <Space>
+      <Space wrap>
+        {!reasonAction && recovery}
         {doc.actions?.submit ? <Popconfirm
           title="确认提交审批？"
           okText="提交"
           cancelText="取消"
           onConfirm={() => void post("submit", { version: doc.version }, "已提交审批")}
         >
-          <Button type="primary" loading={loading}>
+          <Button type="primary" loading={loading} disabled={blocked}>
             提交
           </Button>
         </Popconfirm> : null}
         {doc.actions?.void ? <Button
           danger
           loading={loading}
+          disabled={blocked}
           onClick={() => {
             setReasonText("");
             setReasonAction(REASON_ACTIONS.void);
@@ -142,7 +161,8 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
 
   if (doc.status === "pending") {
     return (
-      <Space>
+      <Space wrap>
+        {!rejectOpen && recovery}
         {doc.actions?.approve ? <Popconfirm
           title="确认审批通过？"
           okText="通过"
@@ -151,11 +171,11 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
             void post("approve", { action: "approve", version: doc.version }, "审批已通过")
           }
         >
-          <Button type="primary" loading={loading}>
+          <Button type="primary" loading={loading} disabled={blocked}>
             审批通过
           </Button>
         </Popconfirm> : null}
-        {doc.actions?.approve ? <Button danger loading={loading} onClick={() => setRejectOpen(true)}>
+        {doc.actions?.approve ? <Button danger loading={loading} disabled={blocked} onClick={() => setRejectOpen(true)}>
           驳回
         </Button> : null}
         {doc.actions?.withdraw ? <Popconfirm
@@ -164,16 +184,17 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
           cancelText="取消"
           onConfirm={() => void post("withdraw", { version: doc.version }, "已撤回到草稿")}
         >
-          <Button loading={loading}>撤回</Button>
+          <Button loading={loading} disabled={blocked}>撤回</Button>
         </Popconfirm> : null}
         <Modal
+          {...viewportModalProps}
           title="驳回单据"
           open={rejectOpen}
           okText="确认驳回"
-          okButtonProps={{ danger: true }}
+          okButtonProps={{ danger: true, disabled: blocked }}
           cancelText="取消"
           confirmLoading={loading}
-          onCancel={() => setRejectOpen(false)}
+          onCancel={() => { if (!pending.current) setRejectOpen(false); }}
           onOk={() =>
             void post(
               "approve",
@@ -187,7 +208,9 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
             })
           }
         >
+          {recovery}
           <Input.TextArea
+            disabled={blocked}
             rows={3}
             maxLength={200}
             placeholder="驳回意见（可选）"
@@ -201,10 +224,12 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
 
   if ((doc.status === "approved" || doc.status === "in_progress") && doc.actions?.shortClose) {
     return (
-      <Space>
+      <Space wrap>
+        {!reasonAction && recovery}
         <Button
           danger
           loading={loading}
+          disabled={blocked}
           onClick={() => {
             setReasonText("");
             setReasonAction(REASON_ACTIONS.shortClose);
@@ -220,17 +245,19 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
   if (doc.status === "completed" && doc.actions?.reverse && doc.subtype !== "reversal" && !doc.reversalOfId) {
     return (
       <>
-        <Button danger loading={loading} onClick={() => setReverseOpen(true)}>
+        {!reverseOpen && recovery}
+        <Button danger loading={loading} disabled={blocked} onClick={() => setReverseOpen(true)}>
           红字冲销
         </Button>
         <Modal
+          {...viewportModalProps}
           title="红字冲销"
           open={reverseOpen}
           okText="生成红字单"
-          okButtonProps={{ danger: true }}
+          okButtonProps={{ danger: true, disabled: blocked }}
           cancelText="取消"
           confirmLoading={loading}
-          onCancel={() => setReverseOpen(false)}
+          onCancel={() => { if (!pending.current) setReverseOpen(false); }}
           onOk={() => {
             if (!reverseReason.trim()) {
               message.warning("请填写冲销原因");
@@ -244,7 +271,9 @@ export default function DocActions({ doc, onChanged, apiBase }: DocActionsProps)
             });
           }}
         >
+          {recovery}
           <Input.TextArea
+            disabled={blocked}
             rows={3}
             maxLength={200}
             placeholder="冲销原因（必填）——纠错一律红字冲销，无反审批"

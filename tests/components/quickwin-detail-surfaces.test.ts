@@ -14,7 +14,7 @@ vi.mock("@/components/fetchJson", () => ({ postJson: h.post, fetchJson: vi.fn(),
 vi.mock("@/components/RemoteSelect", () => ({ default: "remote" }));
 vi.mock("react", async original => ({ ...await original<typeof import("react")>(),
   useState: (initial: unknown) => [h.state.length ? h.state.shift() : typeof initial === "function" ? (initial as () => unknown)() : initial, vi.fn()],
-  useEffect: vi.fn(), use: () => ({ id: "17" }),
+  useEffect: vi.fn(), useRef: (value: unknown) => ({ current: value }), use: () => ({ id: "17" }),
 }));
 vi.mock("antd", () => ({
   App: { useApp: () => ({ message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() }, modal: { confirm: vi.fn() } }) },

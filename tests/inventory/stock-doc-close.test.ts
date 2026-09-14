@@ -16,7 +16,7 @@ import {
 import type { SessionUser } from "@/server/core/dto";
 import { nextStatus, TransitionError } from "@/server/docflow/state";
 import {
-  shortCloseStockDoc, submitStockDoc, voidStockDoc, withdrawStockDoc,
+  approveStockDoc, getStockDoc, shortCloseStockDoc, submitStockDoc, voidStockDoc, withdrawStockDoc,
 } from "@/server/modules/inventory/stock-doc";
 import { post } from "@/server/posting";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -189,5 +189,58 @@ describe("W2-3 库存单据可以被撤回 / 作废 / 短关", () => {
     const doc = await makeDoc(db, { docNo: "CK-L1", createdBy: s.author.id, skuId: s.skuId, warehouseId: s.warehouseId });
     await expect(voidStockDoc(s.author, doc.id, { version: doc.version + 5, reason: "版本不对" }, db))
       .rejects.toThrow(/版本冲突/);
+  });
+});
+
+describe("库存退出不掩盖来源与既有流水", () => {
+  it.each(["void", "withdraw", "shortClose"])("CA不能经%s脱离来源盘点独立流转", async action => {
+    const { db, client } = await createTestDb();
+    try {
+      const s = await seed(db), doc = await makeDoc(db, { docNo: `CA-${action}`, createdBy: s.author.id, skuId: s.skuId, warehouseId: s.warehouseId,
+        status: action === "void" ? "draft" : action === "withdraw" ? "pending" : "approved" });
+      await db.update(stockDocs).set({ subtype: "count_adjust", sourceDocType: "pd", sourceDocId: 71 }).where(eq(stockDocs.id, doc.id));
+      const before = await db.select().from(stockDocs);
+      const run = action === "void" ? voidStockDoc : action === "withdraw" ? withdrawStockDoc : shortCloseStockDoc;
+      await expect(run(s.admin, doc.id, { version: doc.version, reason: "来源异常核对" }, db)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("来源盘点") });
+      expect(await db.select().from(stockDocs)).toEqual(before); expect(await auditActions(db, doc.id)).toEqual([]);
+    } finally { await client.close(); }
+  });
+  it.each(["submit", "void", "withdraw", "approve", "reject"])("%s拒绝有同身份流水的伪未生效单，且读取提示一致", async action => {
+    const { db, client } = await createTestDb();
+    try {
+      const s = await seed(db), doc = await makeDoc(db, { docNo: `RK-${action}`, createdBy: s.author.id, skuId: s.skuId, warehouseId: s.warehouseId,
+        status: ["submit", "void"].includes(action) ? "draft" : "pending" });
+      await db.update(stockDocs).set({ subtype: "opening" }).where(eq(stockDocs.id, doc.id));
+      await post(db, { sourceDocType: "opening", sourceDocId: doc.id, action: "post", lines: [{ sourceLineId: 1, skuId: s.skuId, warehouseId: s.warehouseId, qtyDelta: "0.1250" }] });
+      const before = { docs: await db.select().from(stockDocs), ledger: await db.select().from(stockLedger) };
+      const run = action === "submit" ? submitStockDoc(s.author, doc.id, doc.version, db)
+        : action === "void" ? voidStockDoc(s.author, doc.id, { version: doc.version, reason: "错误来源" }, db)
+        : action === "withdraw" ? withdrawStockDoc(s.author, doc.id, { version: doc.version }, db)
+        : approveStockDoc(s.other, doc.id, { version: doc.version, action: action === "reject" ? "reject" : "approve" }, db);
+      await expect(run).rejects.toMatchObject({ status: 409, message: expect.stringContaining("已有库存流水") });
+      expect(await db.select().from(stockDocs)).toEqual(before.docs); expect(await db.select().from(stockLedger)).toEqual(before.ledger);
+      expect(await auditActions(db, doc.id)).toEqual([]);
+      expect((await getStockDoc(doc.id, db, s.author)).actions).toMatchObject({ submit: false, void: false, withdraw: false, approve: false, reason: expect.stringContaining("已有库存流水") });
+    } finally { await client.close(); }
+  });
+  it("相同数字不同流水来源不误拦；作废原因和原明细仍可读取", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const s = await seed(db), doc = await makeDoc(db, { docNo: "CK-IDENTITY", createdBy: s.author.id, skuId: s.skuId, warehouseId: s.warehouseId });
+      await post(db, { sourceDocType: "opening", sourceDocId: doc.id, action: "post", lines: [{ sourceLineId: 1, skuId: s.skuId, warehouseId: s.warehouseId, qtyDelta: "5" }] });
+      await db.update(warehouses).set({ active: false }).where(eq(warehouses.id, s.warehouseId));
+      await voidStockDoc(s.author, doc.id, { version: doc.version, reason: "仓库选择错误" }, db);
+      const result = await getStockDoc(doc.id, db, s.author);
+      expect(result).toMatchObject({ status: "void", closedReason: "仓库选择错误", lines: [{ skuId: s.skuId, qty: "5.0000" }] });
+    } finally { await client.close(); }
+  });
+  it("红字载体流水按本单stock_doc身份保护，不能因原单不同而作废", async () => {
+    const { db, client } = await createTestDb();
+    try {
+      const s = await seed(db), doc = await makeDoc(db, { docNo: "CK-REVERSE", createdBy: s.author.id, skuId: s.skuId, warehouseId: s.warehouseId });
+      await db.update(stockDocs).set({ subtype: "reversal", reversalOfId: 999 }).where(eq(stockDocs.id, doc.id));
+      await post(db, { sourceDocType: "stock_doc", sourceDocId: doc.id, action: "reverse:issue_out#999", lines: [{ sourceLineId: 1, skuId: s.skuId, warehouseId: s.warehouseId, qtyDelta: "5" }] });
+      await expect(voidStockDoc(s.author, doc.id, { version: doc.version, reason: "不能抹去冲销事实" }, db)).rejects.toMatchObject({ status: 409 });
+    } finally { await client.close(); }
   });
 });

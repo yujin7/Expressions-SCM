@@ -77,6 +77,7 @@ interface DocDetail {
   status: string;
   version: number;
   remark: string | null;
+  closedReason: string | null;
   warehouseId: number;
   warehouseName: string;
   toWarehouseId: number | null;
@@ -687,6 +688,7 @@ function DocsInner({ me }: { me: Me | null }) {
               apiBase="/api/inventory/stock-doc"
               doc={{
                 id: detail.id,
+                docNo: detail.docNo,
                 status: detail.status,
                 version: detail.version,
                 subtype: detail.subtype,
@@ -704,6 +706,9 @@ function DocsInner({ me }: { me: Me | null }) {
         {detail ? (
           <div>
             {detail.actions?.reason ? <Alert type="info" showIcon message={detail.actions.reason} style={{ marginBottom: 12 }} /> : null}
+            {["void", "closed"].includes(detail.status) && <Alert type="info" showIcon style={{ marginBottom: 12 }}
+              message={detail.status === "void" ? "作废原因" : "短关原因"}
+              description={detail.closedReason?.trim() || "历史单据未记录原因，请核对审计记录；不能据此判断库存已被冲销。"} />}
             <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered
               styles={{ label: { whiteSpace: "nowrap" }, content: { overflowWrap: "anywhere" } }} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="类型">
