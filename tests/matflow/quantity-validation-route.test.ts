@@ -36,7 +36,7 @@ const cases: Case[] = [
   { name: "CT", handler: ctPost, method: "POST", field: "qty", body: { requestKey: "ee392149-8738-4e50-992f-f565bba7f911", poId: 1, warehouseId: 1 }, line: { poLineId: 1, skuId: 1, batchId: null } },
 ];
 const request = (c: Case, value: unknown) => new NextRequest("http://localhost/api/matflow/test", {
-  method: c.method, headers: { "content-type": "application/json" },
+  method: c.method, headers: { "content-type": "application/json", ...(c.name === "CT" ? { "x-scm-ct-create-contract": "2" } : {}) },
   body: JSON.stringify({ ...c.body, lines: [{ ...c.line, [c.field]: value }] }),
 });
 

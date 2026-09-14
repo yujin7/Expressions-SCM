@@ -35,7 +35,7 @@ import LoadErrorAlert from "@/components/LoadErrorAlert";
 import type { StockDocActionHints } from "@/lib/stock-doc-actions";
 import { expiryReferenceKey, useExpiryReference } from "@/components/useExpiryReference";
 import ExpiryReferenceNotice from "@/components/ExpiryReferenceNotice";
-import { validStockReplacementSource, type StockReplacement, type StockReplacementSource } from "@/components/stock-replacement";
+import { validDocumentReplacementSource, type DocumentReplacement, type DocumentReplacementSource } from "@/components/document-replacement";
 
 interface DocRow {
   id: number;
@@ -79,7 +79,7 @@ interface DocDetail {
   version: number;
   remark: string | null;
   closedReason: string | null;
-  replacement?: StockReplacement;
+  replacement?: DocumentReplacement;
   warehouseId: number;
   warehouseName: string;
   toWarehouseId: number | null;
@@ -182,8 +182,8 @@ function DocsInner({ me }: { me: Me | null }) {
   const createLines = Form.useWatch("lines", form);
   const createRiskDisposalId = Form.useWatch("riskDisposalId", form);
   const replacementId = Form.useWatch("replacementOfId", form);
-  const replacementRead = useDocumentRead<StockReplacementSource>(createOpen && replacementId != null ? `/api/inventory/stock-doc/${replacementId}` : null);
-  const replacementSource = replacementId != null && validStockReplacementSource(replacementRead.data, replacementId) ? replacementRead.data : null;
+  const replacementRead = useDocumentRead<DocumentReplacementSource>(createOpen && replacementId != null ? `/api/inventory/stock-doc/${replacementId}` : null);
+  const replacementSource = replacementId != null && validDocumentReplacementSource(replacementRead.data, replacementId) ? replacementRead.data : null;
   const replacementError = replacementRead.error ?? (replacementRead.phase === "success" && !replacementSource ? "被替代原单响应不完整，请重新核对" : null);
   const replacementReady = replacementId == null || (replacementRead.phase === "success" && replacementSource?.replacement.canCreate === true);
   const handledScrapLink = useRef<string | null>(null);

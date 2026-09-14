@@ -5,6 +5,7 @@ const id = z.number().int().positive().max(2147483647);
 const uuid = z.string().uuid().transform(s => s.toLowerCase());
 const decimal = z.union([z.string(), z.number()]).transform(String).pipe(z.string().regex(/^\d+(\.\d+)?$/));
 const payloadSchema = z.object({
+  replacementOfId: id.optional(),
   poId: id, warehouseId: id, remark: z.string().max(500).optional(),
   lines: z.array(z.object({ poLineId: id, skuId: id, qty: decimal, batchId: id.nullable(), reason: z.string().max(200).optional() })).min(1),
 });
@@ -64,7 +65,7 @@ export function lookupCtCreateRequest(requestKey: string, timeoutMs = 20_000) {
 }
 export async function submitCtCreateRequest(request: CtCreateRequest, timeoutMs = 20_000) {
   const r = requestSchema.parse(request);
-  const result = await boundedRequest("/api/matflow/ct", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(r) }, r.requestKey, timeoutMs);
+  const result = await boundedRequest("/api/matflow/ct", { method: "POST", headers: { "Content-Type": "application/json", "x-scm-ct-create-contract": "2" }, body: JSON.stringify(r) }, r.requestKey, timeoutMs);
   if (!result.document) throw Error("尚未确认原采购退货单，请继续核对");
   const current = await lookupCtCreateRequest(r.requestKey, timeoutMs);
   if (!current.document || current.document.id !== result.document.id) throw Error("原单状态尚未确认，请继续核对");

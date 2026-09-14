@@ -358,7 +358,9 @@ export const ctDocs = pgTable("ct_docs", {
   ...docColumns(),
   poId: integer("po_id").notNull().references(() => poDocs.id),
   warehouseId: integer("warehouse_id").notNull().references(() => warehouses.id),
-});
+  /** Explicit replacement of a never-posted void CT, not a purchase source or reversal. */
+  replacementOfId: integer("replacement_of_id").references((): AnyPgColumn => ctDocs.id).unique("uq_ct_doc_replacement"),
+}, (t) => [check("ck_ct_doc_replacement_order", sql`${t.replacementOfId} IS NULL OR ${t.replacementOfId} < ${t.id}`)]);
 export const ctLines = pgTable("ct_lines", {
   id: serial("id").primaryKey(),
   ctId: integer("ct_id").notNull().references(() => ctDocs.id),

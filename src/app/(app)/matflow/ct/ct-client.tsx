@@ -27,6 +27,7 @@ import CtDraftVoid from "./ct-draft-void";
 import CtCreateRecovery, { useCtCreateRecovery } from "@/components/CtCreateRecovery";
 import type { CtCreateRequest } from "@/components/ct-create-request";
 import { viewportModalProps } from "@/components/viewport-modal";
+import { validDocumentReplacementSource, type DocumentReplacement, type DocumentReplacementSource } from "@/components/document-replacement";
 
 // ---------- 客户端十进制比较（仅提交前过滤/预警用；非负字符串，禁 float） ----------
 
@@ -79,6 +80,7 @@ interface DocApproval {
 }
 
 interface CtDetail {
+  replacement?: DocumentReplacement;
   id: number;
   createdBy: number;
   docNo: string;
@@ -180,6 +182,11 @@ function CtWorkspace({ me }: { me: Me | null }) {
   const [lineEdits, setLineEdits] = useState<Record<number, LineEdit[]>>({});
   const [editingRequestKey, setEditingRequestKey] = useState<string | null>(null);
   const [restoredSource, setRestoredSource] = useState<CtCreateRequest | null>(null);
+  const [replacementId, setReplacementId] = useState<number | null>(null);
+  const replacementRead = useDocumentRead<DocumentReplacementSource>(createOpen && replacementId != null ? `/api/matflow/ct/${replacementId}` : null);
+  const replacementSource = replacementId != null && validDocumentReplacementSource(replacementRead.data, replacementId) ? replacementRead.data : null;
+  const replacementError = replacementRead.error ?? (replacementRead.phase === "success" && !replacementSource ? "被替代原单响应不完整，请重新核对" : null);
+  const replacementReady = replacementId == null || (replacementRead.phase === "success" && replacementSource?.replacement.canCreate === true);
   const poRead = useDocumentRead<{ id: number; lines: PoDetailLine[] }>(createOpen && poId != null ? `/api/outsource/po/${poId}` : null);
   const poValid = poRead.data != null && poRead.data.id === poId && Array.isArray(poRead.data.lines)
     && poRead.data.lines.every(l => l != null && Number.isSafeInteger(l.id) && l.id > 0 && Number.isSafeInteger(l.skuId) && l.skuId > 0
@@ -208,6 +215,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
   // ---------- 创建 ----------
 
   const openCreate = () => {
+    setReplacementId(null);
     setCreateOpen(true);
     setPoId(null);
     setWarehouseId(null);
@@ -217,6 +225,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
   };
 
   const editCreateRequest = (request: CtCreateRequest) => {
+    setReplacementId(request.replacementOfId ?? null);
     // Reopening the same source inside an already-open modal must also withdraw stale balances.
     if (createOpen && poId === request.poId) poRead.retry();
     setCreateOpen(true); setEditingRequestKey(request.requestKey); setRestoredSource(request);
@@ -236,6 +245,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
 
   const handleCreate = async () => {
     if (creating.current) return;
+    if (!replacementReady) return void message.warning("被替代原单资格尚未确认，请重新核对；未发送请求");
     if (sourceMismatch) return void message.warning("原请求采购行缺失或物料身份变化，请明确重新选择采购来源并核对全部实物行；未发送请求");
     if (poId == null) return void message.warning("请选择采购订单");
     if (!poValid || poRead.phase !== "success") return void message.warning("请先成功读取当前采购订单的可退行");
@@ -256,6 +266,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
     setCreateLoading(true);
     try {
       const created = await recovery.submit({
+        replacementOfId: replacementId ?? undefined,
         poId,
         warehouseId,
         remark: remark.trim() || undefined,
@@ -524,6 +535,22 @@ function CtWorkspace({ me }: { me: Me | null }) {
             <Alert type="info" showIcon style={{ marginBottom: 12 }} message={detail.actions?.reason ?? "当前操作资格尚未确认，请重新读取原单；不凭旧页面提交或审批。"} />
             {detail.status === "void" && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`作废原因：${detail.closedReason ?? "历史未登记"}`}
               description="原单保留只读，不代表退货已经发生。需继续退货时，请核对来源、仓库及实物批次后明确新建，不重复使用原单。" />}
+            {detail.replacement && (detail.status === "void" || detail.replacement.predecessor || detail.replacement.successor) && <Alert
+              type="info" showIcon style={{ marginBottom: 12 }} message="错单与替代关系"
+              description={<Space direction="vertical" size={8} style={{ width: "100%" }}>
+                {detail.replacement.predecessor && <Button type="link" style={{ padding: 0, height: "auto", whiteSpace: "normal", textAlign: "left" }} onClick={() => setDetailId(detail.replacement!.predecessor!.id)}>
+                  被替代原单：{detail.replacement.predecessor.docNo} <DocStatusTag status={detail.replacement.predecessor.status} />
+                </Button>}
+                {detail.replacement.successor && <Button type="link" style={{ padding: 0, height: "auto", whiteSpace: "normal", textAlign: "left" }} onClick={() => setDetailId(detail.replacement!.successor!.id)}>
+                  后续替代单：{detail.replacement.successor.docNo} <DocStatusTag status={detail.replacement.successor.status} />
+                </Button>}
+                {detail.status === "void" && <>
+                  <span>{detail.replacement.reason ?? "原单保留。替代单需要重新选择采购来源、仓库和实物批次，再独立提交与审批。"}</span>
+                  {detail.replacement.canCreate && <Button size="small" disabled={!recovery.ready || recovery.busy || !!recovery.request}
+                    onClick={() => { openCreate(); setReplacementId(detail.id); setDetailId(null); }}>新建替代退货单</Button>}
+                  {detail.replacement.canCreate && !!recovery.request && <span>有未确认的建单请求，请先核对或明确取消，再创建替代单。</span>}
+                </>}
+              </Space>} />}
             {overAlert ? (
               <Alert
                 type="warning"
@@ -577,13 +604,13 @@ function CtWorkspace({ me }: { me: Me | null }) {
 
       <Modal
         {...viewportModalProps}
-        title="新建采购退货单"
+        title={replacementId != null ? "新建替代采购退货单" : "新建采购退货单"}
         open={createOpen}
         width={1180}
         okText="创建"
         cancelText="取消"
         confirmLoading={createLoading}
-        okButtonProps={{ disabled: !recovery.ready || recovery.busy || !!recovery.result?.cancelled || (!editingRequestKey && !!recovery.request) || !!sourceMismatch || !poValid || createLines.length === 0 || warehouseId == null }}
+        okButtonProps={{ disabled: !replacementReady || !recovery.ready || recovery.busy || !!recovery.result?.document || !!recovery.result?.cancelled || (!editingRequestKey && !!recovery.request) || !!sourceMismatch || !poValid || createLines.length === 0 || warehouseId == null }}
         cancelButtonProps={{ disabled: createLoading }}
         closable={!createLoading}
         maskClosable={!createLoading}
@@ -593,6 +620,14 @@ function CtWorkspace({ me }: { me: Me | null }) {
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <CtCreateRecovery recovery={recovery} onEdit={editCreateRequest} onAcknowledged={openCreate} onOpenDocument={() => setCreateOpen(false)} />
+          {replacementId != null && <Alert type={replacementReady ? "info" : "warning"} showIcon
+            message={`替代原单：${replacementSource?.docNo ?? `#${replacementId}`}`}
+            description={<Space direction="vertical" size={8}>
+              <span>{replacementError ?? (replacementRead.phase === "loading" ? "正在核对原单当前资格…" : replacementSource?.replacement.reason)
+                ?? "请重新选择正确采购订单、仓库、实物批次和数量；不复制原单数据，不修改原单，不自动退货或过账。"}</span>
+              <Space wrap><Button size="small" onClick={replacementRead.retry}>重新核对</Button>
+                <Typography.Link href={`/matflow/ct?docId=${replacementId}`} target="_blank" rel="noopener noreferrer">查看被替代原单</Typography.Link></Space>
+            </Space>} />}
           {sourceMismatch && <Alert type="error" showIcon message="原请求采购行缺失或物料身份已变，未丢弃原恢复记录。请明确重新选择采购来源并核对全部实物行，再修正同一请求。" />}
           <div>
             <div style={{ marginBottom: 4 }}>采购订单</div>

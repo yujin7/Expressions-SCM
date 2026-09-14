@@ -35,6 +35,8 @@ export async function createCtRequest(user: SessionUser, input: unknown, dbArg?:
   const requestKey = v.requestKey;
   const requestHash = createHash("sha256").update(JSON.stringify({
     poId: v.poId, warehouseId: v.warehouseId, remark: v.remark || null,
+    // Preserve historical no-replacement fingerprints byte for byte.
+    ...(v.replacementOfId == null ? {} : { replacementOfId: v.replacementOfId }),
     // Independent physical lines stay ordered; null is explicit unbatched stock, not automatic allocation.
     lines: v.lines.map(l => ({ poLineId: l.poLineId, skuId: l.skuId, qty: dQty(l.qty), batchId: l.batchId, reason: l.reason || null })),
   })).digest("hex");

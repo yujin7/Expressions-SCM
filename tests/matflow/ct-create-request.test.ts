@@ -158,7 +158,10 @@ it("cancel HTTP authenticates first, rejects extra input and returns a no-store 
 });
 it("HTTP requires a key and lookup rejects ambiguous parameters, returns no-store and current account only", async () => {
   token = actor; const body = input();
-  const post = (v: unknown) => POST(new NextRequest("http://localhost/api/matflow/ct", { method: "POST", body: JSON.stringify(v) }));
+  const post = (v: unknown) => POST(new NextRequest("http://localhost/api/matflow/ct", { method: "POST", headers: { "x-scm-ct-create-contract": "2" }, body: JSON.stringify(v) }));
+  const before = await snapshot();
+  const oldClient = await POST(new NextRequest("http://localhost/api/matflow/ct", { method: "POST", body: JSON.stringify(body) }));
+  expect(oldClient.status).toBe(400); expect((await oldClient.json()).error).toContain("刷新页面"); expect(await snapshot()).toEqual(before);
   expect((await post({ ...body, requestKey: undefined })).status).toBe(400);
   expect((await post(body)).status).toBe(201);
   const get = (q: string) => GET(new NextRequest(`http://localhost/api/matflow/ct/create-result?${q}`));
