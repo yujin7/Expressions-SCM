@@ -40,6 +40,8 @@ export const createStockDocSchema = z
     remark: z.string().trim().max(500).optional(),
     /** 风险处置登记来源；仅报废出库（issue_out）可绑定。 */
     riskDisposalId: z.number().int().positive().optional(),
+    /** Explicit predecessor; never inferred from similar contents or a void reason. */
+    replacementOfId: z.number().int().positive().max(2147483647).optional(),
     lines: z.array(stockDocLineSchema).min(1, "至少需要一行"),
   })
   .superRefine((v, ctx) => {

@@ -533,6 +533,13 @@
       "when": 1789343279965,
       "tag": "0075_stock_create_cancel",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1789346590104,
+      "tag": "0076_stock_replacement_lineage",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ const payloadSchema = z.object({
   subtype: z.enum(["opening", "issue_out", "sales_out", "transfer"]), warehouseId: id,
   toWarehouseId: id.nullable().optional(), transferType: z.enum(TRANSFER_TYPES).optional(),
   reason: z.string().max(50).optional(), remark: z.string().max(500).optional(), riskDisposalId: id.optional(),
+  replacementOfId: id.optional(),
   lines: z.array(z.object({ skuId: id, qty: decimal, price: decimal.nullable().optional(), batchId: id.nullable().optional() })).min(1),
 });
 const requestSchema = payloadSchema.extend({ requestKey: uuid });
@@ -67,7 +68,7 @@ export function lookupStockCreateRequest(requestKey: string, timeoutMs = 20_000)
 }
 export async function submitStockCreateRequest(request: StockCreateRequest, timeoutMs = 20_000) {
   const r = requestSchema.parse(request);
-  const result = await boundedRequest("/api/inventory/stock-doc", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(r) }, r.requestKey, timeoutMs);
+  const result = await boundedRequest("/api/inventory/stock-doc", { method: "POST", headers: { "Content-Type": "application/json", "x-scm-stock-create-contract": "2" }, body: JSON.stringify(r) }, r.requestKey, timeoutMs);
   if (!result.document) throw Error("尚未确认原库存单，请继续核对");
   const current = await lookupStockCreateRequest(r.requestKey, timeoutMs);
   if (!current.document || current.document.id !== result.document.id) throw Error("原单状态尚未确认，请继续核对");

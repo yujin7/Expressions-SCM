@@ -35,6 +35,8 @@ export async function createStockRequest(user: SessionUser, input: unknown, dbAr
     transferType: v.transferType ?? null, reason: v.reason || null, remark: v.remark || null, riskDisposalId: v.riskDisposalId ?? null,
     // Independent lines and explicit batch identity are intent; never merge by SKU.
     lines: v.lines.map(l => ({ skuId: l.skuId, qty: dQty(l.qty), price: l.price == null ? null : dMoney(l.price), batchId: l.batchId ?? null })),
+    // Keep pre-lineage fingerprints byte-identical for old requests.
+    ...(v.replacementOfId == null ? {} : { replacementOfId: v.replacementOfId }),
   })).digest("hex");
   const db = await resolveDb(dbArg);
   return db.transaction(async (tx: AnyDb) => {

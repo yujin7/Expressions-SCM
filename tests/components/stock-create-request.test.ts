@@ -57,8 +57,15 @@ it("creation validates POST then independently reads current state, not an assum
   const request = prepare(); fetch.mockResolvedValueOnce(receipt).mockResolvedValueOnce({ ...receipt, document: { ...document, status: "void" } });
   expect((await submitStockCreateRequest(request)).document?.status).toBe("void");
   expect(fetch.mock.calls[0][0]).toBe("/api/inventory/stock-doc");
+  expect(fetch.mock.calls[0][1].headers["x-scm-stock-create-contract"]).toBe("2");
   expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual(request);
   expect(fetch.mock.calls[1][1].cache).toBe("no-store"); expect(loadStockCreateRequest(storage, 1)).toEqual(request);
+});
+it("replacement identity survives storage and payload repair without leaking into an ordinary next request", () => {
+  const original = prepareStockCreateRequest(storage, 1, { ...payload, replacementOfId: 11 }, undefined, () => key);
+  expect(loadStockCreateRequest(storage, 1)?.replacementOfId).toBe(11);
+  expect(prepareStockCreateRequest(storage, 1, { ...original, remark: "改正数量" }, key).replacementOfId).toBe(11);
+  clearStockCreateRequest(storage, 1, key); expect(prepareStockCreateRequest(storage, 1, payload, undefined, () => next).replacementOfId).toBeUndefined();
 });
 it("not-found lookup is read-only and retains original request", async () => {
   const request = prepare(); fetch.mockResolvedValue({ requestKey: key, document: null });

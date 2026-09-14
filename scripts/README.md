@@ -1,5 +1,7 @@
 # scripts/ 说明
 
+`verify-postgres-stock-replacement.ts`：显式设置 `SCM_ALLOW_MUTATING_PG_CONTRACT=1`，仅迁移至0076的 loopback `scm_contract_*`。四连接验证同原单不同请求防分叉、同键恢复、审计故障整笔回滚、新鲜身份撤销及外键/唯一/无环约束。保留合成单、回执和审计，不过账；只移除本次唯一故障触发器，不在正式库运行，不代替发布/真实UAT。
+
 `verify-postgres-stock-lifecycle-exit.ts`：显式设置 `SCM_ALLOW_MUTATING_PG_CONTRACT=1`，仅已迁移的 loopback `scm_contract_*`。三连接真实锁等待验证作废/提交、审批/撤回及身份撤销；审计注入失败回滚、CA来源保护、原因读取与审批重放。保留合成账号、7张库存单、1笔精确0.0001入库及审计；只移除本次唯一故障触发器，不在正式库运行，不代替发布/真实UAT。
 
 目录里有两类脚本，按「是否被 package.json / 文档 / 代码引用」区分。**新增脚本请归到对应类别并在本文登记**。
