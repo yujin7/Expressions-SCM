@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Alert, Button, Popconfirm, Space, Typography } from "antd";
 import DocStatusTag from "./DocStatusTag";
+import RecoveryDocumentLink from "./RecoveryDocumentLink";
 import { STOCK_SUBTYPE_LABELS } from "./labels";
 import { stockCreateStorageKey, clearStockCreateRequest, loadStockCreateRequest, lookupStockCreateRequest,
   prepareStockCreateRequest, submitStockCreateRequest, cancelStockCreateRequest, withStockCreateLock,
@@ -78,8 +79,8 @@ export function useStockCreateRecovery(actorId: number | null, allowed: boolean,
   return { request, result, error, ready, busy, lookup, submit, acknowledge, cancel };
 }
 
-export default function StockCreateRecovery({ recovery, onEdit, onAcknowledged }: {
-  recovery: ReturnType<typeof useStockCreateRecovery>; onEdit?: (request: StockCreateRequest) => void; onAcknowledged?: () => void;
+export default function StockCreateRecovery({ recovery, onEdit, onAcknowledged, onOpenDocument }: {
+  recovery: ReturnType<typeof useStockCreateRecovery>; onEdit?: (request: StockCreateRequest) => void; onAcknowledged?: () => void; onOpenDocument?: () => void;
 }) {
   const { request, result, error, busy } = recovery;
   if (!request && !error) return null;
@@ -90,13 +91,13 @@ export default function StockCreateRecovery({ recovery, onEdit, onAcknowledged }
       {error && <Typography.Text role="alert">{error}</Typography.Text>}
       {request && <>
         <Typography.Text>{STOCK_SUBTYPE_LABELS[request.subtype]} · {request.lines.length}项明细 · 仓库 #{request.warehouseId}{request.toWarehouseId ? ` → #${request.toWarehouseId}` : ""}。刷新或换页不会自动重发。</Typography.Text>
-        {request.replacementOfId != null && <Link href={`/inventory/docs?docId=${request.replacementOfId}`}>被替代原单 #{request.replacementOfId}</Link>}
+        {request.replacementOfId != null && <RecoveryDocumentLink docType="stock_doc" id={request.replacementOfId} onOpen={onOpenDocument}>被替代原单 #{request.replacementOfId}</RecoveryDocumentLink>}
         <details><summary>为什么要先核对？</summary>
           <Typography.Paragraph style={{ overflowWrap: "anywhere", marginBottom: 0 }}>网络中断不代表保存失败。核对只读取原结果；重试沿用原请求，不重复建单。要改内容请使用「修正原请求」，已建单则打开原单处理。请求编号：{request.requestKey}</Typography.Paragraph>
         </details>
         {result && !result.document && !result.cancelled && <Typography.Text>服务器暂未找到原单。可重试、修正或明确取消原请求；不要更换请求编号另建。</Typography.Text>}
         {result?.cancelled && <Typography.Text>该请求已被阻止执行，迟到提交也不会建单。取消记录保留在服务器；确认后可准备下一笔。</Typography.Text>}
-        {result?.document && <Space wrap><Link href={`/inventory/docs?docId=${result.document.id}`}>打开原库存单 {result.document.docNo}</Link><DocStatusTag status={result.document.status} /></Space>}
+        {result?.document && <Space wrap><RecoveryDocumentLink docType="stock_doc" id={result.document.id} onOpen={onOpenDocument}>查看本次创建的库存单 {result.document.docNo}</RecoveryDocumentLink><DocStatusTag status={result.document.status} /></Space>}
         <Space wrap size={8}>
           <Button disabled={busy} onClick={() => void recovery.lookup()}>核对原单</Button>
           {!result?.document && !result?.cancelled && <Button disabled={busy} onClick={() => void recovery.submit()}>重试原请求</Button>}

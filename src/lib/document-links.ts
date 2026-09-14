@@ -45,4 +45,49 @@ export function documentTargetPath(pathname: string, query: string, id: number |
   return `${pathname}${params.size ? `?${params}` : ""}${hash}`;
 }
 
-export const DOCUMENT_TRANSIENT_PARAMS = ["docId", "poLineId"] as const;
+export const DOCUMENT_TRANSIENT_PARAMS = ["docId", "poLineId", "workFrom"] as const;
+
+// Return only to known read workspaces, carrying list filters, never command/prefill inputs.
+const WORK_PAGES: Record<string, { label: string; keys: readonly string[] }> = {
+  "/inventory/docs": { label: "库存单据", keys: ["q", "status", "subtype", "page", "pageSize"] },
+  "/matflow/ct": { label: "采购退货", keys: ["q", "status", "page", "pageSize"] },
+  "/outsource/bh": { label: "备货申请", keys: ["q", "status", "from", "to", "page", "pageSize"] },
+  "/replenish": { label: "补货建议", keys: ["q", "coverDays", "minCover", "sortBy", "sortOrder", "tier", "ownership", "hideTierC", "page", "pageSize"] },
+  "/replenish/move-or-buy": { label: "先挪后买", keys: ["q", "page", "pageSize"] },
+  "/report/transfer-suggest": { label: "调拨建议", keys: ["q", "skuIds", "page", "pageSize"] },
+  "/report/auto-replenish": { label: "自动补货候选", keys: [] },
+};
+export interface WorkReturn { href: string; label: string }
+
+/** Untrusted URL hints cannot become external, auth, API, nested return or automatic-create targets. */
+export function safeWorkReturn(raw: string): WorkReturn | null {
+  if (raw.length > 4096 || !raw.startsWith("/") || raw.startsWith("//") || /[\\\u0000-\u0020]/.test(raw)) return null;
+  try {
+    const url = new URL(raw, "https://scm.invalid");
+    if (url.origin !== "https://scm.invalid" || !Object.hasOwn(WORK_PAGES, url.pathname)) return null;
+    const page = WORK_PAGES[url.pathname], query = new URLSearchParams();
+    for (const key of page.keys) for (const value of url.searchParams.getAll(key)) query.append(key, value);
+    return { href: `${url.pathname}${query.size ? `?${query}` : ""}${url.hash}`, label: page.label };
+  } catch { return null; }
+}
+
+export function workReturnTarget(query: string): WorkReturn | null {
+  const values = new URLSearchParams(query).getAll("workFrom");
+  return values.length === 1 ? safeWorkReturn(values[0]) : null;
+}
+
+/** Same-page recovery keeps the list. Cross-page recovery carries one bounded return context. */
+export function recoveryDocumentHref(type: string, id: number, pathname: string, query: string, hash = ""): string | null {
+  const target = documentHref(type, id);
+  if (!target) return null;
+  if (DOCUMENT_PAGES[type] === pathname) {
+    const params = new URLSearchParams(query);
+    for (const key of ["create", "skuId", "disposalId"]) params.delete(key);
+    const back = workReturnTarget(query);
+    params.delete("workFrom");
+    if (back) params.set("workFrom", back.href);
+    return documentTargetPath(pathname, params.toString(), id, hash);
+  }
+  const back = safeWorkReturn(`${pathname}${query ? `?${query.replace(/^\?/, "")}` : ""}${hash}`);
+  return back ? `${target}&workFrom=${encodeURIComponent(back.href)}` : target;
+}

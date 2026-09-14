@@ -2,7 +2,7 @@
 
 import { useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import { documentTarget, documentTargetPath } from "@/lib/document-links";
+import { documentTarget, documentTargetPath, workReturnTarget } from "@/lib/document-links";
 
 /** URL owns selection; native history integrates with Next without a server navigation waterfall. */
 export function useDocumentTarget() {
@@ -15,5 +15,5 @@ export function useDocumentTarget() {
     if (id === null) window.history.replaceState(null, "", next);
     else window.history.pushState(null, "", next);
   }, []);
-  return { ...target, setId };
+  return { ...target, setId, workReturn: workReturnTarget(search.toString()) };
 }

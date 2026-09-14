@@ -566,6 +566,7 @@ function BhInner({ me }: { me: Me | null }) {
           )
         }
         open={documentSelection.present}
+        workReturn={documentSelection.workReturn}
         readError={documentSelection.error ?? detailRead.error}
         onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}

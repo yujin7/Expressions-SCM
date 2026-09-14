@@ -1,6 +1,7 @@
 import React, { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import StockCreateRecovery, { useStockCreateRecovery } from "@/components/StockCreateRecovery";
+import RecoveryDocumentLink from "@/components/RecoveryDocumentLink";
 import { prepareStockCreateRequest, stockCreateStorageKey } from "@/components/stock-create-request";
 
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false }));
@@ -65,7 +66,7 @@ it("a lost cancellation response retains the request, and a later read recovers 
 it("created-first retains the original document and never posts cancellation or void", async () => {
   fetchMock.mockResolvedValueOnce(Response.json(found)); await render().cancel();
   expect(render().result).toEqual(found); expect(onConfirmed).toHaveBeenCalledOnce();
-  expect(ui().find(n => n.type === "a")?.props.href).toBe("/inventory/docs?docId=2");
+  expect(ui().find(n => n.type === RecoveryDocumentLink)?.props).toMatchObject({ docType: "stock_doc", id: 2 });
   expect(fetchMock).toHaveBeenCalledOnce(); expect(storage.size).toBe(1);
 });
 it("edit lookup discovering cancellation cannot update the payload or POST", async () => {

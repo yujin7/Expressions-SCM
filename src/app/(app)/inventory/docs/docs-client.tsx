@@ -505,7 +505,7 @@ function DocsInner({ me }: { me: Me | null }) {
         okText="保存草稿"
         cancelText="取消"
       >
-        <StockCreateRecovery recovery={recovery} onAcknowledged={() => {
+        <StockCreateRecovery recovery={recovery} onOpenDocument={() => setCreateOpen(false)} onAcknowledged={() => {
           form.resetFields(); setEditingRequest(false); setSaveError(null); setConfirmedFefoFingerprint(null); setFefoPreviewOpen(false); setFefoTarget(null);
         }} onEdit={request => {
           form.resetFields();
@@ -700,6 +700,7 @@ function DocsInner({ me }: { me: Me | null }) {
           )
         }
         open={documentSelection.present}
+        workReturn={documentSelection.workReturn}
         readError={documentSelection.error ?? detailRead.error}
         onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
