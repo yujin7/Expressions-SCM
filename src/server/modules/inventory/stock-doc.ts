@@ -2,7 +2,7 @@ import { and, desc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
-   approvalConfigs, batches, pdDocs, pdLines, reviewItems, skus, stockBalances, stockDocLines, stockDocs, users, warehouses,
+   approvalConfigs, batches, pdDocs, pdLines, reviewItems, skus, stockBalances, stockDocLines, stockDocs, stockLedger, users, warehouses,
 } from "@/db/schema";
 import { dMoney, dNeg, dQty } from "@/server/core/decimal";
 import {  requireRole, type SessionUser } from "@/server/core/dto";
@@ -53,6 +53,16 @@ export async function guardWarehouseWrite(): Promise<SessionUser> {
 
 type StockDocRow = typeof stockDocs.$inferSelect;
 type StockDocLineRow = typeof stockDocLines.$inferSelect;
+
+/** Manual stock events use subtype/id; reversal carriers use stock_doc/id, never the original id. */
+async function hasStockPosting(db: AnyDb, doc: Pick<StockDocRow, "id" | "subtype">): Promise<boolean> {
+  const [row] = await db.select({ id: stockLedger.id }).from(stockLedger).where(and(
+    eq(stockLedger.sourceDocType, doc.subtype === "reversal" ? "stock_doc" : doc.subtype),
+    eq(stockLedger.sourceDocId, doc.id),
+  )).limit(1);
+  return Boolean(row);
+}
+const POSTED_DRAFT_REASON = "原单已有库存流水，与当前未生效状态不一致；不可继续提交、审批、撤回或作废，请联系仓管核对原单及红字纠错";
 
 async function warehouseActor(tx: AnyDb, user: SessionUser): Promise<SessionUser> {
   const actor = await currentWriteActor(tx, user);
@@ -160,6 +170,7 @@ export async function submitStockDoc(user: SessionUser, id: number, version: num
     if (doc.subtype === "count_adjust") {
       throw new ApiError(409, "盘点调整单由来源盘点单审批后自动生成，不可单独提交；请核对来源盘点，已过账纠错走红字冲销");
     }
+    if (doc.status === "draft" && await hasStockPosting(tx, doc)) throw new ApiError(409, POSTED_DRAFT_REASON);
     let target: DocStatus;
     try {
       target = nextStatus(doc.status as DocStatus, "submit");
@@ -204,6 +215,9 @@ async function transitionStockDoc(
     if (opts.requireOwner && doc.createdBy !== actor.id && !actor.roles.includes("admin")) {
       throw new ApiError(403, "仅制单人或管理员可执行此操作");
     }
+    if (doc.subtype === "count_adjust") throw new ApiError(409, "盘点调整单由来源盘点流程管理，不可单独撤回、作废或短关；请核对来源盘点，已过账纠错走红字冲销");
+    if ((action === "void" || action === "withdraw") && ["draft", "pending"].includes(doc.status)
+      && await hasStockPosting(tx, doc)) throw new ApiError(409, POSTED_DRAFT_REASON);
     let target: DocStatus;
     try {
       target = nextStatus(doc.status as DocStatus, action);
@@ -313,6 +327,7 @@ export async function approveStockDoc(
       if (doc.subtype === "count_adjust") {
         throw new ApiError(409, "盘点调整单由来源盘点单审批后自动生成，不可单独审批或驳回；请查看来源盘点，已过账纠错走红字冲销");
       }
+      if (doc.status === "pending" && await hasStockPosting(tx, doc)) throw new ApiError(409, POSTED_DRAFT_REASON);
 
       // 1) 通用审批：权限/职责分离/幂等/状态/乐观锁（pending → approved | draft）
       // 期初=opening财务域；其他可审批库存单=stock_doc仓管域。
@@ -558,20 +573,22 @@ export async function reverseStockDoc(user: SessionUser, id: number, input: unkn
 // ---------- 查询 ----------
 
 export function stockDocActions(user: SessionUser, doc: Pick<StockDocRow, "status" | "subtype" | "createdBy" | "reversalOfId">,
-  approvalRole: string | null, hasReversal = false): StockDocActionHints {
+  approvalRole: string | null, hasReversal = false, hasPosting = false): StockDocActionHints {
   const operator = user.roles.includes("admin") || user.roles.includes("warehouse");
   const owner = doc.createdBy === user.id || user.roles.includes("admin");
   const adjustment = doc.subtype === "count_adjust";
+  const inconsistentPosting = hasPosting && ["draft", "pending"].includes(doc.status);
   const approvalReason = doc.createdBy === user.id ? "制单人与审批人必须分离，请由另一位审批人处理"
     : approvalRoleError(user, approvalRole)?.message ?? null;
   return {
-    submit: doc.status === "draft" && operator && owner && !adjustment,
-    void: doc.status === "draft" && operator && owner && !adjustment,
-    withdraw: doc.status === "pending" && operator && owner && !adjustment,
-    approve: doc.status === "pending" && !adjustment && !approvalReason,
+    submit: doc.status === "draft" && operator && owner && !adjustment && !inconsistentPosting,
+    void: doc.status === "draft" && operator && owner && !adjustment && !inconsistentPosting,
+    withdraw: doc.status === "pending" && operator && owner && !adjustment && !inconsistentPosting,
+    approve: doc.status === "pending" && !adjustment && !approvalReason && !inconsistentPosting,
     shortClose: ["approved", "in_progress"].includes(doc.status) && operator && !adjustment,
     reverse: doc.status === "completed" && operator && doc.subtype !== "reversal" && !doc.reversalOfId && !hasReversal,
     reason: adjustment && doc.status !== "completed" ? "盘点调整单不单独流转，请核对来源盘点单及明细关联"
+      : inconsistentPosting ? POSTED_DRAFT_REASON
       : doc.status === "pending" ? approvalReason
       : doc.status === "draft" && (!operator || !owner) ? "请由制单仓管或管理员提交或作废"
       : doc.status === "completed" && hasReversal ? "已存在红字冲销单，请核对该单处理进度，不重复生成"
@@ -668,6 +685,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb, user?: SessionUser)
     .where(eq(approvalConfigs.docType, doc.subtype === "opening" ? "opening" : "stock_doc")) : [];
   const [reversal] = user && doc.status === "completed" ? await db.select({ id: stockDocs.id }).from(stockDocs)
     .where(and(eq(stockDocs.reversalOfId, id), ne(stockDocs.status, "void"))).limit(1) : [];
+  const hasPosting = user && ["draft", "pending"].includes(doc.status) ? await hasStockPosting(db, doc) : false;
   return {
     id: doc.id,
     docNo: doc.docNo,
@@ -675,6 +693,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb, user?: SessionUser)
     status: doc.status,
     version: doc.version,
     remark: doc.remark,
+    closedReason: doc.closedReason,
     warehouseId,
     warehouseName: whName(warehouseId),
     toWarehouseId,
@@ -690,7 +709,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb, user?: SessionUser)
     })),
     approvals: approvalRows,
     approvalBasis,
-    ...(user ? { actions: stockDocActions(user, doc, config?.role ?? null, Boolean(reversal)) } : {}),
+    ...(user ? { actions: stockDocActions(user, doc, config?.role ?? null, Boolean(reversal), hasPosting) } : {}),
     createdByName: doc.createdByName,
     createdAt: doc.createdAt,
   };
