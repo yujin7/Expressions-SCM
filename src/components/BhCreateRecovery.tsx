@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Alert, Button, Space, Table, Typography } from "antd";
 import DocStatusTag from "./DocStatusTag";
+import RecoveryDocumentLink from "./RecoveryDocumentLink";
 import { formatQty } from "./format";
 import { bhCreateStorageKey, clearBhCreateRequest, loadBhCreateRequest, lookupBhCreateRequest, prepareBhCreateRequest,
   submitBhCreateRequest, withBhCreateLock, type BhCreatePayload, type BhCreateRequest, type BhCreateResult } from "./bh-create-request";
@@ -84,7 +85,7 @@ export default function BhCreateRecovery({ recovery, onEdit }: {
             columns={[{ title: "SKU编号", dataIndex: "skuId", width: 110 }, { title: "原请求数量", dataIndex: "qty", width: 140, render: (v: string) => formatQty(v) }, { title: "期望日期", dataIndex: "expectDate", width: 130, render: (v?: string) => v || "—" }]} />
         </details>
         {result && !result.document && <Typography.Text>服务器暂未找到原单。可重试原请求；需要修正时先重新核对，不自动分配新编号。</Typography.Text>}
-        {result?.document && <Space wrap><Link href={`/outsource/bh?docId=${result.document.id}`}>打开原备货申请 {result.document.docNo}</Link><DocStatusTag status={result.document.status} /></Space>}
+        {result?.document && <Space wrap><RecoveryDocumentLink docType="bh" id={result.document.id}>查看本次创建的备货申请 {result.document.docNo}</RecoveryDocumentLink><DocStatusTag status={result.document.status} /></Space>}
         <Space wrap>
           <Button disabled={busy} onClick={() => void recovery.lookup()}>核对原单</Button>
           {!result?.document && <Button disabled={busy} onClick={() => void recovery.submit()}>重试原请求</Button>}

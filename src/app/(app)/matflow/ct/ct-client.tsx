@@ -510,6 +510,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
           )
         }
         open={documentSelection.present}
+        workReturn={documentSelection.workReturn}
         readError={documentSelection.error ?? detailRead.error}
         onRetry={detailId != null ? detailRead.retry : undefined}
         onClose={() => setDetailId(null)}
@@ -591,7 +592,7 @@ function CtWorkspace({ me }: { me: Me | null }) {
         onOk={() => void handleCreate()}
       >
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
-          <CtCreateRecovery recovery={recovery} onEdit={editCreateRequest} onAcknowledged={openCreate} />
+          <CtCreateRecovery recovery={recovery} onEdit={editCreateRequest} onAcknowledged={openCreate} onOpenDocument={() => setCreateOpen(false)} />
           {sourceMismatch && <Alert type="error" showIcon message="原请求采购行缺失或物料身份已变，未丢弃原恢复记录。请明确重新选择采购来源并核对全部实物行，再修正同一请求。" />}
           <div>
             <div style={{ marginBottom: 4 }}>采购订单</div>

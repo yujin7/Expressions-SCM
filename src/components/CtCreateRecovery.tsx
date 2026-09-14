@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Alert, Button, Popconfirm, Space, Typography } from "antd";
 import DocStatusTag from "./DocStatusTag";
+import RecoveryDocumentLink from "./RecoveryDocumentLink";
 import { ctCreateStorageKey, clearCtCreateRequest, loadCtCreateRequest, lookupCtCreateRequest,
   prepareCtCreateRequest, submitCtCreateRequest, cancelCtCreateRequest, withCtCreateLock,
   type CtCreatePayload, type CtCreateRequest, type CtCreateResult } from "./ct-create-request";
@@ -77,8 +78,8 @@ export function useCtCreateRecovery(actorId: number | null, allowed: boolean, on
   return { request, result, error, ready, busy, lookup, submit, acknowledge, cancel };
 }
 
-export default function CtCreateRecovery({ recovery, onEdit, onAcknowledged }: {
-  recovery: ReturnType<typeof useCtCreateRecovery>; onEdit?: (request: CtCreateRequest) => void; onAcknowledged?: () => void;
+export default function CtCreateRecovery({ recovery, onEdit, onAcknowledged, onOpenDocument }: {
+  recovery: ReturnType<typeof useCtCreateRecovery>; onEdit?: (request: CtCreateRequest) => void; onAcknowledged?: () => void; onOpenDocument?: () => void;
 }) {
   const { request, result, error, busy } = recovery;
   if (!request && !error) return null;
@@ -94,7 +95,7 @@ export default function CtCreateRecovery({ recovery, onEdit, onAcknowledged }: {
         </details>
         {result && !result.document && !result.cancelled && <Typography.Text>服务器暂未找到原单。可重试、修正或明确取消原请求；不要更换请求编号另建。</Typography.Text>}
         {result?.cancelled && <Typography.Text>该请求已被阻止执行，迟到提交也不会建单。取消记录保留在服务器；确认后可准备下一笔。</Typography.Text>}
-        {result?.document && <Space wrap><Link href={`/matflow/ct?docId=${result.document.id}`}>打开原采购退货单 {result.document.docNo}</Link><DocStatusTag status={result.document.status} /></Space>}
+        {result?.document && <Space wrap><RecoveryDocumentLink docType="ct" id={result.document.id} onOpen={onOpenDocument}>查看本次创建的采购退货单 {result.document.docNo}</RecoveryDocumentLink><DocStatusTag status={result.document.status} /></Space>}
         <Space wrap size={8}>
           <Button disabled={busy} onClick={() => void recovery.lookup()}>核对原单</Button>
           {!result?.document && !result?.cancelled && <Button disabled={busy} onClick={() => void recovery.submit()}>重试原请求</Button>}
