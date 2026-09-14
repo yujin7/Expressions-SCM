@@ -482,14 +482,16 @@ function DocsInner({ me }: { me: Me | null }) {
         onOk={() => void handleCreate()}
         onCancel={() => setCreateOpen(false)}
         confirmLoading={saving || recovery.busy}
-        okButtonProps={{ disabled: !recovery.ready || !!recovery.result?.document || (!!recovery.request && !editingRequest) || (BATCH_OUTBOUND_SUBTYPES.has(createSubtype) && !batchStatusKnown) }}
+        okButtonProps={{ disabled: !recovery.ready || !!recovery.result?.document || !!recovery.result?.cancelled || (!!recovery.request && !editingRequest) || (BATCH_OUTBOUND_SUBTYPES.has(createSubtype) && !batchStatusKnown) }}
         width="min(720px, 100vw)"
         forceRender
         maskClosable={false}
         okText="保存草稿"
         cancelText="取消"
       >
-        <StockCreateRecovery recovery={recovery} onEdit={request => {
+        <StockCreateRecovery recovery={recovery} onAcknowledged={() => {
+          form.resetFields(); setEditingRequest(false); setSaveError(null); setConfirmedFefoFingerprint(null); setFefoPreviewOpen(false); setFefoTarget(null);
+        }} onEdit={request => {
           form.setFieldsValue({ ...request, toWarehouseId: request.toWarehouseId ?? undefined });
           setEditingRequest(true); setSaveError(null);
         }} />

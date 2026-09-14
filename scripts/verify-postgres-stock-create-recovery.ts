@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "@/db/schema";
 import type { AnyDb } from "@/server/core/svc";
 import type { SessionUser } from "@/server/core/dto";
-import { createStockRequest, getStockCreateResult } from "@/server/modules/inventory/stock-create-request";
+import { createStockRequest, getStockCreateResult, cancelStockCreateRequest } from "@/server/modules/inventory/stock-create-request";
 import { reviewContractConnectionString } from "./verify-postgres-review-atomicity";
 
 async function main() {
@@ -15,6 +15,8 @@ async function main() {
     connectionTimeoutMillis: 5000, query_timeout: 20000, options: "-c statement_timeout=15000 -c lock_timeout=12000 -c idle_in_transaction_session_timeout=20000" }));
   const [control, creator, replay, lookup] = clients;
   const pending: Promise<unknown>[] = [];
+  const faultName = `stock_cancel_fault_${randomUUID().replaceAll("-", "")}`;
+  let faultInstalled = false;
   try {
     await Promise.all(clients.map(c => c.connect()));
     const db = drizzle(creator, { schema }), replayDb = drizzle(replay, { schema }), lookupDb = drizzle(lookup, { schema });
@@ -64,9 +66,49 @@ async function main() {
     await control.query("update users set session_version=session_version+1 where id=$1", [actor.id]);
     await assert.rejects(getStockCreateResult(actor, body.requestKey, db));
     assert.deepEqual(await snapshot(), { docs: 1, receipts: 1, audits: 1, ledger: 0 });
-    console.log(JSON.stringify({ fixture, actorId: actor.id, documentId: results[0].document.id, checks: ["in-flight replay waits", "lookup waits", "uncommitted facts invisible", "one draft/receipt/audit", "different body conflicts", "void replay after warehouse disable", "revoked session rejected", "zero ledger writes"], final: await snapshot() }, null, 2));
+    const liveActor = { ...actor, sessionVersion: actor.sessionVersion! + 1 };
+    await control.query("update warehouses set active=true where id=$1", [wh.id]);
+    const cancelledBody = { ...body, requestKey: randomUUID() };
+    await control.query("begin"); await control.query("select pg_advisory_xact_lock(hashtext($1))", [fixture]);
+    const cancelFirst = cancelStockCreateRequest(liveActor, { requestKey: cancelledBody.requestKey }, heldDb); pending.push(cancelFirst); void cancelFirst.catch(() => undefined);
+    await waitBlocked(pids[1], pids[0]);
+    const lateCreate = createStockRequest(liveActor, cancelledBody, replayDb), cancelLookup = getStockCreateResult(liveActor, cancelledBody.requestKey, lookupDb);
+    pending.push(lateCreate, cancelLookup); void lateCreate.catch(() => undefined); void cancelLookup.catch(() => undefined);
+    await Promise.all([waitBlocked(pids[2], pids[1]), waitBlocked(pids[3], pids[1])]);
+    assert.deepEqual(await snapshot(), { docs: 1, receipts: 1, audits: 1, ledger: 0 });
+    await control.query("commit");
+    const cancelled = await cancelFirst; assert.deepEqual(await cancelLookup, cancelled);
+    await assert.rejects(lateCreate, (e: unknown) => (e as { status: number }).status === 409);
+    assert.deepEqual(await cancelStockCreateRequest(liveActor, { requestKey: cancelledBody.requestKey }, db), cancelled);
+    assert.deepEqual(await snapshot(), { docs: 1, receipts: 2, audits: 2, ledger: 0 });
+    const createdBody = { ...body, requestKey: randomUUID() };
+    await control.query("begin"); await control.query("select pg_advisory_xact_lock(hashtext($1))", [fixture]);
+    const createdFirst = createStockRequest(liveActor, createdBody, heldDb); pending.push(createdFirst); void createdFirst.catch(() => undefined);
+    await waitBlocked(pids[1], pids[0]);
+    const lateCancel = cancelStockCreateRequest(liveActor, { requestKey: createdBody.requestKey }, replayDb); pending.push(lateCancel); void lateCancel.catch(() => undefined);
+    await waitBlocked(pids[2], pids[1]); await control.query("commit");
+    const created = await createdFirst; assert.deepEqual(await lateCancel, created); assert.equal(created.document.status, "draft");
+    assert.deepEqual(await snapshot(), { docs: 2, receipts: 3, audits: 3, ledger: 0 });
+    await control.query(`CREATE FUNCTION ${faultName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.user_id=${actor.id} AND NEW.entity='stock_create_request' THEN RAISE EXCEPTION 'synthetic stock cancellation audit fault'; END IF; RETURN NEW; END $$`);
+    faultInstalled = true;
+    await control.query(`CREATE TRIGGER ${faultName} BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION ${faultName}()`);
+    const retryKey = randomUUID();
+    await assert.rejects(cancelStockCreateRequest(liveActor, { requestKey: retryKey }, db));
+    assert.deepEqual(await getStockCreateResult(liveActor, retryKey, db), { requestKey: retryKey, document: null });
+    assert.deepEqual(await snapshot(), { docs: 2, receipts: 3, audits: 3, ledger: 0 });
+    await control.query(`DROP TRIGGER ${faultName} ON audit_logs`); await control.query(`DROP FUNCTION ${faultName}()`); faultInstalled = false;
+    assert.equal((await cancelStockCreateRequest(liveActor, { requestKey: retryKey }, db)).cancelled, true);
+    await control.query("begin"); await control.query("update users set session_version=session_version+1 where id=$1", [actor.id]);
+    const revokedCancel = cancelStockCreateRequest(liveActor, { requestKey: randomUUID() }, replayDb); pending.push(revokedCancel); void revokedCancel.catch(() => undefined);
+    await waitBlocked(pids[2], pids[0]); await control.query("commit"); await assert.rejects(revokedCancel);
+    assert.deepEqual(await snapshot(), { docs: 2, receipts: 4, audits: 4, ledger: 0 });
+    console.log(JSON.stringify({ fixture, actorId: actor.id, documentId: results[0].document.id, createdBeforeCancelId: created.document.id,
+      checks: ["in-flight replay waits", "lookup waits", "uncommitted facts invisible", "one draft/receipt/audit", "different body conflicts", "void replay after warehouse disable", "revoked session rejected", "zero ledger writes",
+        "cancel-first fences delayed create", "lookup waits for cancellation", "uncommitted cancellation invisible", "repeat cancellation one audit", "create-first preserves original draft", "real audit fault rolls back cancellation", "failed cancellation can retry", "cancellation waits for identity revocation"], final: await snapshot() }, null, 2));
   } finally {
-    await control.query("rollback").catch(() => undefined); await Promise.allSettled(pending); await Promise.allSettled(clients.map(c => c.end()));
+    await control.query("rollback").catch(() => undefined); await Promise.allSettled(pending);
+    if (faultInstalled) { await control.query(`DROP TRIGGER IF EXISTS ${faultName} ON audit_logs`).catch(() => undefined); await control.query(`DROP FUNCTION IF EXISTS ${faultName}()`).catch(() => undefined); }
+    await Promise.allSettled(clients.map(c => c.end()));
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

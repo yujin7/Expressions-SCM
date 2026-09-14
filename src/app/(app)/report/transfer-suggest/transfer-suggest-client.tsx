@@ -373,7 +373,7 @@ function TransferSuggestWorkspace({ me }: { me: Me | null }) {
         okButtonProps={{ disabled: !draftedDocNo && (activeLane == null || drafting || recovery.busy || !recovery.ready || !!recovery.request) }}
         width={720}
       >
-        <StockCreateRecovery recovery={recovery} />
+        <StockCreateRecovery recovery={recovery} onAcknowledged={() => { setDraftOpen(false); setDraftedDocNo(null); }} />
         <Alert
           type="info"
           showIcon

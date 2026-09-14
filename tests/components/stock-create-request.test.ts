@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { stockCreateStorageKey, clearStockCreateRequest, loadStockCreateRequest, lookupStockCreateRequest, prepareStockCreateRequest, submitStockCreateRequest, withStockCreateLock, type StockCreatePayload } from "@/components/stock-create-request";
+import { stockCreateStorageKey, clearStockCreateRequest, loadStockCreateRequest, lookupStockCreateRequest, prepareStockCreateRequest, submitStockCreateRequest, cancelStockCreateRequest, withStockCreateLock, type StockCreatePayload } from "@/components/stock-create-request";
 
 const fetch = vi.hoisted(() => vi.fn());
 vi.mock("@/components/fetchJson", () => ({ fetchJson: fetch }));
@@ -84,4 +84,30 @@ it.each(["inventory/docs/docs-client.tsx", "report/transfer-suggest/transfer-sug
   expect(source).toContain("useStockCreateRecovery"); expect(source).toContain("<StockCreateRecovery");
   expect(source).not.toMatch(/postJson[^\n]*["']\/api\/inventory\/stock-doc["']/);
   expect(source).toContain("key={");
+  expect(source).toContain("onAcknowledged=");
+});
+
+it("cancellation first reads, posts only the original key, verifies outcome, and retains recovery data", async () => {
+  const original = prepare(), cancelled = { requestKey: key, document: null, cancelled: true };
+  fetch.mockResolvedValueOnce({ requestKey: key, document: null }).mockResolvedValueOnce(cancelled).mockResolvedValueOnce(cancelled);
+  expect(await cancelStockCreateRequest(key)).toEqual(cancelled);
+  expect(fetch.mock.calls.map(([url]) => url)).toEqual([`/api/inventory/stock-doc/create-result?requestKey=${key}`, "/api/inventory/stock-doc/cancel-create", `/api/inventory/stock-doc/create-result?requestKey=${key}`]);
+  expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ requestKey: key }); expect(loadStockCreateRequest(storage, 1)).toEqual(original);
+});
+it.each([receipt, { requestKey: key, document: null, cancelled: true }])("known terminal result never sends another cancellation", async found => {
+  prepare(); fetch.mockResolvedValue(found); expect(await cancelStockCreateRequest(key)).toEqual(found); expect(fetch).toHaveBeenCalledTimes(1);
+});
+it("creation winning during cancellation returns its document", async () => {
+  fetch.mockResolvedValueOnce({ requestKey: key, document: null }).mockResolvedValueOnce(receipt).mockResolvedValueOnce(receipt);
+  expect(await cancelStockCreateRequest(key)).toEqual(receipt);
+});
+it.each([{ requestKey: key, document: null }, { ...receipt, cancelled: true }, { requestKey: key, document: null, cancelled: false }])("ambiguous cancellation never permits clearing", async bad => {
+  const original = prepare(); fetch.mockResolvedValueOnce({ requestKey: key, document: null }).mockResolvedValueOnce(bad);
+  await expect(cancelStockCreateRequest(key)).rejects.toThrow(); expect(loadStockCreateRequest(storage, 1)).toEqual(original);
+});
+it("lost cancellation reply can be found via GET, without losing the local intent", async () => {
+  const original = prepare(), cancelled = { requestKey: key, document: null, cancelled: true };
+  fetch.mockResolvedValueOnce({ requestKey: key, document: null }).mockRejectedValueOnce(Error("cancel reply lost"));
+  await expect(cancelStockCreateRequest(key)).rejects.toThrow("cancel reply lost"); expect(loadStockCreateRequest(storage, 1)).toEqual(original);
+  fetch.mockResolvedValueOnce(cancelled); expect(await lookupStockCreateRequest(key)).toEqual(cancelled);
 });

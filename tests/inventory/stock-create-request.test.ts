@@ -5,7 +5,8 @@ import { NextRequest } from "next/server";
 import * as s from "@/db/schema";
 import * as audit from "@/server/core/audit";
 import type { SessionUser } from "@/server/core/dto";
-import { createStockRequest, getStockCreateResult } from "@/server/modules/inventory/stock-create-request";
+import { createStockRequest, getStockCreateResult, cancelStockCreateRequest } from "@/server/modules/inventory/stock-create-request";
+import { POST as CANCEL } from "@/app/api/inventory/stock-doc/cancel-create/route";
 import { POST } from "@/app/api/inventory/stock-doc/route";
 import { GET } from "@/app/api/inventory/stock-doc/create-result/route";
 import { createTestDb, type TestDb } from "../helpers/db";
@@ -106,4 +107,61 @@ it("HTTP requires a key and lookup rejects ambiguous parameters, returns no-stor
   for (const q of ["", "requestKey=no", `requestKey=${body.requestKey}&requestKey=${body.requestKey}`, `requestKey=${body.requestKey}&actorId=1`]) expect((await get(q)).status).toBe(400);
   token = peer; expect((await (await get(`requestKey=${body.requestKey}`)).json()).document).toBeNull();
   token = null; expect((await get(`requestKey=${body.requestKey}`)).status).toBe(401);
+});
+
+it("cancellation permanently fences the account/key without needing valid sources or creating stock", async () => {
+  const body = input(), before = await snapshot();
+  await db.update(s.warehouses).set({ active: false }).where(eq(s.warehouses.id, warehouseId));
+  const result = await cancelStockCreateRequest(actor, { requestKey: body.requestKey.toUpperCase() }, db);
+  expect(result).toEqual({ requestKey: body.requestKey, document: null, cancelled: true });
+  const after = await snapshot();
+  for (const key of ["docs", "lines", "counters", "ledger"] as const) expect(after[key]).toEqual(before[key]);
+  expect(after.receipt).toHaveLength(before.receipt.length + 1); expect(after.audits).toHaveLength(before.audits.length + 1);
+  expect(after.receipt.at(-1)).toMatchObject({ cancelled: true, requestHash: null, stockDocId: null });
+  expect(after.audits.at(-1)).toMatchObject({ userId: actor.id, entity: "stock_create_request", action: "cancel", after: { requestKey: body.requestKey, cancelled: true, documentId: null } });
+  expect(await cancelStockCreateRequest(actor, { requestKey: body.requestKey }, db)).toEqual(result);
+  expect(await getStockCreateResult(actor, body.requestKey, db)).toEqual(result);
+  await expect(createStockRequest(actor, body, db)).rejects.toMatchObject({ status: 409 });
+  await expect(createStockRequest(actor, { ...body, remark: "changed" }, db)).rejects.toMatchObject({ status: 409 });
+  expect(await snapshot()).toEqual(after);
+});
+it.each(["draft", "void", "completed"])("creation already won: cancellation preserves the original %s document", async status => {
+  const body = input(), first = await createStockRequest(actor, body, db);
+  await db.update(s.stockDocs).set({ status: status as "draft" | "void" | "completed" }).where(eq(s.stockDocs.id, first.document.id));
+  const before = await snapshot();
+  expect(await cancelStockCreateRequest(actor, { requestKey: body.requestKey }, db)).toMatchObject({ document: { id: first.document.id, status } });
+  expect(await snapshot()).toEqual(before);
+});
+it("cancellation audit fault rolls back its terminal result; later creation remains possible", async () => {
+  const body = input(), before = await snapshot(); vi.spyOn(audit, "writeAudit").mockRejectedValueOnce(Error("cancel audit fault"));
+  await expect(cancelStockCreateRequest(actor, { requestKey: body.requestKey }, db)).rejects.toThrow("cancel audit fault");
+  expect(await snapshot()).toEqual(before); expect(await getStockCreateResult(actor, body.requestKey, db)).toEqual({ requestKey: body.requestKey, document: null });
+  expect((await createStockRequest(actor, body, db)).document.status).toBe("draft");
+});
+it("same key in another account never cancels this actor's request", async () => {
+  const body = input(); await cancelStockCreateRequest(peer, { requestKey: body.requestKey }, db);
+  expect(await getStockCreateResult(actor, body.requestKey, db)).toEqual({ requestKey: body.requestKey, document: null });
+  expect((await createStockRequest(actor, body, db)).document.status).toBe("draft");
+});
+it.each(["disabled", "role", "session"])("%s cannot cancel even an existing cancellation", async reason => {
+  const body = input(); await cancelStockCreateRequest(actor, { requestKey: body.requestKey }, db);
+  await db.update(s.users).set(reason === "disabled" ? { active: false } : reason === "role" ? { roles: ["ops"] } : { sessionVersion: actor.sessionVersion! + 1 }).where(eq(s.users.id, actor.id));
+  const before = await snapshot();
+  for (const key of [body.requestKey, randomUUID()]) await expect(cancelStockCreateRequest(actor, { requestKey: key }, db)).rejects.toMatchObject({ status: reason === "session" ? 401 : 403 });
+  expect(await snapshot()).toEqual(before);
+});
+it("database enforces exclusive created/cancelled outcomes and immutable cancellations", async () => {
+  const body = input(); await cancelStockCreateRequest(actor, { requestKey: body.requestKey }, db);
+  const [r] = await db.select().from(s.stockCreateRequests).where(eq(s.stockCreateRequests.requestKey, body.requestKey));
+  await expect(db.update(s.stockCreateRequests).set({ cancelled: false }).where(eq(s.stockCreateRequests.id, r.id))).rejects.toThrow();
+  await expect(db.delete(s.stockCreateRequests).where(eq(s.stockCreateRequests.id, r.id))).rejects.toThrow();
+  for (const invalid of [{}, { cancelled: true, requestHash: "a".repeat(64) }, { cancelled: false, requestHash: "a".repeat(64) }])
+    await expect(db.insert(s.stockCreateRequests).values({ requestedBy: actor.id, requestKey: randomUUID(), ...invalid })).rejects.toThrow();
+});
+it("cancellation HTTP authenticates before parsing, rejects forged actor and returns no-store", async () => {
+  const post = (body: unknown) => CANCEL(new NextRequest("http://localhost/api/inventory/stock-doc/cancel-create", { method: "POST", body: JSON.stringify(body) }));
+  expect((await post({})).status).toBe(401); token = actor;
+  const body = { requestKey: randomUUID() }; expect((await post({ ...body, actorId: peer.id })).status).toBe(400);
+  const r = await post(body); expect(r.status).toBe(200); expect(r.headers.get("cache-control")).toBe("no-store");
+  expect(await r.json()).toEqual({ ...body, document: null, cancelled: true });
 });
