@@ -1,0 +1,4 @@
+ALTER TABLE "stock_create_requests" ALTER COLUMN "request_hash" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "stock_create_requests" ALTER COLUMN "stock_doc_id" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "stock_create_requests" ADD COLUMN "cancelled" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "stock_create_requests" ADD CONSTRAINT "ck_stock_create_request_outcome" CHECK (("stock_create_requests"."cancelled" AND "stock_create_requests"."stock_doc_id" IS NULL AND "stock_create_requests"."request_hash" IS NULL) OR (NOT "stock_create_requests"."cancelled" AND "stock_create_requests"."stock_doc_id" IS NOT NULL AND "stock_create_requests"."request_hash" IS NOT NULL));

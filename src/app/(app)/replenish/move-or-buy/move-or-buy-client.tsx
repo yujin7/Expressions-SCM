@@ -523,7 +523,7 @@ function MoveOrBuyWorkspace({ me }: { me: Me | null }) {
         okButtonProps={{ disabled: !movedDocNo && (activeLane == null || submitting || stockRecovery.busy || !stockRecovery.ready || !!stockRecovery.request) }}
         width={640}
       >
-        <StockCreateRecovery recovery={stockRecovery} />
+        <StockCreateRecovery recovery={stockRecovery} onAcknowledged={() => { setMoving(null); setMovedDocNo(null); }} />
         <Alert
           type="info"
           showIcon

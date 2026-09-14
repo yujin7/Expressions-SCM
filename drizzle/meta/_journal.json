@@ -526,6 +526,13 @@
       "when": 1789337675947,
       "tag": "0074_ct_create_cancel",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1789343279965,
+      "tag": "0075_stock_create_cancel",
+      "breakpoints": true
     }
   ]
 }
