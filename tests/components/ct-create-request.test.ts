@@ -57,8 +57,23 @@ it("creation validates POST then independently reads current state, not an assum
   const request = prepare(); fetch.mockResolvedValueOnce(receipt).mockResolvedValueOnce({ ...receipt, document: { ...document, status: "void" } });
   expect((await submitCtCreateRequest(request)).document?.status).toBe("void");
   expect(fetch.mock.calls[0][0]).toBe("/api/matflow/ct");
+  expect(fetch.mock.calls[0][1].headers["x-scm-ct-create-contract"]).toBe("2");
   expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual(request);
   expect(fetch.mock.calls[1][1].cache).toBe("no-store"); expect(loadCtCreateRequest(storage, 1)).toEqual(request);
+});
+it("replacement linkage survives storage, reload, POST and independent lookup", async () => {
+  const request = prepareCtCreateRequest(storage, 1, { ...payload, replacementOfId: 77 }, undefined, () => key);
+  expect(loadCtCreateRequest(storage, 1)?.replacementOfId).toBe(77);
+  fetch.mockResolvedValue(receipt); await submitCtCreateRequest(request);
+  expect(JSON.parse(fetch.mock.calls[0][1].body).replacementOfId).toBe(77);
+  expect(fetch.mock.calls[0][1].headers["x-scm-ct-create-contract"]).toBe("2");
+  expect(clearCtCreateRequest(storage, 1, key)).toBeNull();
+  expect(prepare().replacementOfId).toBeUndefined();
+});
+it.each([0, -1, 1.5, 2147483648, "77"])("invalid replacement %j blocks without stripping saved evidence", replacementOfId => {
+  const raw = JSON.stringify({ ...payload, requestKey: key, replacementOfId });
+  data.set(ctCreateStorageKey(1), raw);
+  expect(() => loadCtCreateRequest(storage, 1)).toThrow("损坏"); expect(data.get(ctCreateStorageKey(1))).toBe(raw); expect(fetch).not.toHaveBeenCalled();
 });
 it("not-found lookup is read-only and retains original request", async () => {
   const request = prepare(); fetch.mockResolvedValue({ requestKey: key, document: null });

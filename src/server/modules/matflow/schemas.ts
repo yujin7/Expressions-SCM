@@ -127,6 +127,7 @@ export type CreateQcInput = z.infer<typeof createQcSchema>;
 // ---------- CT 采购退货 ----------
 
 export const createCtSchema = z.object({
+  replacementOfId: z.number().int().positive().max(2147483647).optional(),
   poId: z.number().int().positive({ message: "必须选择采购订单" }),
   warehouseId: z.number().int().positive({ message: "必须选择退货出库仓" }),
   remark: z.string().trim().max(500).optional(),

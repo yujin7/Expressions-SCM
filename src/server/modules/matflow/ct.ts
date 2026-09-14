@@ -33,6 +33,18 @@ type CtRow = typeof ctDocs.$inferSelect;
 type CtLineRow = typeof ctLines.$inferSelect;
 type PoLineRow = typeof poLines.$inferSelect;
 
+async function hasCtPosting(db: AnyDb, id: number): Promise<boolean> {
+  const [row] = await db.select({ id: stockLedger.id }).from(stockLedger)
+    .where(and(eq(stockLedger.sourceDocType, "ct_return"), eq(stockLedger.sourceDocId, id))).limit(1);
+  return Boolean(row);
+}
+function replacementBlocked(status: string, posted: boolean, successor: boolean): string | null {
+  if (status !== "void") return "仅已作废且未过账的采购退货单可新建替代单";
+  if (posted) return "原单存在退货库存流水，不能用替代草稿代替库存及采购已收数纠错；请联系仓管核对";
+  if (successor) return "已存在后续替代单，请查看该单；若它也有误，应从它作废后继续替代";
+  return null;
+}
+
 /** 逐 PO 行合计本单退货量，并校验 ≤ 当前已收数 */
 function assertWithinReceived(
   ctQtyByPoLine: Map<number, string>,
@@ -57,6 +69,14 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
   return db.transaction(async (tx: AnyDb) => {
   const actor = await currentMatflowActor(tx, user);
   requireAnyRole(actor, "warehouse");
+  if (v.replacementOfId != null) {
+    const [original]: CtRow[] = await tx.select().from(ctDocs).where(eq(ctDocs.id, v.replacementOfId)).for("update");
+    if (!original) throw new ApiError(404, "被替代采购退货原单不存在，请核对原单编号");
+    if (original.createdBy !== actor.id && !actor.roles.includes("admin")) throw new ApiError(403, "仅原制单仓管或管理员可新建替代单");
+    const [successor] = await tx.select({ id: ctDocs.id }).from(ctDocs).where(eq(ctDocs.replacementOfId, original.id)).limit(1);
+    const blocked = replacementBlocked(original.status, await hasCtPosting(tx, original.id), Boolean(successor));
+    if (blocked) throw new ApiError(409, blocked);
+  }
   const { po, lines: plRows } = await lockPurchaseReceipt(tx, v.poId);
   requirePurchaseReturnStatus(po.status);
   await lockMatflowWarehouses(tx, [v.warehouseId]);
@@ -83,6 +103,7 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
         poId: v.poId,
         warehouseId: v.warehouseId,
         createdBy: actor.id,
+        replacementOfId: v.replacementOfId ?? null,
       })
       .returning();
     await tx.insert(ctLines).values(
@@ -97,7 +118,8 @@ export async function createCt(user: SessionUser, input: unknown, dbArg?: AnyDb)
     );
     await writeAudit(tx, {
       userId: actor.id, entity: "ct", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, poId: v.poId, lineCount: allocatedLines.length },
+      after: { docNo: doc.docNo, poId: v.poId, lineCount: allocatedLines.length,
+        ...(doc.replacementOfId == null ? {} : { replacementOfId: doc.replacementOfId }) },
     });
     return doc;
   });
@@ -301,6 +323,7 @@ export async function getCt(id: number, dbArg?: AnyDb, user?: SessionUser) {
       status: ctDocs.status,
       remark: ctDocs.remark,
       closedReason: ctDocs.closedReason,
+      replacementOfId: ctDocs.replacementOfId,
       version: ctDocs.version,
       poId: ctDocs.poId,
       poDocNo: poDocs.docNo,
@@ -365,7 +388,16 @@ export async function getCt(id: number, dbArg?: AnyDb, user?: SessionUser) {
       edit: canEditMaterialDraft(user, doc) && !sourceBlock && !posted,
       void: canEditMaterialDraft(user, doc) && !posted };
   }
-  return { ...doc, lines, approvals: approvalRows, actions };
+  const relationColumns = { id: ctDocs.id, docNo: ctDocs.docNo, status: ctDocs.status };
+  const [[predecessor], [successor]] = await Promise.all([
+    doc.replacementOfId == null ? Promise.resolve([]) : db.select(relationColumns).from(ctDocs).where(eq(ctDocs.id, doc.replacementOfId)),
+    db.select(relationColumns).from(ctDocs).where(eq(ctDocs.replacementOfId, doc.id)).limit(1),
+  ]);
+  const replacementReason = replacementBlocked(doc.status, doc.status === "void" && await hasCtPosting(db, doc.id), Boolean(successor));
+  const replacementAllowed = Boolean(user && (user.roles.includes("admin") || (user.roles.includes("warehouse") && doc.createdBy === user.id)) && !replacementReason);
+  return { ...doc, lines, approvals: approvalRows, actions,
+    replacement: { predecessor: predecessor ?? null, successor: successor ?? null, canCreate: replacementAllowed,
+      reason: replacementReason ?? (replacementAllowed ? null : "请由原制单仓管或管理员新建替代单") } };
 }
 
 export async function listCts(
