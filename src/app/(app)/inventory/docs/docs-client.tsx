@@ -36,6 +36,7 @@ import type { StockDocActionHints } from "@/lib/stock-doc-actions";
 import { expiryReferenceKey, useExpiryReference } from "@/components/useExpiryReference";
 import ExpiryReferenceNotice from "@/components/ExpiryReferenceNotice";
 import { validDocumentReplacementSource, type DocumentReplacement, type DocumentReplacementSource } from "@/components/document-replacement";
+import DocumentOutcomeGuide from "@/components/DocumentOutcomeGuide";
 
 interface DocRow {
   id: number;
@@ -731,29 +732,12 @@ function DocsInner({ me }: { me: Me | null }) {
       >
         {detail ? (
           <div>
-            {detail.actions?.reason ? <Alert type="info" showIcon message={detail.actions.reason} style={{ marginBottom: 12 }} /> : null}
-            {["void", "closed"].includes(detail.status) && <Alert type="info" showIcon style={{ marginBottom: 12 }}
-              message={detail.status === "void" ? "作废原因" : "短关原因"}
-              description={detail.closedReason?.trim() || "历史单据未记录原因，请核对审计记录；不能据此判断库存已被冲销。"} />}
-            {detail.replacement && (detail.status === "void" || detail.replacement.predecessor || detail.replacement.successor) && <Alert
-              type="info" showIcon style={{ marginBottom: 12 }} message="错单与替代关系"
-              description={<Space direction="vertical" size={6}>
-                {detail.replacement.predecessor && <Button type="link" style={{ padding: 0, height: "auto", whiteSpace: "normal", textAlign: "left" }} onClick={() => setDetailId(detail.replacement!.predecessor!.id)}>
-                  被替代原单：{detail.replacement.predecessor.docNo} <DocStatusTag status={detail.replacement.predecessor.status} />
-                </Button>}
-                {detail.replacement.successor && <Button type="link" style={{ padding: 0, height: "auto", whiteSpace: "normal", textAlign: "left" }} onClick={() => setDetailId(detail.replacement!.successor!.id)}>
-                  后续替代单：{detail.replacement.successor.docNo} <DocStatusTag status={detail.replacement.successor.status} />
-                </Button>}
-                {detail.status === "void" && <>
-                  <span>{detail.replacement.reason ?? "原单保留。新建替代单只记录纠正关系，仍需独立提交、审批与执行。"}</span>
-                  {detail.replacement.canCreate && <Button size="small" disabled={!recovery.ready || recovery.busy || !!recovery.request}
-                    onClick={() => { form.resetFields(); form.setFieldsValue({ replacementOfId: detail.id });
-                      setSaveError(null); setEditingRequest(false); setDetailId(null); setCreateOpen(true); }}>
-                    新建替代单
-                  </Button>}
-                  {detail.replacement.canCreate && !!recovery.request && <span>有未确认的建单请求，请先在本页核对或明确取消，再创建替代单。</span>}
-                </>}
-              </Space>} />}
+            <DocumentOutcomeGuide key={detail.id} kind="stock" status={detail.status} closedReason={detail.closedReason}
+              actionReason={detail.actions?.reason} replacement={detail.replacement} onOpen={setDetailId}
+              createBlockedReason={!recovery.ready ? "正在读取本机恢复记录，请稍后。" : recovery.busy ? "正在核对原请求，请稍后。"
+                : recovery.request ? "有未确认的建单请求，请先在本页核对或明确取消，再创建替代单。" : null}
+              onCreateReplacement={() => { form.resetFields(); form.setFieldsValue({ replacementOfId: detail.id });
+                setSaveError(null); setEditingRequest(false); setDetailId(null); setCreateOpen(true); }} />
             <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered
               styles={{ label: { whiteSpace: "nowrap" }, content: { overflowWrap: "anywhere" } }} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="类型">

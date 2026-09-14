@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import CtClient from "@/app/(app)/matflow/ct/ct-client";
 import CtDraftVoid from "@/app/(app)/matflow/ct/ct-draft-void";
 import CtCreateRecovery, { useCtCreateRecovery } from "@/components/CtCreateRecovery";
+import DocumentOutcomeGuide from "@/components/DocumentOutcomeGuide";
 
 const h = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as (() => void)[], cleanups: new Map<number, () => void>(), changed: false,
   q: "", detailId: null as number | null, actorId: 1, roles: ["warehouse"], rootKey: null as string | null, approver: false, message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() } }));
@@ -42,7 +43,7 @@ const storage = new Map<string, string>();
 const flush = async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); return render(); };
 const list = (id: number) => Response.json({ rows: [{ id, docNo: `CT-${id}`, status: "draft" }], total: 1 });
 const po = (id: number) => Response.json({ id, lines: [{ id, skuId: id, skuCode: `SKU-${id}`, skuName: "合成物料", baseUom: "kg", receivedQty: "2" }] });
-const create = () => nodes(render()).find(n => n.type === "modal" && n.props.title === "新建采购退货单")!;
+const create = () => nodes(render()).find(n => n.type === "modal" && ["新建采购退货单", "新建替代采购退货单"].includes(String(n.props.title)))!;
 const lines = () => nodes(create()).find(n => n.type === "table")!.props;
 const recoveryNode = () => nodes(render()).find(n => n.type === CtCreateRecovery)!;
 const recovery = () => recoveryNode().props.recovery as ReturnType<typeof useCtCreateRecovery>;
@@ -144,15 +145,19 @@ it.each([true, false, undefined])("void entry follows the service hint (%s), inc
     expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
   }
 });
-it("voided detail retains reason and opens a blank replacement only on explicit click", async () => {
+it("voided detail offers one lineage-bound correction entry and opens a blank replacement only on explicit click", async () => {
   h.detailId = 1;
   fetchMock.mockImplementation(async url => String(url).endsWith("/ct/1") ? Response.json({ id: 1, createdBy: 1, docNo: "CT-1", status: "void", closedReason: "实物批次选错", lines: [], approvals: [],
-    actions: { void: false, edit: false, submit: false, reason: "已结束" } }) : Response.json({ rows: [], total: 0 }));
+    actions: { void: false, edit: false, submit: false, reason: "已结束" },
+    replacement: { canCreate: true, reason: null, predecessor: null, successor: null } }) : Response.json({ rows: [], total: 0 }));
   render(); await flush(); expect(create().props.open).toBe(false);
-  expect(nodes(render()).some(n => n.props.message === "作废原因：实物批次选错")).toBe(true);
-  const button = nodes(props("drawer").extra as ReactNode).find(n => n.props.children === "新建正确退货单")!;
+  const guide = nodes(render()).find(n => n.type === DocumentOutcomeGuide)!;
+  expect(guide.props.closedReason).toBe("实物批次选错");
+  expect(props("drawer").extra).toBeNull();
+  expect(nodes(props("drawer").extra as ReactNode).some(n => n.props.children === "新建正确退货单")).toBe(false);
+  const button = nodes(DocumentOutcomeGuide(guide.props as unknown as Parameters<typeof DocumentOutcomeGuide>[0])).find(n => n.props.children === "新建替代退货单")!;
   (button.props.onClick as () => void)(); render();
-  expect(create().props.open).toBe(true); expect(lines().dataSource).toEqual([]);
+  expect(create().props.open).toBe(true); expect(create().props.title).toBe("新建替代采购退货单"); expect(lines().dataSource).toEqual([]);
   expect(create().props.okButtonProps).toMatchObject({ disabled: true });
   expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
 });
