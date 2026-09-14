@@ -90,6 +90,7 @@ export default function StockCreateRecovery({ recovery, onEdit, onAcknowledged }
       {error && <Typography.Text role="alert">{error}</Typography.Text>}
       {request && <>
         <Typography.Text>{STOCK_SUBTYPE_LABELS[request.subtype]} · {request.lines.length}项明细 · 仓库 #{request.warehouseId}{request.toWarehouseId ? ` → #${request.toWarehouseId}` : ""}。刷新或换页不会自动重发。</Typography.Text>
+        {request.replacementOfId != null && <Link href={`/inventory/docs?docId=${request.replacementOfId}`}>被替代原单 #{request.replacementOfId}</Link>}
         <details><summary>为什么要先核对？</summary>
           <Typography.Paragraph style={{ overflowWrap: "anywhere", marginBottom: 0 }}>网络中断不代表保存失败。核对只读取原结果；重试沿用原请求，不重复建单。要改内容请使用「修正原请求」，已建单则打开原单处理。请求编号：{request.requestKey}</Typography.Paragraph>
         </details>

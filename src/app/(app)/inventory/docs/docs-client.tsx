@@ -35,6 +35,7 @@ import LoadErrorAlert from "@/components/LoadErrorAlert";
 import type { StockDocActionHints } from "@/lib/stock-doc-actions";
 import { expiryReferenceKey, useExpiryReference } from "@/components/useExpiryReference";
 import ExpiryReferenceNotice from "@/components/ExpiryReferenceNotice";
+import { validStockReplacementSource, type StockReplacement, type StockReplacementSource } from "@/components/stock-replacement";
 
 interface DocRow {
   id: number;
@@ -78,6 +79,7 @@ interface DocDetail {
   version: number;
   remark: string | null;
   closedReason: string | null;
+  replacement?: StockReplacement;
   warehouseId: number;
   warehouseName: string;
   toWarehouseId: number | null;
@@ -98,6 +100,7 @@ interface CreateFormValues {
   transferType?: StockCreatePayload["transferType"]; // D60：固定清单
   remark?: string;
   riskDisposalId?: number;
+  replacementOfId?: number;
   lines?: { skuId: number; qty: number | string; price?: number | string | null; batchId?: number | null }[];
 }
 
@@ -156,6 +159,7 @@ function DocsInner({ me }: { me: Me | null }) {
   const [rows, setRows] = useState<DocRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
   // 列表页状态平台（E6-P1）：筛选/分页进 URL（?status=pending 工作台直达），密度与已保存视图存本地
   const listState = useListState({ transientParams: DOCUMENT_TRANSIENT_PARAMS,
     key: "inv-docs",
@@ -177,6 +181,11 @@ function DocsInner({ me }: { me: Me | null }) {
   const createWarehouseId = Form.useWatch("warehouseId", form);
   const createLines = Form.useWatch("lines", form);
   const createRiskDisposalId = Form.useWatch("riskDisposalId", form);
+  const replacementId = Form.useWatch("replacementOfId", form);
+  const replacementRead = useDocumentRead<StockReplacementSource>(createOpen && replacementId != null ? `/api/inventory/stock-doc/${replacementId}` : null);
+  const replacementSource = replacementId != null && validStockReplacementSource(replacementRead.data, replacementId) ? replacementRead.data : null;
+  const replacementError = replacementRead.error ?? (replacementRead.phase === "success" && !replacementSource ? "被替代原单响应不完整，请重新核对" : null);
+  const replacementReady = replacementId == null || (replacementRead.phase === "success" && replacementSource?.replacement.canCreate === true);
   const handledScrapLink = useRef<string | null>(null);
   const batchStatus = useDocumentRead<{ enabled: boolean }>(createOpen ? "/api/inventory/batch-posting/status" : null);
   const batchStatusKnown = batchStatus.phase === "success" && typeof batchStatus.data?.enabled === "boolean";
@@ -247,6 +256,7 @@ function DocsInner({ me }: { me: Me | null }) {
   const load = useCallback(async () => {
     const readRequest = beginLoadRead();
     setLoading(true);
+    setRows([]); setTotal(0); setListError(null);
     try {
       const params = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
       if (status) params.set("status", status);
@@ -258,11 +268,11 @@ function DocsInner({ me }: { me: Me | null }) {
       setTotal(res.total);
     } catch (e) {
       if (!readRequest.isCurrent()) return;
-      message.error((e as Error).message);
+      setListError((e as Error).message);
     } finally {
       if (readRequest.isCurrent()) { setLoading(false); }
     }
-  }, [beginLoadRead, q, status, subtype, page, pageSize, message]);
+  }, [beginLoadRead, q, status, subtype, page, pageSize]);
 
   useEffect(() => {
     void load();
@@ -276,6 +286,9 @@ function DocsInner({ me }: { me: Me | null }) {
     setSaveError(null);
     try {
       const values = await form.validateFields();
+      if (values.replacementOfId != null && (!replacementReady || values.replacementOfId !== replacementSource?.id)) {
+        throw Error("尚未核对被替代原单的当前资格；未发送创建请求");
+      }
       const lines = (values.lines ?? []).filter((l) => l && l.skuId != null);
       if (lines.length === 0) {
         message.warning("至少添加一行明细");
@@ -301,6 +314,7 @@ function DocsInner({ me }: { me: Me | null }) {
         transferType: values.subtype === "transfer" ? values.transferType : undefined,
         remark: values.remark?.trim() || undefined,
         riskDisposalId: values.riskDisposalId,
+        replacementOfId: values.replacementOfId,
         lines: lines.map((l) => ({
           skuId: l.skuId,
           qty: l.qty,
@@ -467,6 +481,7 @@ function DocsInner({ me }: { me: Me | null }) {
           </>
         }
       />
+      <LoadErrorAlert error={listError} onRetry={() => void load()} subject="库存单据列表" retrying={loading} />
       <Table<DocRow>
         rowKey="id"
         size={listState.tableSize}
@@ -478,12 +493,12 @@ function DocsInner({ me }: { me: Me | null }) {
       />
 
       <Modal
-        title="新建库存单据"
+        title={replacementId != null ? "新建替代库存单据" : "新建库存单据"}
         open={createOpen}
         onOk={() => void handleCreate()}
         onCancel={() => setCreateOpen(false)}
         confirmLoading={saving || recovery.busy}
-        okButtonProps={{ disabled: !recovery.ready || !!recovery.result?.document || !!recovery.result?.cancelled || (!!recovery.request && !editingRequest) || (BATCH_OUTBOUND_SUBTYPES.has(createSubtype) && !batchStatusKnown) }}
+        okButtonProps={{ disabled: !replacementReady || !recovery.ready || !!recovery.result?.document || !!recovery.result?.cancelled || (!!recovery.request && !editingRequest) || (BATCH_OUTBOUND_SUBTYPES.has(createSubtype) && !batchStatusKnown) }}
         width="min(720px, 100vw)"
         forceRender
         maskClosable={false}
@@ -493,13 +508,23 @@ function DocsInner({ me }: { me: Me | null }) {
         <StockCreateRecovery recovery={recovery} onAcknowledged={() => {
           form.resetFields(); setEditingRequest(false); setSaveError(null); setConfirmedFefoFingerprint(null); setFefoPreviewOpen(false); setFefoTarget(null);
         }} onEdit={request => {
+          form.resetFields();
           form.setFieldsValue({ ...request, toWarehouseId: request.toWarehouseId ?? undefined });
           setEditingRequest(true); setSaveError(null);
         }} />
+        {replacementId != null && <Alert type={replacementReady ? "info" : "warning"} showIcon style={{ marginBottom: 12 }}
+          message={`替代原单：${replacementSource?.docNo ?? `#${replacementId}`}`}
+          description={<Space direction="vertical" size={4}>
+            <span>{replacementError ?? (replacementRead.phase === "loading" ? "正在核对原单当前资格…" : replacementSource?.replacement.reason)
+              ?? "请重新填写正确的类型、仓库、SKU和数量；不复制原错误数据，不改写原单或库存。"}</span>
+            <Space wrap><Button size="small" onClick={replacementRead.retry}>重新核对</Button>
+              <Typography.Link href={`/inventory/docs?docId=${replacementId}`} target="_blank" rel="noopener noreferrer">查看被替代原单</Typography.Link></Space>
+          </Space>} />}
         {saveError && <Alert type="error" showIcon message="尚未保存" description={saveError} style={{ marginBottom: 12 }} />}
         <LoadErrorAlert error={batchStatusError} onRetry={batchStatus.retry} subject="批次规则" retrying={batchStatus.phase === "loading"} />
         {BATCH_OUTBOUND_SUBTYPES.has(createSubtype) && !batchStatusKnown && !batchStatusError && <Alert type="info" showIcon message="正在核对批次规则，暂不可保存出库草稿" style={{ marginBottom: 12 }} />}
         <Form form={form} layout="vertical">
+          <Form.Item name="replacementOfId" hidden><Input /></Form.Item>
           <Form.Item name="riskDisposalId" hidden>
             <Input />
           </Form.Item>
@@ -709,6 +734,25 @@ function DocsInner({ me }: { me: Me | null }) {
             {["void", "closed"].includes(detail.status) && <Alert type="info" showIcon style={{ marginBottom: 12 }}
               message={detail.status === "void" ? "作废原因" : "短关原因"}
               description={detail.closedReason?.trim() || "历史单据未记录原因，请核对审计记录；不能据此判断库存已被冲销。"} />}
+            {detail.replacement && (detail.status === "void" || detail.replacement.predecessor || detail.replacement.successor) && <Alert
+              type="info" showIcon style={{ marginBottom: 12 }} message="错单与替代关系"
+              description={<Space direction="vertical" size={6}>
+                {detail.replacement.predecessor && <Button type="link" style={{ padding: 0, height: "auto", whiteSpace: "normal", textAlign: "left" }} onClick={() => setDetailId(detail.replacement!.predecessor!.id)}>
+                  被替代原单：{detail.replacement.predecessor.docNo} <DocStatusTag status={detail.replacement.predecessor.status} />
+                </Button>}
+                {detail.replacement.successor && <Button type="link" style={{ padding: 0, height: "auto", whiteSpace: "normal", textAlign: "left" }} onClick={() => setDetailId(detail.replacement!.successor!.id)}>
+                  后续替代单：{detail.replacement.successor.docNo} <DocStatusTag status={detail.replacement.successor.status} />
+                </Button>}
+                {detail.status === "void" && <>
+                  <span>{detail.replacement.reason ?? "原单保留。新建替代单只记录纠正关系，仍需独立提交、审批与执行。"}</span>
+                  {detail.replacement.canCreate && <Button size="small" disabled={!recovery.ready || recovery.busy || !!recovery.request}
+                    onClick={() => { form.resetFields(); form.setFieldsValue({ replacementOfId: detail.id });
+                      setSaveError(null); setEditingRequest(false); setDetailId(null); setCreateOpen(true); }}>
+                    新建替代单
+                  </Button>}
+                  {detail.replacement.canCreate && !!recovery.request && <span>有未确认的建单请求，请先在本页核对或明确取消，再创建替代单。</span>}
+                </>}
+              </Space>} />}
             <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered
               styles={{ label: { whiteSpace: "nowrap" }, content: { overflowWrap: "anywhere" } }} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="类型">

@@ -1,0 +1,4 @@
+ALTER TABLE "stock_docs" ADD COLUMN "replacement_of_id" integer;--> statement-breakpoint
+ALTER TABLE "stock_docs" ADD CONSTRAINT "stock_docs_replacement_of_id_stock_docs_id_fk" FOREIGN KEY ("replacement_of_id") REFERENCES "public"."stock_docs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "stock_docs" ADD CONSTRAINT "uq_stock_doc_replacement" UNIQUE("replacement_of_id");--> statement-breakpoint
+ALTER TABLE "stock_docs" ADD CONSTRAINT "ck_stock_doc_replacement_order" CHECK ("stock_docs"."replacement_of_id" IS NULL OR "stock_docs"."replacement_of_id" < "stock_docs"."id");

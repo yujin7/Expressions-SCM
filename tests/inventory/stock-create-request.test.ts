@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import * as s from "@/db/schema";
@@ -41,6 +41,10 @@ it("same account/key and normalized intent replays exactly once without posting"
   const after = await snapshot();
   for (const key of ["docs", "lines", "receipt", "audits"] as const) expect(after[key].length).toBe(before[key].length + 1);
   expect(after.ledger).toEqual(before.ledger);
+  const legacyHash = createHash("sha256").update(JSON.stringify({ subtype: "opening", warehouseId, toWarehouseId: null,
+    transferType: null, reason: null, remark: null, riskDisposalId: null,
+    lines: [{ skuId, qty: "0.0001", price: "1.23", batchId: null }] })).digest("hex");
+  expect(after.receipt.at(-1)?.requestHash).toBe(legacyHash);
 });
 it.each(["quantity", "price", "remark", "batch", "line-count"])("same key with changed %s conflicts without another write", async field => {
   const body = input(); await createStockRequest(actor, body, db); const before = await snapshot();
@@ -99,7 +103,7 @@ it("database enforces immutable and unique receipts", async () => {
 });
 it("HTTP requires a key and lookup rejects ambiguous parameters, returns no-store and current account only", async () => {
   token = actor; const body = input();
-  const post = (v: unknown) => POST(new NextRequest("http://localhost/api/inventory/stock-doc", { method: "POST", body: JSON.stringify(v) }));
+  const post = (v: unknown) => POST(new NextRequest("http://localhost/api/inventory/stock-doc", { method: "POST", headers: { "x-scm-stock-create-contract": "2" }, body: JSON.stringify(v) }));
   expect((await post({ ...body, requestKey: undefined })).status).toBe(400);
   expect((await post(body)).status).toBe(201);
   const get = (q: string) => GET(new NextRequest(`http://localhost/api/inventory/stock-doc/create-result?${q}`));
@@ -107,6 +111,16 @@ it("HTTP requires a key and lookup rejects ambiguous parameters, returns no-stor
   for (const q of ["", "requestKey=no", `requestKey=${body.requestKey}&requestKey=${body.requestKey}`, `requestKey=${body.requestKey}&actorId=1`]) expect((await get(q)).status).toBe(400);
   token = peer; expect((await (await get(`requestKey=${body.requestKey}`)).json()).document).toBeNull();
   token = null; expect((await get(`requestKey=${body.requestKey}`)).status).toBe(401);
+});
+
+it("a stale browser cannot silently strip replacement context and create an unrelated draft", async () => {
+  token = actor; const before = await snapshot();
+  for (const version of [undefined, "1", "3"]) {
+    const result = await POST(new NextRequest("http://localhost/api/inventory/stock-doc", { method: "POST",
+      headers: version ? { "x-scm-stock-create-contract": version } : {}, body: JSON.stringify(input()) }));
+    expect(result.status).toBe(400); expect((await result.json()).error).toContain("页面版本已更新");
+  }
+  expect(await snapshot()).toEqual(before);
 });
 
 it("cancellation permanently fences the account/key without needing valid sources or creating stock", async () => {

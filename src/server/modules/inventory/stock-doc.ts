@@ -64,6 +64,14 @@ async function hasStockPosting(db: AnyDb, doc: Pick<StockDocRow, "id" | "subtype
 }
 const POSTED_DRAFT_REASON = "原单已有库存流水，与当前未生效状态不一致；不可继续提交、审批、撤回或作废，请联系仓管核对原单及红字纠错";
 
+function replacementBlocked(doc: Pick<StockDocRow, "status" | "subtype">, hasPosting: boolean, hasSuccessor: boolean): string | null {
+  if (doc.status !== "void") return "仅已作废且未过账的手工库存单可新建替代单";
+  if (!["opening", "issue_out", "sales_out", "transfer"].includes(doc.subtype)) return "该单由来源流程管理，请从原业务流程纠正；不能手工替代";
+  if (hasPosting) return "原单存在库存流水，不能用新建替代草稿代替库存纠错；请联系仓管核对";
+  if (hasSuccessor) return "已存在后续替代单，请查看该单；若它也有误，应从它作废后继续替代";
+  return null;
+}
+
 async function warehouseActor(tx: AnyDb, user: SessionUser): Promise<SessionUser> {
   const actor = await currentWriteActor(tx, user);
   if (!actor.roles.includes("warehouse") && !actor.roles.includes("admin")) {
@@ -80,6 +88,14 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
 
   return db.transaction(async (tx: AnyDb) => {
     const actor = await warehouseActor(tx, user);
+    if (v.replacementOfId != null) {
+      const [original]: StockDocRow[] = await tx.select().from(stockDocs).where(eq(stockDocs.id, v.replacementOfId)).for("update");
+      if (!original) throw new ApiError(404, "被替代原单不存在，请核对原单编号");
+      if (original.createdBy !== actor.id && !actor.roles.includes("admin")) throw new ApiError(403, "仅原制单人或管理员可新建替代单");
+      const [successor] = await tx.select({ id: stockDocs.id }).from(stockDocs).where(eq(stockDocs.replacementOfId, original.id)).limit(1);
+      const blocked = replacementBlocked(original, await hasStockPosting(tx, original), Boolean(successor));
+      if (blocked) throw new ApiError(409, blocked);
+    }
     // Hold reference eligibility through document + audit commit. SHARE blocks non-key
     // edits (active/accounting mode/SKU identity), unlike FK KEY SHARE locks.
     // Stable warehouse -> SKU order also covers opposite-direction transfers.
@@ -130,6 +146,7 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
         remark: v.remark ?? null,
         sourceDocType: v.riskDisposalId ? "risk_disposal" : null,
         sourceDocId: v.riskDisposalId ?? null,
+        replacementOfId: v.replacementOfId ?? null,
         createdBy: actor.id,
       })
       .returning();
@@ -146,7 +163,8 @@ export async function createStockDoc(user: SessionUser, input: unknown, dbArg?: 
     );
     await writeAudit(tx, {
       userId: actor.id, entity: "stock_doc", entityId: doc.id, action: "create",
-      after: { docNo: doc.docNo, subtype: doc.subtype, transferType: doc.transferType ?? null, lineCount: lines.length },
+      after: { docNo: doc.docNo, subtype: doc.subtype, transferType: doc.transferType ?? null, lineCount: lines.length,
+        ...(doc.replacementOfId == null ? {} : { replacementOfId: doc.replacementOfId }) },
     });
     return doc;
   });
@@ -613,6 +631,7 @@ export async function getStockDoc(id: number, dbArg?: AnyDb, user?: SessionUser)
       sourceDocType: stockDocs.sourceDocType,
       sourceDocId: stockDocs.sourceDocId,
       reversalOfId: stockDocs.reversalOfId,
+      replacementOfId: stockDocs.replacementOfId,
       reason: stockDocs.reason,
       transferType: stockDocs.transferType,
       createdBy: stockDocs.createdBy,
@@ -685,7 +704,14 @@ export async function getStockDoc(id: number, dbArg?: AnyDb, user?: SessionUser)
     .where(eq(approvalConfigs.docType, doc.subtype === "opening" ? "opening" : "stock_doc")) : [];
   const [reversal] = user && doc.status === "completed" ? await db.select({ id: stockDocs.id }).from(stockDocs)
     .where(and(eq(stockDocs.reversalOfId, id), ne(stockDocs.status, "void"))).limit(1) : [];
-  const hasPosting = user && ["draft", "pending"].includes(doc.status) ? await hasStockPosting(db, doc) : false;
+  const hasPosting = user && ["draft", "pending", "void"].includes(doc.status) ? await hasStockPosting(db, doc) : false;
+  const relationColumns = { id: stockDocs.id, docNo: stockDocs.docNo, status: stockDocs.status };
+  const [[predecessor], [successor]] = await Promise.all([
+    doc.replacementOfId == null ? Promise.resolve([]) : db.select(relationColumns).from(stockDocs).where(eq(stockDocs.id, doc.replacementOfId)),
+    db.select(relationColumns).from(stockDocs).where(eq(stockDocs.replacementOfId, doc.id)).limit(1),
+  ]);
+  const replacementReason = replacementBlocked(doc, hasPosting, Boolean(successor));
+  const replacementAllowed = Boolean(user && (user.roles.includes("admin") || (user.roles.includes("warehouse") && doc.createdBy === user.id)) && !replacementReason);
   return {
     id: doc.id,
     docNo: doc.docNo,
@@ -694,6 +720,8 @@ export async function getStockDoc(id: number, dbArg?: AnyDb, user?: SessionUser)
     version: doc.version,
     remark: doc.remark,
     closedReason: doc.closedReason,
+    replacement: { predecessor: predecessor ?? null, successor: successor ?? null, canCreate: replacementAllowed,
+      reason: replacementReason ?? (replacementAllowed ? null : "请由原制单仓管或管理员新建替代单") },
     warehouseId,
     warehouseName: whName(warehouseId),
     toWarehouseId,
