@@ -28,6 +28,7 @@ import CtCreateRecovery, { useCtCreateRecovery } from "@/components/CtCreateReco
 import type { CtCreateRequest } from "@/components/ct-create-request";
 import { viewportModalProps } from "@/components/viewport-modal";
 import { validDocumentReplacementSource, type DocumentReplacement, type DocumentReplacementSource } from "@/components/document-replacement";
+import DocumentOutcomeGuide from "@/components/DocumentOutcomeGuide";
 
 // ---------- 客户端十进制比较（仅提交前过滤/预警用；非负字符串，禁 float） ----------
 
@@ -424,11 +425,11 @@ function CtWorkspace({ me }: { me: Me | null }) {
       setLineEdits(prev => ({ ...prev, [r.poLineId]: [...(prev[r.poLineId] ?? [emptyLine()]), emptyLine()] }))}>另一个批次</Button> },
   ];
 
-  const actions = detail ? (
+  const actions = detail && (detail.actions?.edit || detail.actions?.void || detail.actions?.submit || detail.actions?.reject
+    || (detail.status === "pending" && detail.createdBy === me?.id)) ? (
     <Space wrap>
       {detail.actions?.edit && <Button disabled={actionLoading} onClick={() => setEditingDraft(detail)}>修改原草稿</Button>}
       {detail.actions?.void && <Button danger disabled={actionLoading} onClick={() => setVoidingDraft(detail)}>作废错误草稿</Button>}
-      {detail.status === "void" && canWrite && <Button onClick={() => { setDetailId(null); openCreate(); }}>新建正确退货单</Button>}
       {detail.actions?.submit ? (
         <Popconfirm title="确认提交审批？" okText="提交" cancelText="取消" onConfirm={() => void handleSubmit()}>
           <Button type="primary" loading={actionLoading}>
@@ -532,25 +533,12 @@ function CtWorkspace({ me }: { me: Me | null }) {
         {detail ? (
           <div>
             <ChainStrip docType="ct" id={detail.id} />
-            <Alert type="info" showIcon style={{ marginBottom: 12 }} message={detail.actions?.reason ?? "当前操作资格尚未确认，请重新读取原单；不凭旧页面提交或审批。"} />
-            {detail.status === "void" && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={`作废原因：${detail.closedReason ?? "历史未登记"}`}
-              description="原单保留只读，不代表退货已经发生。需继续退货时，请核对来源、仓库及实物批次后明确新建，不重复使用原单。" />}
-            {detail.replacement && (detail.status === "void" || detail.replacement.predecessor || detail.replacement.successor) && <Alert
-              type="info" showIcon style={{ marginBottom: 12 }} message="错单与替代关系"
-              description={<Space direction="vertical" size={8} style={{ width: "100%" }}>
-                {detail.replacement.predecessor && <Button type="link" style={{ padding: 0, height: "auto", whiteSpace: "normal", textAlign: "left" }} onClick={() => setDetailId(detail.replacement!.predecessor!.id)}>
-                  被替代原单：{detail.replacement.predecessor.docNo} <DocStatusTag status={detail.replacement.predecessor.status} />
-                </Button>}
-                {detail.replacement.successor && <Button type="link" style={{ padding: 0, height: "auto", whiteSpace: "normal", textAlign: "left" }} onClick={() => setDetailId(detail.replacement!.successor!.id)}>
-                  后续替代单：{detail.replacement.successor.docNo} <DocStatusTag status={detail.replacement.successor.status} />
-                </Button>}
-                {detail.status === "void" && <>
-                  <span>{detail.replacement.reason ?? "原单保留。替代单需要重新选择采购来源、仓库和实物批次，再独立提交与审批。"}</span>
-                  {detail.replacement.canCreate && <Button size="small" disabled={!recovery.ready || recovery.busy || !!recovery.request}
-                    onClick={() => { openCreate(); setReplacementId(detail.id); setDetailId(null); }}>新建替代退货单</Button>}
-                  {detail.replacement.canCreate && !!recovery.request && <span>有未确认的建单请求，请先核对或明确取消，再创建替代单。</span>}
-                </>}
-              </Space>} />}
+            <DocumentOutcomeGuide key={detail.id} kind="ct" status={detail.status} closedReason={detail.closedReason}
+              actionReason={detail.actions?.reason ?? "当前操作资格尚未确认，请重新读取原单；不凭旧页面提交或审批。"}
+              replacement={detail.replacement} onOpen={setDetailId}
+              createBlockedReason={!recovery.ready ? "正在读取本机恢复记录，请稍后。" : recovery.busy ? "正在核对原请求，请稍后。"
+                : recovery.request ? "有未确认的建单请求，请先在本页核对或明确取消，再创建替代单。" : null}
+              onCreateReplacement={() => { openCreate(); setReplacementId(detail.id); setDetailId(null); }} />
             {overAlert ? (
               <Alert
                 type="warning"
@@ -562,7 +550,8 @@ function CtWorkspace({ me }: { me: Me | null }) {
                 description={overAlert}
               />
             ) : null}
-            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}>
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered style={{ marginBottom: 16 }}
+              styles={{ label: { whiteSpace: "nowrap" }, content: { overflowWrap: "anywhere" } }}>
               <Descriptions.Item label="采购订单">{detail.poDocNo}</Descriptions.Item>
               <Descriptions.Item label="退货出库仓">{detail.warehouseName}</Descriptions.Item>
               <Descriptions.Item label="制单人">{detail.createdByName ?? "—"}</Descriptions.Item>

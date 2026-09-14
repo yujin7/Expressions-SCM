@@ -1,0 +1,37 @@
+.guide {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  background: #f8faff;
+  color: #24324a;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.guide p { margin: 0; }
+.row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
+.row strong { white-space: nowrap; }
+.links { display: grid; gap: 4px; min-width: 0; }
+.link:global(.ant-btn) {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 28px;
+  height: auto;
+  padding: 0;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.6;
+}
+.link > span { min-width: 0; overflow-wrap: anywhere; }
+.next { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.next > span { flex: 1 1 200px; }
+.boundary { color: #674900; }
+.help summary { width: fit-content; min-height: 28px; cursor: pointer; color: #234dc2; }
+.help summary:focus-visible { outline: 2px solid #3154d5; outline-offset: 2px; border-radius: 3px; }
+.help[open] p { margin-top: 6px; }
